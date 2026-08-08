@@ -198,6 +198,9 @@ restore = "point a fresh install at it." No registry, no machine-scoped DPAPI
     server.json                     # ServerOptions (§5.3)
     key                             # AES-GCM server key K (generated first run; ACL SYSTEM+Admins)  §12.3
     rp_id.txt                       # WebAuthn RP ID, explicit (DESIGN §8, §13 #14)
+  certs/                            # Let's Encrypt mode only (§5.5)
+    account-key.pem                 # ACME account key (registered once, reused for renewals)
+    cert.pfx                        # issued chain; PFX password derived from key K (§5.5)
   backup/
     daily/   hyveman-YYYYMMDD.db    # VACUUM INTO snapshots
     weekly/  hyveman-YYYYWWww.db
@@ -228,9 +231,17 @@ random `key` (mode 0600-equivalent ACL: `SYSTEM` + `Administrators` only).
 {
   "urls": "https://0.0.0.0:443",          // Kestrel bind; separate ingest/ui URLs allowed via Kestrel config
   "tls": {
-    "cert_path": "config/cert.pfx",        // Let's Encrypt or own CA (DESIGN §8)
-    "cert_password": "",                   // or reference a credentials entry by label (preferred)
-    "min_tls": "1.2", "preferred_tls": "1.3"   // PROTOCOL §2
+    "cert_path": "config/cert.pfx",        // static cert (own CA or certbot-style) — mutually
+    "cert_password": "",                   //   exclusive with lets_encrypt below; or reference
+    "min_tls": "1.2", "preferred_tls": "1.3",   //   a credentials entry by label (preferred)
+    "lets_encrypt": {                       // ACME auto-provisioning (§5.5); omit for static certs
+      "enabled": true,
+      "domains": ["hyveman.example.com"],  // public DNS names; no wildcards (http-01)
+      "email": "admin@example.com",        // ACME account contact
+      "staging": false,                     // true = LE staging endpoint (rate-limit-safe testing)
+      "renew_days": 30,                     // renew when < 30 days remain (1..89; LE certs are 90-day)
+      "http_port": 80                       // http-01 challenge listener + http→https redirect
+    }
   },
   "ingest": {
     "max_batch_bytes": 4194304,            // 4 MiB (PROTOCOL §12)
@@ -271,6 +282,41 @@ appear in plaintext**. The preferred pattern: store the secret in the
 resolution substitutes from the vault at startup. The bootstrap exception is
 the very first run with a passphrase-protected cert, handled by the setup
 wizard (§11.3).
+
+### 5.5 Let's Encrypt (ACME v2) auto-provisioning
+
+When `tls.lets_encrypt.enabled` is set, the server **owns its certificate lifecycle**
+(no certbot, no cron, no external tooling):
+
+- **Flow** (`Certificates/AcmeCertificateManager`): load-or-register the ACME account
+  key (`certs/account-key.pem`) → `new-order` for the configured domains → stage the
+  http-01 key authorizations → validate → finalize → persist the chain as
+  `certs/cert.pfx` → swap it into Kestrel. Runs as a background service with
+  exponential backoff (1 min → 1 h) on failure; a certificate problem never blocks
+  startup.
+- **Challenge transport** (`Certificates/AcmeHttpMiddleware`): a plain-HTTP Kestrel
+  listener on `tls.lets_encrypt.http_port` serves only
+  `/.well-known/acme-challenge/<token>` (200 + key authorization, else 404) and
+  308-redirects every other request to the HTTPS port from `urls`. The challenge
+  port must be reachable from the internet on the server's public IP (direct, or via a
+  reverse proxy that forwards the challenge path).
+- **Certificate serving** (`Certificates/AcmeCertStore`): Kestrel uses a
+  `ServerCertificateSelector` per handshake, so renewals swap atomically with no
+  listener restart. Until the first order lands (or if the stored PFX is corrupt), a
+  short-lived self-signed bootstrap certificate is served — HTTPS works from first
+  boot; the real certificate replaces it within minutes.
+- **Key material & backup**: the ACME account key and the issued PFX live in
+  `certs/` inside the single data directory (§5.1) — the normal data-dir backup
+  covers both. The PFX password is **derived from server key K** (SHA-256 of
+  `K ‖ "hyveman-acme-pfx"`), so restoring a backup restores the certificate, and
+  losing K loses the ability to decrypt the PFX (a fresh order re-issues it
+  automatically). No new secrets to manage.
+- **Renewal**: Let's Encrypt certificates are valid 90 days; renewal triggers when
+  fewer than `tls.lets_encrypt.renew_days` days remain (default 30), checked every
+  12 h. `staging: true` points at the Let's Encrypt staging endpoint for
+  rate-limit-safe testing.
+- **Limits**: http-01 cannot validate wildcard or single-label/IDN names — domains
+  are validated at startup (fail fast).
 
 ---
 
@@ -796,10 +842,13 @@ SmtpNotifier       // optional, Phase 3 (DESIGN §4.4, §13 #4)
   elsewhere; the trust anchor for the snapshot is "snapshot + K" (DESIGN §9).
 
 ### 12.4 TLS & transport
-- HTTPS only (PROTOCOL §2). TLS ≥ 1.2, prefer 1.3. Cert from Let's Encrypt or
-  own CA; `ca_path` pinning not server-side (that's the agent). Invalid cert
-  → fail to start (except the setup-wizard bootstrap, which can mint a local
-  CA if none configured — then prompt to install a real cert).
+- HTTPS only (PROTOCOL §2). TLS ≥ 1.2, prefer 1.3.
+- **Certificate sources** (§5.3): a static cert via `tls.cert_path` (own CA or a
+  certbot-style external renewal) — or **automatic Let's Encrypt** via
+  `tls.lets_encrypt` (§5.5), which provisions and renews without external tooling.
+  Invalid/missing static cert → fail to start (except Development, which falls back to
+  the ASP.NET Core dev cert).
+- `ca_path` pinning is not server-side (that's the agent).
 - `HSTS` enabled on the UI host; ingest clients (agents) ignore it (they pin
   the cert/hostname themselves).
 

@@ -24,6 +24,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Certes" Version="3.0.4" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Fido2" Version="4.0.1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.29" />

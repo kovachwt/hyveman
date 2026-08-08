@@ -1,4 +1,5 @@
 using Dapper;
+using System.Net;
 using Hyveman.Server.Auth;
 using Hyveman.Server.Config;
 using Hyveman.Server.Hardware;
@@ -90,7 +91,7 @@ public static class Program
             builder.Logging.ClearProviders();
 
             builder.WebHost.UseUrls(options.Urls.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-            ConfigureTls(builder, options, dataDir);
+            ConfigureTls(builder, options, dataDir, key);
 
             builder.Services.AddSingleton(options);
             builder.Services.AddSingleton(dataDir);
@@ -154,6 +155,8 @@ public static class Program
             // session/passkey guard. Exception trap applies to both.
             if (!app.Environment.IsDevelopment())
                 app.UseHsts();
+            if (options.Tls.LetsEncrypt.Enabled)
+                app.UseMiddleware<Certificates.AcmeHttpMiddleware>();   // http-01 challenge + http→https redirect
             app.UseStaticFiles();
             app.UseWhen(IsIngestPath, b => b.UseIngestMiddleware());
             app.UseWhen(IsAuthApiPath, b => b.UseMiddleware<RateLimit.AuthRateLimitMiddleware>());
@@ -225,9 +228,56 @@ public static class Program
         return p.StartsWith("/api/auth/", StringComparison.Ordinal);
     }
 
-    private static void ConfigureTls(WebApplicationBuilder builder, ServerOptions opts, string dataDir)
+    private static void ConfigureTls(WebApplicationBuilder builder, ServerOptions opts, string dataDir, byte[] key)
     {
         var tls = opts.Tls;
+        if (tls.LetsEncrypt.Enabled)
+        {
+            // Let's Encrypt mode: the cert is owned by AcmeCertStore (issued PFX or a
+            // self-signed bootstrap), renewed in the background by AcmeCertificateManager.
+            // Kestrel picks the current cert per handshake via ServerCertificateSelector,
+            // and a plain-HTTP listener on tls.lets_encrypt.http_port serves the http-01
+            // challenge (and redirects everything else to HTTPS).
+            var le = tls.LetsEncrypt;
+            var store = Certificates.AcmeCertStore.LoadOrBootstrap(dataDir, key, le.Domains);
+            builder.Services.AddSingleton(store);
+            builder.Services.AddSingleton<Certificates.Http01ChallengeStore>();
+            builder.Services.AddSingleton<Certificates.AcmeCertificateManager>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<Certificates.AcmeCertificateManager>());
+            builder.Services.AddHttpClient("acme", c => c.Timeout = TimeSpan.FromSeconds(30));
+
+            builder.WebHost.ConfigureKestrel(k =>
+            {
+                // UseUrls() is overridden when ConfigureKestrel declares Listen endpoints, so
+                // the LE branch binds both listeners explicitly: the https port(s) from urls
+                // (cert via per-handshake selector) and the plain-http challenge listener.
+                var urlsHaveHttp = false;
+                foreach (var (host, port, isHttps) in ParseListenEndpoints(opts.Urls))
+                {
+                    var address = ParseListenAddress(host);
+                    if (isHttps)
+                    {
+                        k.Listen(address, port, lo => lo.UseHttps(h =>
+                        {
+                            h.ServerCertificateSelector = (_, _) => store.Current;
+                            h.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
+                        }));
+                    }
+                    else
+                    {
+                        urlsHaveHttp = true;
+                        k.Listen(address, port);
+                    }
+                }
+                if (!urlsHaveHttp)
+                    k.Listen(IPAddress.Any, le.HttpPort);
+            });
+
+            Log.Information("Let's Encrypt enabled: domains {Domains}, staging {Staging}, http-01 on port {HttpPort}",
+                string.Join(",", le.Domains), le.Staging, le.HttpPort);
+            return;
+        }
+
         if (string.IsNullOrEmpty(tls.CertPath))
         {
             if (builder.Environment.IsDevelopment())
@@ -253,6 +303,28 @@ public static class Program
             h.ServerCertificate = cert;
             h.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
         }));
+    }
+
+    /// <summary>Parse <c>urls</c> ("scheme://host:port;...") into (host, port, isHttps) bind triples; falls back to the default https 0.0.0.0:443.</summary>
+    private static List<(string Host, int Port, bool IsHttps)> ParseListenEndpoints(string urls)
+    {
+        var endpoints = new List<(string, int, bool)>();
+        foreach (var url in urls.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var u) && (u.Scheme == "http" || u.Scheme == "https"))
+                endpoints.Add((u.Host, u.Port, u.Scheme == "https"));
+        }
+        if (endpoints.Count == 0) endpoints.Add(("0.0.0.0", 443, true));
+        return endpoints;
+    }
+
+    private static System.Net.IPAddress ParseListenAddress(string host)
+    {
+        if (host == "+" || host == "*" || host == "0.0.0.0") return IPAddress.Any;
+        if (host == "localhost") return IPAddress.Loopback;
+        if (IPAddress.TryParse(host, out var ip)) return ip;
+        // Unknown hostname in urls → bind any (matches Kestrel's default wildcard behavior).
+        return IPAddress.Any;
     }
 
     /// <summary>

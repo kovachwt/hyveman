@@ -99,6 +99,10 @@ See [Remaining work](#remaining-work) for the full list.
   sign-counter tracking; HMAC session cookie (HttpOnly/Secure/SameSite=Strict,
   14-day sliding); AES-GCM credential vault (iDRAC creds, Telegram/webhook
   secrets) under key K in `config/key`; token-bucket rate limiting.
+- **TLS:** static `tls.cert_path` cert **or** built-in Let's Encrypt
+  (ACME v2, http-01) — auto-issuance + renewal, challenge listener on port 80,
+  atomic per-handshake cert swap, state in `certs/` (account key + PFX
+  protected by key K).
 - **Hardware polling:** per-host iDRAC/Redfish with bounded concurrency and
   per-host timeouts; Dell PowerEdge provider (health rollup, CPU/memory,
   chassis temps, fans, PSUs, power draw, Dell OEM disk/controller/memory);

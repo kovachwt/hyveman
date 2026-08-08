@@ -28,6 +28,29 @@ public sealed class ServerOptions
         public string? CertPasswordRef { get; set; }   // "label:tls-cert-password" vault ref (§5.4)
         public string MinTls { get; set; } = "1.2";
         public string PreferredTls { get; set; } = "1.3";
+        /// <summary>Let's Encrypt (ACME) auto-provisioning; mutually exclusive with cert_path.</summary>
+        public LetsEncryptOptions LetsEncrypt { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Let's Encrypt automatic certificate provisioning (ACME v2, http-01 challenge).
+    /// When enabled, the server owns its certificate lifecycle: the account key and the
+    /// issued PFX live in <c>&lt;data_dir&gt;/certs/</c>, renewal happens automatically in
+    /// the background, and the http-01 challenge is served on <see cref="HttpPort"/>.
+    /// </summary>
+    public sealed class LetsEncryptOptions
+    {
+        public bool Enabled { get; set; }
+        /// <summary>Public DNS names the certificate must cover (SANs). No wildcards — http-01 cannot validate them.</summary>
+        public List<string> Domains { get; set; } = new();
+        /// <summary>ACME account contact; used for expiry/revocation notices.</summary>
+        public string? Email { get; set; }
+        /// <summary>Use the Let's Encrypt staging endpoint (rate-limit-safe testing).</summary>
+        public bool Staging { get; set; }
+        /// <summary>Renew when the certificate expires within this many days (1..89; LE certs are 90-day).</summary>
+        public int RenewDays { get; set; } = 30;
+        /// <summary>Port for the plain-HTTP http-01 challenge listener (and HTTP→HTTPS redirect).</summary>
+        public int HttpPort { get; set; } = 80;
     }
 
     public sealed class IngestOptions

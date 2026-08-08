@@ -12,6 +12,11 @@
       -DataDir   <path>       data directory (default: %ProgramData%\Hyveman\server)
       -Port      <int>        HTTPS port (default: 443); ignored if server.json exists
       -CertPath  <path>       TLS .pfx (default: data dir config\cert.pfx if present)
+      -LetsEncrypt <email>    enable automatic Let's Encrypt certificates (ACME http-01);
+                              requires at least one -Domain; port 80 must be reachable from
+                              the internet on the server's public IP
+      -Domain    <name>       public DNS name for the certificate (repeatable)
+      -HttpPort  <int>        http-01 challenge listener port (default: 80)
       -NoStart               register the service but do not start it
       -Uninstall             stop + delete the service (keeps data dir)
 
@@ -23,6 +28,9 @@ param(
     [string]$DataDir = "$env:ProgramData\Hyveman\server",
     [int]$Port = 443,
     [string]$CertPath = "",
+    [string]$LetsEncrypt = "",
+    [string[]]$Domain = @(),
+    [int]$HttpPort = 80,
     [switch]$NoStart,
     [switch]$Uninstall
 )
@@ -39,6 +47,15 @@ if ($Uninstall) {
     }
     Write-Host "Done. Data dir: $DataDir" -ForegroundColor Green
     exit 0
+}
+
+if ($LetsEncrypt -and $Domain.Count -eq 0) {
+    Write-Error "-LetsEncrypt requires at least one -Domain (public DNS names for the certificate)."
+    exit 1
+}
+if ($CertPath -and $LetsEncrypt) {
+    Write-Error "-CertPath and -LetsEncrypt are mutually exclusive."
+    exit 1
 }
 
 # ── elevation ──────────────────────────────────────────────────────────────
@@ -78,18 +95,33 @@ Set-Acl $DataDir $acl
 # ── default config (only if absent; never overwrite operator config) ───────
 $configPath = "$DataDir\config\server.json"
 if (-not (Test-Path $configPath)) {
-    $pfx = $CertPath
-    if (-not $pfx) {
-        $candidate = "$DataDir\config\cert.pfx"
-        if (Test-Path $candidate) { $pfx = $candidate }
-    }
     $config = @{
         urls = "https://0.0.0.0:$Port"
-        tls  = @{
-            cert_path      = if ($pfx) { $pfx } else { "" }
-            cert_password  = ""
-            min_tls        = "1.2"
-            preferred_tls  = "1.3"
+        tls  = if ($LetsEncrypt) {
+            @{
+                min_tls        = "1.2"
+                preferred_tls  = "1.3"
+                lets_encrypt   = @{
+                    enabled    = $true
+                    domains    = @($Domain)
+                    email      = $LetsEncrypt
+                    staging    = $false
+                    renew_days = 30
+                    http_port  = $HttpPort
+                }
+            }
+        } else {
+            $pfx = $CertPath
+            if (-not $pfx) {
+                $candidate = "$DataDir\config\cert.pfx"
+                if (Test-Path $candidate) { $pfx = $candidate }
+            }
+            @{
+                cert_path      = if ($pfx) { $pfx } else { "" }
+                cert_password  = ""
+                min_tls        = "1.2"
+                preferred_tls  = "1.3"
+            }
         }
         ingest = @{
             max_batch_bytes = 4194304
@@ -114,9 +146,13 @@ if (-not (Test-Path $configPath)) {
     }
     $config | ConvertTo-Json -Depth 6 | Set-Content -Path $configPath -Encoding utf8
     Write-Host "Wrote default $configPath" -ForegroundColor Yellow
-    if (-not $pfx) {
+    if ($LetsEncrypt) {
+        Write-Host "Let's Encrypt enabled for: $($Domain -join ', ') (challenge listener on port $HttpPort)" -ForegroundColor Cyan
+        Write-Host "  Port $HttpPort must be reachable from the internet on the server's public IP" -ForegroundColor Cyan
+        Write-Host "  (and the DNS records for those names must point at this machine)." -ForegroundColor Cyan
+    } elseif (-not $pfx) {
         Write-Warning "No TLS certificate configured. Set tls.cert_path in $configPath"
-        Write-Warning "  (or drop a .pfx at $DataDir\config\cert.pfx) before starting."
+        Write-Warning "  (or drop a .pfx at $DataDir\config\cert.pfx, or re-run with -LetsEncrypt <email> -Domain <name>) before starting."
     }
 }
 
