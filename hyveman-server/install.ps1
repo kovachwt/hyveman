@@ -163,7 +163,9 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
     Write-Host "Service $ServiceName exists — updating..." -ForegroundColor Yellow
     Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue
     sc.exe config $ServiceName binPath= $binPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Error "sc.exe config binPath failed (exit $LASTEXITCODE)"; exit 1 }
     sc.exe config $ServiceName start= auto | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Error "sc.exe config start failed (exit $LASTEXITCODE)"; exit 1 }
 } else {
     sc.exe create $ServiceName binPath= $binPath start= auto DisplayName= "Hyveman Server" | Out-Null
     if ($LASTEXITCODE -ne 0) { Write-Error "sc.exe create failed (exit $LASTEXITCODE)"; exit 1 }

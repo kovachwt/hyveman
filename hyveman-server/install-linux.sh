@@ -94,6 +94,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+die() { echo "error: $*" >&2; exit 1; }
+say() { echo "==> $*"; }
+
 # ── mode-aware defaults ───────────────────────────────────────────────────────
 # System mode: root-owned /opt + /var/lib, port 443, unit in /etc/systemd/system.
 # User mode: ~/.local paths, port 8443 (user services cannot bind <1024), user unit.
@@ -107,6 +110,9 @@ if [[ "$SYSTEM" -eq 1 ]]; then
     JRNL="journalctl -u $SERVICE_NAME -f"
     WANTED_BY="multi-user.target"
 else
+    if [[ -z "${HOME:-}" ]]; then
+        die "HOME is not set — cannot resolve per-user paths (use --system, or export HOME)."
+    fi
     [[ -z "$DATA_DIR" ]] && DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hyveman/server"
     [[ -z "$INSTALL_DIR" ]] && INSTALL_DIR="$HOME/.local/lib/hyveman/server"
     [[ -z "$PORT" ]] && PORT=8443
@@ -119,8 +125,26 @@ fi
 INSTALL_DIR="$(realpath -m "$INSTALL_DIR")"
 DATA_DIR="$(realpath -m "$DATA_DIR")"
 
-die() { echo "error: $*" >&2; exit 1; }
-say() { echo "==> $*"; }
+# ── path safety ────────────────────────────────────────────────────────────────
+# Recursive ops below (chmod/chown -R, uninstall rm -rf) must never leave the
+# hyveman tree: refuse the filesystem root, well-known system directories, and
+# the user's home directory itself, and refuse install == data dir.
+SYSTEM_DIRS="/bin /boot /dev /etc /home /lib /lib64 /media /mnt /opt /proc /root /run /sbin /srv /sys /tmp /usr /var"
+HOME_REAL="$(realpath -m "${HOME:-/nonexistent}")"
+for d in "$INSTALL_DIR" "$DATA_DIR"; do
+    case "$d" in
+        /|//) die "refusing to use '$d' as a hyveman directory." ;;
+    esac
+    for s in $SYSTEM_DIRS; do
+        if [[ "$d" == "$s" || "$d" == "$s/" ]]; then
+            die "refusing to use '$d' as a hyveman directory (system directory)."
+        fi
+    done
+    if [[ "$d" == "$HOME_REAL" || "$d" == "$HOME_REAL/" ]]; then
+        die "refusing to use your home directory as a hyveman directory."
+    fi
+done
+[[ "$INSTALL_DIR" == "$DATA_DIR" ]] && die "--install-dir and --data-dir must be different directories."
 
 if [[ -n "$LE_EMAIL" && "${#LE_DOMAINS[@]}" -eq 0 ]]; then
     die "--lets-encrypt requires at least one --domain (public DNS names for the certificate)."
@@ -155,6 +179,10 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
         systemctl --user daemon-reload 2>/dev/null || true
     fi
     if [[ -d "$INSTALL_DIR" ]]; then
+        # Never delete a directory we can't prove is ours (a typo'd --install-dir
+        # or a stale HYVEMAN_INSTALL_DIR must not nuke an unrelated tree).
+        [[ -f "$INSTALL_DIR/hyveman-server" ]] \
+            || die "refusing to remove '$INSTALL_DIR': no hyveman-server binary inside (wrong --install-dir?)"
         rm -rf "$INSTALL_DIR"
         say "Removed install dir: $INSTALL_DIR"
     fi
@@ -226,8 +254,16 @@ CONFIG_FILE="$DATA_DIR/config/server.json"
 CERT_FILE="$DATA_DIR/config/cert.pfx"
 
 CONF_CERT=""
+CONF_LE=0
 if [[ -f "$CONFIG_FILE" ]]; then
-    CONF_CERT="$(grep -oP '"cert_path"\s*:\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null | head -1 || true)"
+    # POSIX-safe extraction (grep -P is unavailable on Alpine/musl/macOS).
+    CONF_CERT="$(sed -n 's/.*"cert_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG_FILE" 2>/dev/null | head -1 || true)"
+    # An operator-configured Let's Encrypt setup has no cert_path by design —
+    # never "heal" (overwrite) such a config just because a cert.pfx exists.
+    if grep -q '"lets_encrypt"' "$CONFIG_FILE" 2>/dev/null \
+        && grep -q '"enabled"[[:space:]]*:[[:space:]]*true' "$CONFIG_FILE" 2>/dev/null; then
+        CONF_LE=1
+    fi
 fi
 # With --lets-encrypt we need no cert file at all (the server provisions its own via ACME
 # and serves a bootstrap cert until the first order lands). Without it we need a cert when
@@ -261,9 +297,12 @@ if [[ "$NEED_CERT" -eq 1 ]]; then
             -keyout "$TMP_CERT/key.pem" -out "$TMP_CERT/cert.pem" \
             -subj "/CN=$HOSTNAME_SHORT" \
             -addext "subjectAltName=DNS:localhost,DNS:$HOSTNAME_SHORT,IP:127.0.0.1" 2>/dev/null
-        openssl pkcs12 -export -out "$CERT_FILE" -inkey "$TMP_CERT/key.pem" \
+        # Write the pfx to a temp path first: a failed export (e.g. disk full)
+        # must not leave a corrupt cert.pfx that later runs accept as-is.
+        openssl pkcs12 -export -out "$TMP_CERT/cert.pfx" -inkey "$TMP_CERT/key.pem" \
             -in "$TMP_CERT/cert.pem" -passout pass: 2>/dev/null
-        chmod 600 "$CERT_FILE"
+        chmod 600 "$TMP_CERT/cert.pfx"
+        mv -f "$TMP_CERT/cert.pfx" "$CERT_FILE"
         trap - EXIT
         rm -rf "$TMP_CERT"
         say "Wrote $CERT_FILE (self-signed, empty password — pin it on agents or install your CA)."
@@ -366,6 +405,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     write_default_config
 elif [[ -n "$LE_EMAIL" ]]; then
     say "Config exists — preserving $CONFIG_FILE (restart the service to apply any changes)."
+elif [[ "$CONF_LE" -eq 1 ]]; then
+    say "Config exists with Let's Encrypt enabled — preserving $CONFIG_FILE (no cert_path expected)."
 elif [[ -z "$CONF_CERT" && -f "$CERT_FILE" ]]; then
     # Config exists but has no usable cert and we now have one — heal it, keeping a backup.
     BACKUP="$CONFIG_FILE.bak.$(date +%Y%m%d%H%M%S)"
@@ -398,8 +439,8 @@ User=$SERVICE_USER
 # Content root defaults to CWD; pin it to the install dir so wwwroot/static
 # assets resolve deterministically regardless of where systemd launches us.
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/hyveman-server --data-dir $DATA_DIR
-Environment=HYVEMAN_DATA_DIR=$DATA_DIR
+ExecStart="$INSTALL_DIR/hyveman-server" --data-dir "$DATA_DIR"
+Environment="HYVEMAN_DATA_DIR=$DATA_DIR"
 Environment=ASPNETCORE_ENVIRONMENT=Production
 Restart=on-failure
 RestartSec=5
@@ -436,8 +477,8 @@ Type=simple
 # Content root defaults to CWD; pin it to the install dir so wwwroot/static
 # assets resolve deterministically regardless of where systemd launches us.
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/hyveman-server --data-dir $DATA_DIR
-Environment=HYVEMAN_DATA_DIR=$DATA_DIR
+ExecStart="$INSTALL_DIR/hyveman-server" --data-dir "$DATA_DIR"
+Environment="HYVEMAN_DATA_DIR=$DATA_DIR"
 Environment=ASPNETCORE_ENVIRONMENT=Production
 Restart=on-failure
 RestartSec=5
@@ -467,8 +508,8 @@ if [[ "$NO_START" -eq 0 ]]; then
     $SYSCTL restart "$SERVICE_NAME"
     if [[ "$SYSTEM" -eq 0 ]]; then
         # Linger keeps the service running after logout (best-effort; may need polkit).
-        if ! loginctl enable-linger "$USER" 2>/dev/null; then
-            echo "    note: could not enable linger (may need: sudo loginctl enable-linger $USER)."
+        if ! loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null; then
+            echo "    note: could not enable linger (may need: sudo loginctl enable-linger ${USER:-$(id -un)})."
             echo "    The service will stop when you log out unless linger is enabled."
         fi
     fi
@@ -481,7 +522,7 @@ fi
 if [[ "$NO_START" -eq 0 ]] && command -v curl >/dev/null 2>&1; then
     EFFECTIVE_PORT="$PORT"
     if [[ -f "$CONFIG_FILE" ]]; then
-        CONF_PORT="$(grep -oP '"urls"\s*:\s*"https://[^":]+:\K[0-9]+' "$CONFIG_FILE" | head -1 || true)"
+        CONF_PORT="$(sed -n 's/.*"urls"[[:space:]]*:[[:space:]]*"https:\/\/[^":]*:\([0-9][0-9]*\)".*/\1/p' "$CONFIG_FILE" | head -1 || true)"
         [[ -n "$CONF_PORT" ]] && EFFECTIVE_PORT="$CONF_PORT"
     fi
     say "Health check: https://127.0.0.1:$EFFECTIVE_PORT/health"

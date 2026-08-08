@@ -10,6 +10,9 @@
     Steps: dirs + ACLs, exe copy, agent.json, Hyper-V channels (opt-in), event-log
     source, SCM service with recovery, preflight (fail closed), start.
 
+    Re-runs preserve an existing, valid agent.json (it holds the exchanged ingest
+    token and any operator edits); delete agent.json to regenerate from scratch.
+
 .PARAMETER BackendUrl
     Backend base URL (https only, no trailing slash).
 
@@ -63,12 +66,16 @@ Assert ($BackendUrl.StartsWith("https://") -or $BackendUrl.StartsWith("http://")
 Assert (Test-Path $ExePath) "hyveman-agent.exe not found at $ExePath (build it with build.ps1 first)"
 
 $spoolPath = Join-Path $DataDir "spool"
-$volume = (Get-Item $DataDir -ErrorAction SilentlyContinue).PSDrive
-if ($null -eq $volume) { New-Item -ItemType Directory -Force -Path $DataDir | Out-Null }
-$drive = Get-PSDrive (Split-Path $DataDir -Qualifier).TrimEnd(':')
-$freeGb = [math]::Round($drive.Free / 1GB, 1)
-Write-Step "Spool volume free: ${freeGb} GB"
-Assert ($drive.Free -gt 5GB) "Spool volume must have >= 5 GiB free (spool.min_free_bytes floor)"
+if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Force -Path $DataDir | Out-Null }
+$qualifier = Split-Path $DataDir -Qualifier
+if ($qualifier -match '^[A-Za-z]:$') {
+    $drive = Get-PSDrive $qualifier.TrimEnd(':')
+    $freeGb = [math]::Round($drive.Free / 1GB, 1)
+    Write-Step "Spool volume free: ${freeGb} GB"
+    Assert ($drive.Free -gt 5GB) "Spool volume must have >= 5 GiB free (spool.min_free_bytes floor)"
+} else {
+    Write-Host "WARNING: cannot determine free space for '$DataDir' (UNC or relative path) — skipping the 5 GiB spool-volume check." -ForegroundColor Yellow
+}
 
 # Audit policy: curated Security events need "Audit Logon Events" (warning, not abort).
 try {
@@ -186,7 +193,25 @@ $config = @{
 }
 
 $configPath = Join-Path $DataDir "agent.json"
-$config | ConvertTo-Json -Depth 10 | Set-Content -Path $configPath -Encoding UTF8
+$deployedExe = Join-Path $InstallDir $ExeName
+if (Test-Path $configPath) {
+    # A valid existing agent.json is authoritative: after first contact it holds the
+    # long-lived ingest token (agt_...) exchanged for the one-time reg_ token, plus
+    # any operator edits (channels, limits). Overwriting it would break agent auth
+    # and silently discard those edits — so preserve it (server installers do the
+    # same). Regenerate only when it fails validation (with a backup kept).
+    & $deployedExe --config $configPath --validate-config 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Step "agent.json exists and validates — preserving it (keeps the exchanged ingest token and operator edits)."
+        Write-Host "         To regenerate from scratch: delete $configPath and re-run." -ForegroundColor Yellow
+    } else {
+        Write-Host "WARNING: agent.json exists but fails validation — backing it up and regenerating." -ForegroundColor Yellow
+        Copy-Item $configPath "$configPath.bak.$(Get-Date -Format yyyyMMddHHmmss)" -Force
+        $config | ConvertTo-Json -Depth 10 | Set-Content -Path $configPath -Encoding UTF8
+    }
+} else {
+    $config | ConvertTo-Json -Depth 10 | Set-Content -Path $configPath -Encoding UTF8
+}
 
 # ---------------------------------------------------------------------------
 Write-Step "Enable Hyper-V operational channels (installer-only; §11.2 step 4)"
