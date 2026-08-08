@@ -140,6 +140,19 @@ Creates `%ProgramData%\Hyveman\server` (ACLs: SYSTEM + Administrators), writes a
 `config/server.json`, registers the `HyvemanServer` Windows service, starts it.
 `install.ps1 -Uninstall` stops/removes the service (data preserved).
 
+**Linux (no root required — per-user systemd service):**
+
+```bash
+./install-linux.sh            # publishes, generates a self-signed cert, installs + starts
+./install-linux.sh --uninstall  # stops/removes the service + binary (data preserved)
+```
+
+Installs to `~/.local/lib/hyveman/server`, data in `~/.local/share/hyveman/server`,
+service `hyveman-server` under `systemctl --user` (linger enabled so it survives logout).
+Default HTTPS port 8443 (user services can't bind <1024); override with `-p/--port` or
+`HYVEMAN_PORT`. Idempotent; an existing `config/server.json` is never overwritten. See
+`install-linux.sh --help` for `--data-dir`, `--cert`, `--exe`, `--no-start` options.
+
 ## Run (development / console)
 
 ```powershell

@@ -6,12 +6,29 @@ namespace Hyveman.Server.Config;
 
 /// <summary>
 /// Resolves the data directory (§5.1): --data-dir CLI arg → HYVEMAN_DATA_DIR env →
-/// ServerOptions.DataDir in config/server.json → %ProgramData%\Hyveman\server.
+/// ServerOptions.DataDir in config/server.json → platform default
+/// (%ProgramData%\Hyveman\server on Windows, $XDG_DATA_HOME/hyveman/server or
+/// ~/.local/share/hyveman/server on Linux).
 /// Bootstraps missing subdirs and (on first run) the server key K.
 /// </summary>
 public static class DataDirectory
 {
-    public const string DefaultDataDir = @"%ProgramData%\Hyveman\server";
+    public const string WindowsDefaultDataDir = @"%ProgramData%\Hyveman\server";
+
+    /// <summary>Platform default. On Linux, %ProgramData% is a literal (never set), so the
+    /// Windows-style default would otherwise create a bogus relative directory.</summary>
+    public static string DefaultDataDir
+    {
+        get
+        {
+            if (OperatingSystem.IsWindows()) return WindowsDefaultDataDir;
+            var xdg = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+            var baseDir = string.IsNullOrWhiteSpace(xdg)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share")
+                : xdg;
+            return Path.Combine(baseDir, "hyveman", "server");
+        }
+    }
 
     public static string Resolve(string? cliDataDir)
     {
@@ -59,27 +76,40 @@ public static class DataDirectory
 #pragma warning disable CA1416   // guarded by OperatingSystem.IsWindows() inside
     public static void RestrictAcl(string path)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var di = new DirectoryInfo(path);
+                var sec = di.GetAccessControl();
+                // Reset to explicit ACEs only.
+                sec.SetAccessRuleProtection(true, false);
+                var admin = new System.Security.Principal.SecurityIdentifier(
+                    System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+                var system = new System.Security.Principal.SecurityIdentifier(
+                    System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+                AddAce(sec, admin);
+                AddAce(sec, system);
+                // The running user stays able to use the dir (production runs as SYSTEM; this also
+                // keeps non-elevated dev runs working). Everyone/Users are still excluded.
+                AddAce(sec, System.Security.Principal.WindowsIdentity.GetCurrent().User!);
+                di.SetAccessControl(sec);
+            }
+            catch
+            {
+                // Non-fatal: ACL hardening is best-effort (e.g. non-admin dev runs).
+            }
+            return;
+        }
+
+        // Unix: owner-only (0700) so data-dir contents (incl. key K) stay private.
         try
         {
-            var di = new DirectoryInfo(path);
-            var sec = di.GetAccessControl();
-            // Reset to explicit ACEs only.
-            sec.SetAccessRuleProtection(true, false);
-            var admin = new System.Security.Principal.SecurityIdentifier(
-                System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
-            var system = new System.Security.Principal.SecurityIdentifier(
-                System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
-            AddAce(sec, admin);
-            AddAce(sec, system);
-            // The running user stays able to use the dir (production runs as SYSTEM; this also
-            // keeps non-elevated dev runs working). Everyone/Users are still excluded.
-            AddAce(sec, System.Security.Principal.WindowsIdentity.GetCurrent().User!);
-            di.SetAccessControl(sec);
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
         catch
         {
-            // Non-fatal: ACL hardening is best-effort (e.g. non-admin dev runs).
+            // Non-fatal: best-effort (e.g. exotic filesystems without mode support).
         }
     }
 
@@ -110,24 +140,37 @@ public static class DataDirectory
 
     public static void RestrictAclFile(string path)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var fi = new FileInfo(path);
+                var sec = fi.GetAccessControl();
+                sec.SetAccessRuleProtection(true, false);
+                var admin = new System.Security.Principal.SecurityIdentifier(
+                    System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+                var system = new System.Security.Principal.SecurityIdentifier(
+                    System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+                foreach (var sid in new[] { admin, system, System.Security.Principal.WindowsIdentity.GetCurrent().User! })
+                {
+                    sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+                        sid, System.Security.AccessControl.FileSystemRights.FullControl,
+                        System.Security.AccessControl.InheritanceFlags.None,
+                        System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+                }
+                fi.SetAccessControl(sec);
+            }
+            catch
+            {
+            }
+            return;
+        }
+
+        // Unix: owner-only (0600) — key K, server.json and rp_id.txt must not be
+        // world/group readable under a default umask.
         try
         {
-            var fi = new FileInfo(path);
-            var sec = fi.GetAccessControl();
-            sec.SetAccessRuleProtection(true, false);
-            var admin = new System.Security.Principal.SecurityIdentifier(
-                System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
-            var system = new System.Security.Principal.SecurityIdentifier(
-                System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
-            foreach (var sid in new[] { admin, system, System.Security.Principal.WindowsIdentity.GetCurrent().User! })
-            {
-                sec.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
-                    sid, System.Security.AccessControl.FileSystemRights.FullControl,
-                    System.Security.AccessControl.InheritanceFlags.None,
-                    System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
-            }
-            fi.SetAccessControl(sec);
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
         catch
         {

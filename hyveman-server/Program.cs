@@ -42,8 +42,10 @@ public static class Program
         DataDirectory.Bootstrap(dataDir);
         var key = DataDirectory.LoadOrCreateKey(dataDir);
 
-        // Single-instance guard (§3.3, decision S18).
-        using var mutex = AcquireMutex();
+        // Single-instance guard (§3.3, decision S18). A file lock is used instead of a named
+        // mutex: .NET's named mutexes are in-process only on Unix (WaitSubsystem), so the
+        // Windows-style `Global\` mutex would silently not protect anything on Linux.
+        using var instanceLock = AcquireInstanceLock(dataDir);
 
         // Vault first (options may reference vault secrets, §5.4).
         var factory = new Storage.SqliteFactory(dataDir);
@@ -253,22 +255,28 @@ public static class Program
         }));
     }
 
-    private static Mutex AcquireMutex()
+    /// <summary>
+    /// Cross-platform single-instance guard: an exclusive file lock on
+    /// <c>&lt;data_dir&gt;/state/server.lock</c>, held for the process lifetime. The kernel
+    /// releases it automatically on crash, and it protects the same data dir regardless of
+    /// platform (named mutexes are in-process only on Unix in .NET 8).
+    /// </summary>
+    private static FileStream AcquireInstanceLock(string dataDir)
     {
-        var mutex = new Mutex(initiallyOwned: false, @"Global\hyveman-server", out var created);
+        var lockDir = Path.Combine(dataDir, "state");
+        Directory.CreateDirectory(lockDir);
+        var lockPath = Path.Combine(lockDir, "server.lock");
         try
         {
-            if (!mutex.WaitOne(TimeSpan.Zero))
-            {
-                Console.Error.WriteLine("Another hyveman-server instance is already running on this data directory (Global\\hyveman-server mutex held).");
-                Environment.Exit(4);
-            }
+            // FileShare.None is enforced cross-process by .NET on both Windows and Unix.
+            return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         }
-        catch (AbandonedMutexException)
+        catch (IOException)
         {
-            // Previous instance crashed; the mutex is ours now.
+            Console.Error.WriteLine("Another hyveman-server instance is already running on this data directory (server.lock is held).");
+            Environment.Exit(4);
+            throw; // unreachable
         }
-        return mutex;
     }
 
     private static LogEventLevel ParseLogLevel(string level)

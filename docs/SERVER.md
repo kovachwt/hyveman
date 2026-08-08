@@ -123,9 +123,9 @@ registered in DI, started/stopped by the generic host with graceful shutdown:
   connection pool closes. Ingest writes are committed transactionally per
   batch (§7.6), so a mid-batch shutdown rolls back the incomplete batch and
   simply resumes on the agent's next retry — no partial state.
-- **Single-instance guard:** a file lock on the data directory's `hyveman.db`
-  (SQLite's own busy handling + a named mutex `Global\hyveman-server`) prevents
-  two instances pointing at the same data dir from corrupting it.
+- **Single-instance guard:** a file lock on `<data_dir>/state/server.lock` (a named mutex is
+  only in-process on Unix, so the guard is a file lock everywhere) plus SQLite's own busy
+  handling prevents two instances pointing at the same data dir from corrupting it.
 - **Startup order:** load config → load server key K (§12.3) → open DB → run
   migrations (§6.5) → register hosted services → start Kestrel. `GET /health`
   returns `503 unavailable` until migrations complete and the DB is writable
@@ -1284,7 +1284,7 @@ the wire-behavior authority.
 | S15 | Alert dedup key `(rule_id, host_id, source_id, signature)` with exactly one target column populated; bump semantics and cooldown between *notifications* | Keeps host-targeted and source-targeted heartbeat alerts distinct while implementing DESIGN §4.4 dedup/cooldown/escalation | §9.2 |
 | S16 | Durable `notification_queue` table and in-process delivery channel are used in v1 | Alert notifications can retry across server restarts without changing the alert contract | §9.5,App.A |
 | S17 | Webhook SSRF guard rejects private/loopback/link-local/metadata destinations by default; explicit allowlists permit intentional internal targets | Prevents an admin mistake becoming an internal probe | §10.1 |
-| S18 | Single named mutex + SQLite file lock guard against two instances on one data dir | Prevents WAL corruption from a misconfigured double-start | §3.3 |
+| S18 | File lock on `<data_dir>/state/server.lock` + SQLite file lock guard against two instances on one data dir (a named mutex would be in-process-only on Unix) | Prevents WAL corruption from a misconfigured double-start | §3.3 |
 | S19 | `auth reset|list-passkeys|remove-passkey` + `vault rotate-key` CLI subcommands | Implements DESIGN §8 console-only fallback + key rotation | §12.2,§12.3 |
 
 ---

@@ -13,6 +13,23 @@ public sealed class SqliteFactory
     public SqliteFactory(string dataDir)
     {
         var dbPath = Path.Combine(dataDir, "hyveman.db");
+        // Unix: SQLite creates the file under the process umask; pin it to owner-only 0600
+        // so a lax umask never leaves the DB (and its WAL) group/world readable.
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                if (!File.Exists(dbPath))
+                {
+                    File.WriteAllBytes(dbPath, Array.Empty<byte>());
+                }
+                File.SetUnixFileMode(dbPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            catch
+            {
+                // Best-effort (e.g. read-only filesystems, exotic mounts).
+            }
+        }
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = dbPath,

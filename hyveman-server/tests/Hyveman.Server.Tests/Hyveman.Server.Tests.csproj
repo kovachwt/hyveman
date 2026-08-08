@@ -7,6 +7,9 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <RootNamespace>Hyveman.Server.Tests</RootNamespace>
+    <!-- Dev machines may only have a newer runtime than net8.0 (e.g. SDK 10); roll forward
+         so `dotnet test` works without installing the .NET 8 runtime. -->
+    <RollForward>LatestMajor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
