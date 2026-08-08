@@ -1,0 +1,405 @@
+@page "/admin"
+@namespace Hyveman.Server.Web.Pages
+@using Hyveman.Server.Storage.Repos
+@using Hyveman.Server.Storage
+@using Hyveman.Server.Config
+@using Hyveman.Server.Auth
+
+<h1>Admin</h1>
+
+<h2>Hosts & registration</h2>
+<div class="panel">
+    @if (!string.IsNullOrEmpty(RegToken))
+    {
+        <div class="okmsg">
+            <b>Registration token issued (single-use, expires @RegExpires):</b>
+            <pre>@RegToken</pre>
+            One-liner (run on the target host as admin):
+            <pre>powershell -ExecutionPolicy Bypass -File install.ps1 -ServerUrl https://@RpId -RegToken "@RegToken"</pre>
+        </div>
+    }
+    <button @onclick="IssueRegToken" class="btn-small" style="margin-bottom:10px">+ Issue reg_ token (windows-agent)</button>
+    <table>
+        <thead><tr><th>Name</th><th>Kind</th><th>Source</th><th>iDRAC URL</th><th>Cred ref</th><th>Poll</th><th>Last poll</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var h in Hosts)
+            {
+                <tr>
+                    <td>@h.Name</td>
+                    <td>@h.Kind</td>
+                    <td class="mono">@h.SourceId</td>
+                    <td class="mono">@h.IdracUrl</td>
+                    <td class="mono">@h.IdracCredRef</td>
+                    <td>@(h.PollEnabled ? "on" : "off")</td>
+                    <td class="mono">@h.LastPollAt</td>
+                    <td><button class="btn-small" @onclick="() => EditHost(h)">edit</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    @if (Hosts.Count == 0)
+    {
+        <p class="muted">No hosts. Add one below, then issue a registration token for the agent.</p>
+    }
+</div>
+
+@if (EditingHost is not null)
+{
+    <div class="panel">
+        <h3>@(EditingHost.Id is null ? "New host" : "Edit host")</h3>
+        @if (!string.IsNullOrEmpty(HostError)) { <div class="err">@HostError</div> }
+        <div class="two">
+            <div>
+                <label>Name</label>
+                <input @bind="EditingHost.Name" />
+                <label>Kind</label>
+                <select @bind="EditingHost.Kind">
+                    <option value="dell-poweredge">dell-poweredge</option>
+                    <option value="generic">generic</option>
+                </select>
+                <label>Source (agent)</label>
+                <select @bind="EditingHost.SourceId">
+                    <option value="">— none —</option>
+                    @foreach (var s in Sources) { <option value="@s.Id">@s.Name (@s.Kind)</option> }
+                </select>
+            </div>
+            <div>
+                <label>iDRAC URL</label>
+                <input @bind="EditingHost.IdracUrl" placeholder="https://idrac-hostname" />
+                <label>iDRAC credential label (vault)</label>
+                <select @bind="EditingHost.IdracCredRef">
+                    <option value="">— none —</option>
+                    @foreach (var c in Creds.Where(c => c.Kind == "idrac")) { <option value="@c.Label">@c.Label</option> }
+                </select>
+                <label>Poll enabled</label>
+                <input @bind="EditingHost.PollEnabled" type="checkbox" style="width:auto" />
+                <div style="margin-top:12px;display:flex;gap:8px">
+                    <button @onclick="SaveHost">Save</button>
+                    <button class="btn-ghost" @onclick="() => EditingHost = null">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<h2>Credentials vault</h2>
+<div class="panel">
+    <table>
+        <thead><tr><th>Label</th><th>Kind</th><th>Created</th><th>Rotated</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var c in Creds)
+            {
+                <tr>
+                    <td class="mono">@c.Label</td>
+                    <td>@c.Kind</td>
+                    <td class="mono">@c.Created.ToString("u")</td>
+                    <td class="mono">@(c.Rotated?.ToString("u"))</td>
+                    <td><button class="btn-small btn-danger" @onclick="() => DeleteCred(c)">delete</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    @if (string.IsNullOrEmpty(VaultMessage))
+    {
+        <div style="margin-top:12px" class="form-row">
+            <div><label>New secret label</label><input @bind="NewCredLabel" placeholder="host01-idrac / tg-main" /></div>
+            <div><label>Kind</label>
+                <select @bind="NewCredKind">
+                    <option value="idrac">idrac</option>
+                    <option value="telegram">telegram</option>
+                    <option value="webhook">webhook</option>
+                    <option value="other">other</option>
+                </select>
+            </div>
+            <div style="flex:2"><label>Secret value</label><input @bind="NewCredValue" /></div>
+            <div><button @onclick="SaveCred">Save</button></div>
+        </div>
+        <p class="muted" style="font-size:12px">
+            idrac: <code>username\npassword</code> (two lines) · telegram: JSON
+            <code>{"bot_token":"…","chat_id":"…"}</code> · webhook: JSON
+            <code>{"url":"https://…","secret":"…"}</code>
+        </p>
+    }
+    else
+    {
+        <div class="okmsg">@VaultMessage</div>
+    }
+</div>
+
+<h2>Notification channels</h2>
+<div class="panel">
+    <table>
+        <thead><tr><th>Name</th><th>Kind</th><th>Config ref</th><th>Enabled</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var ch in Channels)
+            {
+                <tr>
+                    <td>@ch.Name</td><td>@ch.Kind</td><td class="mono">@ch.ConfigRef</td><td>@(ch.Enabled ? "yes" : "no")</td>
+                    <td><button class="btn-small btn-danger" @onclick="() => DeleteChannel(ch)">delete</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    @if (ChannelErrors.Count > 0)
+    {
+        <h3>Channel failures</h3>
+        @foreach (var (id, err) in ChannelErrors)
+        {
+            <p class="err">Channel @id: @err</p>
+        }
+    }
+    <div style="margin-top:12px" class="form-row">
+        <div><label>Channel name</label><input @bind="NewChannelName" /></div>
+        <div><label>Kind</label>
+            <select @bind="NewChannelKind">
+                <option value="telegram">telegram</option>
+                <option value="webhook">webhook</option>
+            </select>
+        </div>
+        <div><label>Credential label</label>
+            <select @bind="NewChannelConfigRef">
+                <option value="">— pick vault label —</option>
+                @foreach (var c in Creds) { <option value="@c.Label">@c.Label</option> }
+            </select>
+        </div>
+        <div><button @onclick="SaveChannel">Add</button></div>
+    </div>
+</div>
+
+<h2>Retention & backup</h2>
+<div class="panel">
+    <div class="two">
+        <div>
+            <label>Events retention (days)</label>
+            <input @bind="RetentionDays" type="number" />
+            <label>Metrics retention (days)</label>
+            <input @bind="MetricsDays" type="number" />
+            <label>Audit retention (days)</label>
+            <input @bind="AuditDays" type="number" />
+            <button @onclick="SaveRetention" style="margin-top:12px">Save</button>
+            <button @onclick="PurgeNow" class="btn-ghost" style="margin-left:8px">Purge now</button>
+        </div>
+        <div>
+            <p>Last backup: <b>@BackupInfo</b></p>
+            <p class="muted">Daily <code>VACUUM INTO</code> snapshots in <code>backup/daily</code>,
+                ladder 7/4/12. Restore = snapshot + key K from the data dir.</p>
+        </div>
+    </div>
+</div>
+
+<h2>Passkeys</h2>
+<div class="panel">
+    <table>
+        <thead><tr><th>Name</th><th>Credential ID</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var p in Passkeys)
+            {
+                <tr>
+                    <td>@p.Name</td>
+                    <td class="mono">@p.CredentialId[..Math.Min(24, p.CredentialId.Length)]…</td>
+                    <td class="mono">@p.Created</td>
+                    <td class="mono">@p.LastUsed</td>
+                    <td><button class="btn-small btn-danger" @onclick="() => RemovePasskey(p)">remove</button></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p class="muted">Console fallback: <code>hyveman-server auth list-passkeys | auth remove-passkey | auth reset</code> (local admin only).</p>
+</div>
+
+<h2>Server health</h2>
+<div class="panel">
+    <div class="kpi-row">
+        <div class="kpi"><div class="v">@Metrics.IngestAccepted</div><div class="l">events accepted</div></div>
+        <div class="kpi"><div class="v">@Metrics.IngestDeduped</div><div class="l">deduped</div></div>
+        <div class="kpi"><div class="v">@Metrics.IngestRejected</div><div class="l">rejected items</div></div>
+        <div class="kpi"><div class="v">@Metrics.AlertsFired</div><div class="l">alerts fired</div></div>
+        <div class="kpi"><div class="v">@Metrics.NotificationsSent</div><div class="l">notifications sent</div></div>
+        <div class="kpi"><div class="v">@Metrics.PollerFailures</div><div class="l">poll failures</div></div>
+    </div>
+    <table>
+        <tbody>
+            <tr><td>DB size</td><td>@FormatBytes(Snapshot.dbBytes)</td><td>WAL size</td><td>@FormatBytes(Snapshot.walBytes)</td></tr>
+            <tr><td>Events</td><td>@Snapshot.events</td><td>Sources / hosts</td><td>@Snapshot.sources / @Snapshot.hosts</td></tr>
+            <tr><td>Active alerts</td><td>@Snapshot.alerts</td><td>Rate-limit buckets</td><td>@RateLimiter.BucketCount</td></tr>
+            <tr><td>Server version</td><td>@ServerOptionsAssembly.Version</td><td>RP ID</td><td>@RpId</td></tr>
+            <tr><td>Data dir</td><td colspan="3" class="mono">@DataDir</td></tr>
+        </tbody>
+    </table>
+    @if (Observability.OwnMetrics.BackupLast is { } last)
+    {
+        <p class="muted">Last backup: @last.at.ToString("u") · @FormatBytes(last.bytes)</p>
+    }
+</div>
+
+@code {
+    [Inject] private Db Db { get; set; } = default!;
+    [Inject] private Auth.ICredentialVault Vault { get; set; } = default!;
+    [Inject] private Observability.OwnMetrics Metrics { get; set; } = default!;
+    [Inject] private Config.ServerOptions Options { get; set; } = default!;
+    [Inject] private Maintenance.RetentionService Retention { get; set; } = default!;
+    [Inject] private RateLimit.RateLimiter RateLimiter { get; set; } = default!;
+    [Inject] private Notifications.NotificationDispatcher Dispatcher { get; set; } = default!;
+    [Inject] private Auth.PasskeyService PasskeyService { get; set; } = default!;
+    [Inject] private string DataDirPath { get; set; } = default!;
+
+    private List<HostRow> Hosts { get; set; } = new();
+    private List<SourceRow> Sources { get; set; } = new();
+    private List<CredentialMeta> Creds { get; set; } = new();
+    private List<ChannelRow> Channels { get; set; } = new();
+    private List<PasskeyRow> Passkeys { get; set; } = new();
+    private string? RegToken { get; set; }
+    private string? RegExpires { get; set; }
+    private HostEdit? EditingHost;
+    private string? HostError { get; set; }
+    private string? NewCredLabel { get; set; } = "";
+    private string NewCredKind { get; set; } = "idrac";
+    private string? NewCredValue { get; set; } = "";
+    private string? VaultMessage { get; set; }
+    private string NewChannelName { get; set; } = "";
+    private string NewChannelKind { get; set; } = "telegram";
+    private string NewChannelConfigRef { get; set; } = "";
+    private int RetentionDays { get; set; } = 365;
+    private int MetricsDays { get; set; } = 365;
+    private int AuditDays { get; set; } = 730;
+    private string BackupInfo { get; set; } = "—";
+    private (long dbBytes, long walBytes, int events, int sources, int hosts, int alerts) Snapshot;
+    private string DataDir { get; set; } = "";
+    private string RpId { get; set; } = "";
+    private IReadOnlyDictionary<string, string> ChannelErrors { get; set; } = new Dictionary<string, string>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        Hosts = await Db.Hosts.ListAsync();
+        Sources = await Db.Sources.ListAsync();
+        Creds = await Vault.ListAsync();
+        Channels = await Db.Channels.ListAsync();
+        Passkeys = await Db.Passkeys.ListAsync();
+        RetentionDays = Options.Retention.EventsDays;
+        MetricsDays = Options.Retention.MetricsDays;
+        AuditDays = Options.Retention.AuditDays;
+        ChannelErrors = Dispatcher.ChannelErrors;
+        DataDir = DataDirPath;
+        Snapshot = Metrics.Snapshot(Db, DataDir);
+        RpId = PasskeyService.RpId;
+    }
+
+    private async Task IssueRegToken()
+    {
+        var raw = Auth.TokenHasher.NewRawToken("reg_");
+        var expires = DateTimeOffset.UtcNow.AddDays(7);
+        var id = Common.Ulid.Prefixed("tok_");
+        await Db.Writer.WithTransactionAsync(conn =>
+            Db.Tokens.InsertAsync(conn, id, null, Auth.TokenHasher.Hash(raw), "[\"register\"]",
+                expires.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), "windows-agent"));
+        await Db.Audit.WriteAsync("ui", "token.issue_reg", "tokens", id, "{\"bound_kind\":\"windows-agent\"}");
+        RegToken = raw;
+        RegExpires = expires.ToString("u");
+    }
+
+    private void EditHost(HostRow h)
+    {
+        EditingHost = new HostEdit { Id = h.Id, Name = h.Name, Kind = h.Kind, SourceId = h.SourceId, IdracUrl = h.IdracUrl, IdracCredRef = h.IdracCredRef, PollEnabled = h.PollEnabled };
+    }
+
+    private async Task SaveHost()
+    {
+        if (EditingHost is null) return;
+        try
+        {
+            if (EditingHost.Id is null)
+            {
+                var id = Common.Ulid.Prefixed("host_");
+                await Db.Writer.WithTransactionAsync(conn => Db.Hosts.InsertAsync(conn, id, EditingHost.SourceId,
+                    EditingHost.Name, EditingHost.Kind, EditingHost.IdracUrl, EditingHost.IdracCredRef));
+            }
+            else
+            {
+                await Db.Writer.WithTransactionAsync(conn => Db.Hosts.UpdateAsync(conn, EditingHost.Id, EditingHost.SourceId,
+                    EditingHost.Name, EditingHost.Kind, EditingHost.IdracUrl, EditingHost.IdracCredRef, EditingHost.PollEnabled));
+            }
+            await Db.Audit.WriteAsync("ui", "host.upsert", "hosts", EditingHost.Id, null);
+            EditingHost = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) { HostError = ex.Message; }
+    }
+
+    private async Task SaveCred()
+    {
+        if (string.IsNullOrWhiteSpace(NewCredLabel) || NewCredValue is null) return;
+        await Vault.PutSecretAsync(NewCredLabel.Trim(), NewCredKind, NewCredValue, "ui");
+        VaultMessage = $"Saved '{NewCredLabel.Trim()}'. The value is encrypted at rest (AES-GCM) and never shown again.";
+        NewCredLabel = ""; NewCredValue = "";
+        await LoadAsync();
+    }
+
+    private async Task DeleteCred(CredentialMeta c)
+    {
+        await Vault.DeleteSecretAsync(c.Label, "ui");
+        await LoadAsync();
+    }
+
+    private async Task SaveChannel()
+    {
+        if (string.IsNullOrWhiteSpace(NewChannelName) || string.IsNullOrWhiteSpace(NewChannelConfigRef)) return;
+        var id = Common.Ulid.Prefixed("chan_");
+        await Db.Writer.WithTransactionAsync(conn => ChannelRepo.InsertAsync(conn, id, NewChannelName, NewChannelKind, NewChannelConfigRef, true));
+        await Db.Audit.WriteAsync("ui", "channel.create", "notification_channels", id, null);
+        NewChannelName = ""; NewChannelConfigRef = "";
+        await LoadAsync();
+    }
+
+    private async Task DeleteChannel(ChannelRow ch)
+    {
+        await Db.Writer.WithTransactionAsync(conn => ChannelRepo.DeleteAsync(conn, ch.Id));
+        await Db.Audit.WriteAsync("ui", "channel.delete", "notification_channels", ch.Id, null);
+        await LoadAsync();
+    }
+
+    private async Task RemovePasskey(PasskeyRow p)
+    {
+        await Db.Writer.WithTransactionAsync(conn => PasskeyRepo.DeleteAsync(conn, p.Id));
+        await Db.Audit.WriteAsync("ui", "passkey.remove", "passkeys", p.Id, null);
+        await LoadAsync();
+    }
+
+    private async Task SaveRetention()
+    {
+        Options.Retention.EventsDays = Math.Max(1, RetentionDays);
+        Options.Retention.MetricsDays = Math.Max(1, MetricsDays);
+        Options.Retention.AuditDays = Math.Max(1, AuditDays);
+        Config.OptionsResolver.Save(Options, DataDir);
+        await Db.Audit.WriteAsync("ui", "retention.update", "config", null, null);
+    }
+
+    private async Task PurgeNow()
+    {
+        var result = await Retention.PurgeAsync(CancellationToken.None);
+        BackupInfo = $"purged: {string.Join(", ", result.Select(kv => $"{kv.Key}={kv.Value}"))}";
+    }
+
+    private static string FormatBytes(long b) => b switch
+    {
+        >= 1 << 30 => $"{b / (double)(1 << 30):0.00} GiB",
+        >= 1 << 20 => $"{b / (double)(1 << 20):0.0} MiB",
+        >= 1 << 10 => $"{b / (double)(1 << 10):0.0} KiB",
+        _ => $"{b} B",
+    };
+
+    private sealed class HostEdit
+    {
+        public string? Id { get; set; }
+        public string Name { get; set; } = "";
+        public string? Kind { get; set; } = "dell-poweredge";
+        public string? SourceId { get; set; }
+        public string? IdracUrl { get; set; }
+        public string? IdracCredRef { get; set; }
+        public bool PollEnabled { get; set; } = true;
+    }
+}

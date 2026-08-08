@@ -1,0 +1,141 @@
+@page "/search"
+@namespace Hyveman.Server.Web.Pages
+@using Hyveman.Server.Storage.Repos
+
+<h1>Log search</h1>
+
+<div class="panel">
+    <div class="filter-bar">
+        <div class="grow">
+            <label>Free text (FTS)</label>
+            <input @bind="Text" @onkeydown="OnKey" placeholder="message text… e.g. disk OR error" />
+        </div>
+        <div>
+            <label>Source</label>
+            <select @bind="SourceId">
+                <option value="">All sources</option>
+                @foreach (var s in Sources)
+                {
+                    <option value="@s.Id">@s.Name (@s.Kind)</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label>Channel</label>
+            <input @bind="Channel" placeholder="System" />
+        </div>
+        <div>
+            <label>Event ID</label>
+            <input @bind="EventId" type="number" />
+        </div>
+        <div>
+            <label>Min severity</label>
+            <select @bind="MinSeverity">
+                <option value="">any</option>
+                <option value="1">1 Critical</option>
+                <option value="2">2 Error</option>
+                <option value="3">3 Warning</option>
+                <option value="4">4 Information</option>
+            </select>
+        </div>
+        <div>
+            <label>Since (hours)</label>
+            <input @bind="SinceHours" type="number" />
+        </div>
+        <div>
+            <button @onclick="SearchAsync">Search</button>
+        </div>
+    </div>
+</div>
+
+<div class="panel">
+    <p class="muted">@Results.Count results · @Total events stored</p>
+    @if (Results.Count == 0)
+    {
+        <p>No matching events.</p>
+    }
+    else
+    {
+        <table>
+            <thead><tr><th>Time</th><th>Source</th><th>Channel</th><th>ID</th><th>Sev</th><th>Message</th></tr></thead>
+            <tbody>
+                @foreach (var e in Results)
+                {
+                    <tr>
+                        <td class="mono">@e.Time</td>
+                        <td class="muted">@SourceName(e.SourceId)</td>
+                        <td>@e.Channel</td>
+                        <td>@e.EventId</td>
+                        <td><span class="badge @SevClass(e.Severity)">@e.Severity</span></td>
+                        <td>@e.Message</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    [Inject] private Storage.Db Db { get; set; } = default!;
+
+    private string Text { get; set; } = "";
+    private string SourceId { get; set; } = "";
+    private string Channel { get; set; } = "";
+    private string EventId { get; set; } = "";
+    private string MinSeverity { get; set; } = "";
+    private int SinceHours { get; set; } = 24;
+
+    private List<EventRow> Results { get; set; } = new();
+    private List<SourceRow> Sources { get; set; } = new();
+    private long Total { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Sources = await Db.Sources.ListAsync();
+        Total = await Db.Events.CountAsync();
+        await SearchAsync();
+    }
+
+    private void OnKey(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") _ = SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        var since = DateTimeOffset.UtcNow.AddHours(-SinceHours).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
+        long? eventId = long.TryParse(EventId, out var ev) ? ev : null;
+        int? minSev = int.TryParse(MinSeverity, out var ms) ? ms : null;
+
+        if (SourceId == "")
+        {
+            // Search across all sources: run per-source (host filter resolves via sources).
+            var all = new List<EventRow>();
+            foreach (var s in Sources)
+            {
+                var rows = await Db.Events.SearchAsync(new EventSearchQuery(s.Id,
+                    string.IsNullOrWhiteSpace(Text) ? null : Text,
+                    string.IsNullOrWhiteSpace(Channel) ? null : Channel,
+                    eventId, minSev, since, null, 200));
+                all.AddRange(rows);
+            }
+            Results = all.OrderByDescending(e => e.Time).Take(200).ToList();
+        }
+        else
+        {
+            Results = await Db.Events.SearchAsync(new EventSearchQuery(SourceId,
+                string.IsNullOrWhiteSpace(Text) ? null : Text,
+                string.IsNullOrWhiteSpace(Channel) ? null : Channel,
+                eventId, minSev, since, null, 200));
+        }
+    }
+
+    private string SourceName(string id) => Sources.FirstOrDefault(s => s.Id == id)?.Name ?? id;
+
+    private static string SevClass(int? s) => s switch
+    {
+        1 or 2 => "critical",
+        3 => "warning",
+        _ => "info",
+    };
+}

@@ -1,0 +1,258 @@
+@page "/alerts"
+@namespace Hyveman.Server.Web.Pages
+@using Hyveman.Server.Storage.Repos
+@using Hyveman.Server.Storage
+
+<h1>Alerts</h1>
+
+<h2>Rules</h2>
+<div class="panel">
+    <button @onclick="NewRule" class="btn-small" style="margin-bottom:10px">+ New rule</button>
+    <table>
+        <thead><tr><th>Name</th><th>Type</th><th>Match</th><th>Severity</th><th>Cooldown</th><th>Enabled</th><th></th></tr></thead>
+        <tbody>
+            @foreach (var r in Rules)
+            {
+                <tr>
+                    <td>@r.Name</td>
+                    <td>@r.Type</td>
+                    <td class="mono">@r.MatchJson</td>
+                    <td><span class="badge @r.Severity">@r.Severity</span></td>
+                    <td>@r.Cooldown s</td>
+                    <td>@(r.Enabled ? "yes" : "no")</td>
+                    <td>
+                        <button class="btn-small" @onclick="() => EditRule(r)">edit</button>
+                        <button class="btn-small btn-danger" @onclick="() => DeleteRule(r)">delete</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+@if (EditingRule is not null)
+{
+    <div class="panel">
+        <h3>@(EditingRule.Id is null ? "New rule" : "Edit rule")</h3>
+        @if (!string.IsNullOrEmpty(RuleError)) { <div class="err">@RuleError</div> }
+        <div class="two">
+            <div>
+                <label>Name</label>
+                <input @bind="EditingRule.Name" />
+                <label>Type</label>
+                <select @bind="EditingRule.Type">
+                    <option value="health">health — component state change</option>
+                    <option value="heartbeat">heartbeat — agent silent / iDRAC unreachable</option>
+                    <option value="event">event — (Phase 2)</option>
+                    <option value="threshold">threshold — (Phase 2)</option>
+                </select>
+                <label>Match JSON</label>
+                <textarea rows="4" @bind="EditingRule.MatchJson" class="mono"></textarea>
+                <p class="muted" style="font-size:12px">health: <code>{"states":["warning","critical"]}</code> ·
+                    heartbeat: <code>{"miss_s":180}</code> or <code>{"unreachable":true}</code> for iDRAC</p>
+            </div>
+            <div>
+                <label>Severity</label>
+                <select @bind="EditingRule.Severity">
+                    <option value="info">info</option>
+                    <option value="warning">warning</option>
+                    <option value="critical">critical</option>
+                </select>
+                <label>Cooldown (s)</label>
+                <input @bind="EditingRule.Cooldown" type="number" />
+                <label>Enabled</label>
+                <input @bind="EditingRule.Enabled" type="checkbox" style="width:auto" />
+                <label>Channels</label>
+                <div>
+                    @foreach (var ch in Channels)
+                    {
+                        <label style="display:flex;gap:6px;align-items:center">
+                            <input type="checkbox" @bind="SelectedChannels" value="@ch.Id" style="width:auto" />
+                            @ch.Name
+                        </label>
+                    }
+                </div>
+                <div style="margin-top:12px;display:flex;gap:8px">
+                    <button @onclick="SaveRule">Save</button>
+                    <button class="btn-ghost" @onclick="CancelEdit">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<h2>Active alerts</h2>
+<div class="panel">
+    @if (ActiveAlerts.Count == 0) { <p class="muted">No active alerts. 🎉</p> }
+    else
+    {
+        <table>
+            <thead><tr><th>Severity</th><th>Rule</th><th>Host</th><th>First seen</th><th>Last seen</th><th>Count</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+                @foreach (var a in ActiveAlerts)
+                {
+                    var rule = Rules.FirstOrDefault(r => r.Id == a.RuleId);
+                    var host = Hosts.FirstOrDefault(h => h.Id == a.HostId);
+                    <tr>
+                        <td><span class="badge @a.Severity">@a.Severity</span></td>
+                        <td>@rule?.Name</td>
+                        <td>@host?.Name</td>
+                        <td class="mono">@a.FirstSeen</td>
+                        <td class="mono">@a.LastSeen</td>
+                        <td>@a.Count</td>
+                        <td><span class="badge @a.Status">@a.Status</span></td>
+                        <td>
+                            <button class="btn-small" @onclick="() => Ack(a)">ack</button>
+                            <button class="btn-small" @onclick="() => Silence(a)">silence</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+<h2>History</h2>
+<div class="panel">
+    <table>
+        <thead><tr><th>Severity</th><th>Rule</th><th>Host</th><th>First seen</th><th>Status</th><th>Count</th></tr></thead>
+        <tbody>
+            @foreach (var a in History.Take(50))
+            {
+                var rule = Rules.FirstOrDefault(r => r.Id == a.RuleId);
+                var host = Hosts.FirstOrDefault(h => h.Id == a.HostId);
+                <tr>
+                    <td><span class="badge @a.Severity">@a.Severity</span></td>
+                    <td>@rule?.Name</td>
+                    <td>@host?.Name</td>
+                    <td class="mono">@a.FirstSeen</td>
+                    <td><span class="badge @a.Status">@a.Status</span></td>
+                    <td>@a.Count</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<h2>Notification channels</h2>
+<div class="panel">
+    @if (Channels.Count == 0)
+    {
+        <p class="muted">No channels configured. Add a Telegram bot or webhook in <a href="/admin">Admin</a>.</p>
+    }
+    else
+    {
+        <table>
+            <thead><tr><th>Name</th><th>Kind</th><th>Config ref</th><th>Enabled</th></tr></thead>
+            <tbody>
+                @foreach (var c in Channels)
+                {
+                    <tr><td>@c.Name</td><td>@c.Kind</td><td class="mono">@c.ConfigRef</td><td>@(c.Enabled ? "yes" : "no")</td></tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    [Inject] private Db Db { get; set; } = default!;
+    [Inject] private Auth.ICredentialVault Vault { get; set; } = default!;
+
+    private List<RuleRow> Rules { get; set; } = new();
+    private List<AlertRow> ActiveAlerts { get; set; } = new();
+    private List<AlertRow> History { get; set; } = new();
+    private List<HostRow> Hosts { get; set; } = new();
+    private List<ChannelRow> Channels { get; set; } = new();
+    private List<string> SelectedChannels { get; set; } = new();
+
+    private RuleEdit? EditingRule;
+    private string? RuleError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        Rules = await Db.Alerts.ListRulesAsync();
+        ActiveAlerts = (await Db.Alerts.ListAsync(limit: 500)).Where(a => a.Status == "active").ToList();
+        History = (await Db.Alerts.ListAsync(limit: 500)).Where(a => a.Status != "active").ToList();
+        Hosts = await Db.Hosts.ListAsync();
+        Channels = await Db.Channels.ListAsync();
+    }
+
+    private void NewRule()
+    {
+        EditingRule = new RuleEdit { Name = "New rule", Type = "health", MatchJson = "{\"states\":[\"warning\",\"critical\"]}", Severity = "warning", Cooldown = 300, Enabled = true };
+        SelectedChannels = new List<string>();
+        RuleError = null;
+    }
+
+    private async Task EditRule(RuleRow r)
+    {
+        EditingRule = new RuleEdit { Id = r.Id, Name = r.Name, Type = r.Type, MatchJson = r.MatchJson, Severity = r.Severity, Cooldown = r.Cooldown, Enabled = r.Enabled };
+        SelectedChannels = await Db.Alerts.ChannelsForRuleAsync(r.Id);
+        RuleError = null;
+    }
+
+    private void CancelEdit() => EditingRule = null;
+
+    private async Task SaveRule()
+    {
+        if (EditingRule is null) return;
+        try
+        {
+            var id = EditingRule.Id ?? Common.Ulid.Prefixed("rule_");
+            await Db.Writer.WithTransactionAsync(async conn =>
+            {
+                if (EditingRule.Id is null)
+                    await Db.Alerts.InsertRuleAsync(conn, id, EditingRule.Name, EditingRule.Type,
+                        EditingRule.MatchJson, EditingRule.Severity, EditingRule.Cooldown);
+                else
+                    await Db.Alerts.UpdateRuleAsync(conn, id, EditingRule.Name, EditingRule.Type,
+                        EditingRule.MatchJson, EditingRule.Severity, EditingRule.Cooldown, EditingRule.Enabled);
+                await AlertRepo.SetRuleChannelsAsync(conn, id, SelectedChannels);
+            });
+            await Db.Audit.WriteAsync("ui", $"rule.{(EditingRule.Id is null ? "create" : "update")}", "rules", id, null);
+            EditingRule = null;
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            RuleError = ex.Message;
+        }
+    }
+
+    private async Task DeleteRule(RuleRow r)
+    {
+        await Db.Writer.WithTransactionAsync(conn => Db.Alerts.DeleteRuleAsync(conn, r.Id));
+        await Db.Audit.WriteAsync("ui", "rule.delete", "rules", r.Id, null);
+        await LoadAsync();
+    }
+
+    private async Task Ack(AlertRow a)
+    {
+        await Db.Writer.WithTransactionAsync(conn => AlertRepo.SetStatusAsync(conn, a.Id, "acked", Common.WireTime.NowMs()));
+        await Db.Audit.WriteAsync("ui", "alert.ack", "alerts", a.Id, null);
+        await LoadAsync();
+    }
+
+    private async Task Silence(AlertRow a)
+    {
+        await Db.Writer.WithTransactionAsync(conn => AlertRepo.SetStatusAsync(conn, a.Id, "silenced", Common.WireTime.NowMs()));
+        await Db.Audit.WriteAsync("ui", "alert.silence", "alerts", a.Id, null);
+        await LoadAsync();
+    }
+
+    private sealed class RuleEdit
+    {
+        public string? Id { get; set; }
+        public string Name { get; set; } = "";
+        public string Type { get; set; } = "health";
+        public string MatchJson { get; set; } = "{}";
+        public string Severity { get; set; } = "warning";
+        public int Cooldown { get; set; } = 300;
+        public bool Enabled { get; set; } = true;
+    }
+}

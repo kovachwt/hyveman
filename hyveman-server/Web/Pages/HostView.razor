@@ -1,0 +1,200 @@
+@page "/host/{Id}"
+@namespace Hyveman.Server.Web.Pages
+@using Hyveman.Server.Storage
+@using Hyveman.Server.Storage.Repos
+
+<h1>@Host?.Name <span class="muted" style="font-weight:400;font-size:14px">@Host?.Id</span></h1>
+
+@if (Host is null)
+{
+    <div class="panel"><p class="muted">Host not found.</p></div>
+    return;
+}
+
+<div class="kpi-row">
+    <div class="kpi"><div class="v">@Rollup</div><div class="l">hardware rollup</div></div>
+    <div class="kpi"><div class="v">@Vms.Count</div><div class="l">VMs</div></div>
+    <div class="kpi"><div class="v">@Components.Count</div><div class="l">components</div></div>
+    <div class="kpi"><div class="v">@ActiveAlerts</div><div class="l">active alerts</div></div>
+</div>
+
+@if (Host.IdracUrl is not null)
+{
+    <p class="muted">iDRAC: <code>@Host.IdracUrl</code> · kind: @Host.Kind · last poll: @Host.LastPollAt · ok: @Host.LastPollOk</p>
+}
+
+@if (ActiveAlertList.Count > 0)
+{
+    <h2>Active alerts</h2>
+    <div class="panel">
+        <table>
+            <thead><tr><th>Severity</th><th>Rule</th><th>Signature</th><th>Since</th><th>Count</th></tr></thead>
+            <tbody>
+                @foreach (var a in ActiveAlertList)
+                {
+                    var rule = Rules.FirstOrDefault(r => r.Id == a.RuleId);
+                    <tr>
+                        <td><span class="badge @a.Severity">@a.Severity</span></td>
+                        <td>@rule?.Name</td>
+                        <td class="mono">@a.Signature[..12]…</td>
+                        <td>@a.FirstSeen</td>
+                        <td>@a.Count</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+<div class="two">
+    <div>
+        <h2>Components</h2>
+        <div class="panel">
+            @if (Components.Count == 0)
+            {
+                <p class="muted">No components yet — the poller runs every @Options.Poller.IntervalS s.</p>
+            }
+            else
+            {
+                <table>
+                    <thead><tr><th>Type</th><th>Name</th><th>State</th><th>Detail</th><th>Spark</th></tr></thead>
+                    <tbody>
+                        @foreach (var c in Components.OrderBy(c => c.Type).ThenBy(c => c.Name))
+                        {
+                            <tr>
+                                <td>@c.Type</td>
+                                <td>@c.Name</td>
+                                <td><span class="badge @c.State">@c.State</span></td>
+                                <td class="muted">@c.Detail</td>
+                                <td></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+
+        <h2>VMs</h2>
+        <div class="panel">
+            @if (Vms.Count == 0)
+            {
+                <p class="muted">No VM facts yet (agent-side Hyper-V WMI is Phase 2).</p>
+            }
+            else
+            {
+                <table>
+                    <thead><tr><th>Name</th><th>State</th><th>Heartbeat</th><th>CPU %</th><th>Mem MB</th><th>Last seen</th></tr></thead>
+                    <tbody>
+                        @foreach (var v in Vms)
+                        {
+                            <tr>
+                                <td>@v.Name</td>
+                                <td>@v.State</td>
+                                <td>@(v.HeartbeatOk.HasValue ? (v.HeartbeatOk.Value ? "ok" : "no") : "—")</td>
+                                <td>@(v.CpuPct?.ToString("0.0"))</td>
+                                <td>@v.MemMb</td>
+                                <td class="muted">@v.LastSeen</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+
+    <div>
+        <h2>Temps & power</h2>
+        <div class="panel">
+            @foreach (var (name, samples) in MetricSeries)
+            {
+                <div class="card">
+                    <div class="title">@name <span class="muted">(@samples.Last().Value.ToString("0.0"))</span></div>
+                    <div class="spark">
+                        @foreach (var m in samples.TakeLast(48))
+                        {
+                            var h = Math.Clamp(m.Value, 0, 100);
+                            <i style="height:@(Math.Max(2, h))%"></i>
+                        }
+                    </div>
+                </div>
+            }
+            @if (MetricSeries.Count == 0) { <p class="muted">No metric samples yet.</p> }
+        </div>
+
+        <h2>Recent events</h2>
+        <div class="panel">
+            @if (RecentEvents.Count == 0)
+            {
+                <p class="muted">No events for this host's source.</p>
+            }
+            else
+            {
+                <table>
+                    <thead><tr><th>Time</th><th>Channel</th><th>ID</th><th>Severity</th><th>Message</th></tr></thead>
+                    <tbody>
+                        @foreach (var e in RecentEvents)
+                        {
+                            <tr>
+                                <td class="mono">@e.Time</td>
+                                <td>@e.Channel</td>
+                                <td>@e.EventId</td>
+                                <td><span class="badge @SevClass(e.Severity)">@e.Severity</span></td>
+                                <td>@e.Message</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    [Inject] private Db Db { get; set; } = default!;
+    [Inject] private Config.ServerOptions Options { get; set; } = default!;
+
+    [Parameter] public string Id { get; set; } = "";
+
+    private HostRow? Host;
+    private List<ComponentRow> Components { get; set; } = new();
+    private List<VmRow> Vms { get; set; } = new();
+    private List<AlertRow> ActiveAlertList { get; set; } = new();
+    private List<RuleRow> Rules { get; set; } = new();
+    private List<(string, List<MetricRow>)> MetricSeries { get; set; } = new();
+    private List<EventRow> RecentEvents { get; set; } = new();
+    private string Rollup { get; set; } = "unknown";
+    private int ActiveAlerts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Host = await Db.Hosts.GetAsync(Id);
+        if (Host is null) return;
+        Components = await Db.Components.ListForHostAsync(Id);
+        Vms = await Db.Components.VmsAsync(Id);
+        ActiveAlertList = await Db.Alerts.ActiveForHostAsync(Id);
+        ActiveAlerts = ActiveAlertList.Count;
+        Rules = await Db.Alerts.ListRulesAsync();
+        var snapshots = await Db.Components.SnapshotsAsync(Id, 1);
+        if (snapshots.Count > 0) Rollup = snapshots[0].Rollup;
+
+        foreach (var name in new[] { "temp", "psu_watts" })
+        {
+            var samples = await Db.Components.MetricsAsync(Id, name, 96);
+            if (samples.Count > 0 && samples.Count(s => s.Name == name) > 0)
+            {
+                var series = samples.Where(s => s.Name == name).OrderBy(s => s.Time).ToList();
+                MetricSeries.Add((name, series));
+            }
+        }
+
+        if (Host.SourceId is not null)
+            RecentEvents = await Db.Events.RecentForSourceAsync(Host.SourceId, 30);
+    }
+
+    private static string SevClass(int? s) => s switch
+    {
+        1 or 2 => "critical",
+        3 => "warning",
+        _ => "info",
+    };
+}

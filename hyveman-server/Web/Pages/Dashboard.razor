@@ -1,0 +1,83 @@
+@page "/dashboard"
+@page "/"
+@namespace Hyveman.Server.Web.Pages
+@using Hyveman.Server.Storage
+
+<h1>Fleet overview</h1>
+
+<div class="kpi-row">
+    <div class="kpi"><div class="v">@Hosts.Count</div><div class="l">hosts</div></div>
+    <div class="kpi"><div class="v">@OkCount</div><div class="l">healthy</div></div>
+    <div class="kpi"><div class="v">@WarnCount</div><div class="l">warning</div></div>
+    <div class="kpi"><div class="v">@CritCount</div><div class="l">critical</div></div>
+    <div class="kpi"><div class="v">@ActiveAlerts</div><div class="l">active alerts</div></div>
+    <div class="kpi"><div class="v">@Sources.Count</div><div class="l">sources</div></div>
+</div>
+
+@if (Hosts.Count == 0)
+{
+    <div class="panel">
+        <p class="muted">No hosts registered yet. Go to <a href="/admin">Admin → Hosts</a> to
+            register a host (issue a <code>reg_</code> token and run the agent installer).</p>
+    </div>
+}
+else
+{
+    <div class="grid fleet">
+        @foreach (var h in Hosts)
+        {
+            <a class="tile @RollupClass(h.Rollup)" href="/host/@h.Host.Id">
+                <h3>@h.Host.Name</h3>
+                <div class="rollup">@h.Rollup</div>
+                <div class="sub">@h.Host.Kind · last poll: @h.Host.LastPollAt</div>
+                <div class="sub">agent: @h.AgentState</div>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    [Inject] private Db Db { get; set; } = default!;
+    [Inject] private Config.ServerOptions Options { get; set; } = default!;
+
+    private List<(Storage.Repos.HostRow Host, string Rollup, string AgentState)> Hosts { get; set; } = new();
+    private List<Storage.Repos.SourceRow> Sources { get; set; } = new();
+    private int OkCount, WarnCount, CritCount, ActiveAlerts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var hosts = await Db.Hosts.ListAsync();
+        Sources = await Db.Sources.ListAsync();
+        var hbs = (await Db.Heartbeats.AllAsync()).ToDictionary(h => h.SourceId);
+        var now = DateTimeOffset.UtcNow;
+        var missS = Options.Alerts.DefaultHeartbeatMissS;
+
+        foreach (var host in hosts)
+        {
+            var states = await Db.Components.CurrentStatesAsync(host.Id);
+            var rollup = states.Count == 0 ? "unknown" : states.Any(s => s.State == "critical") ? "critical"
+                : states.Any(s => s.State == "warning") ? "warning" : "ok";
+
+            var agentState = "no agent";
+            if (host.SourceId is not null && hbs.TryGetValue(host.SourceId, out var hb)
+                && Common.WireTime.TryParseUtc(hb.ReceivedAt, out var received))
+            {
+                var age = (now - received).TotalSeconds;
+                agentState = age > missS ? $"silent ({(long)age}s)" : $"ok ({hb.AgentVersion ?? "?"})";
+            }
+
+            if (rollup == "ok") OkCount++;
+            else if (rollup == "warning") WarnCount++;
+            else if (rollup == "critical") CritCount++;
+            Hosts.Add((host, rollup, agentState));
+        }
+        ActiveAlerts = (await Db.Alerts.ListAsync(limit: 500)).Count(a => a.Status == "active");
+    }
+
+    private static string RollupClass(string s) => s;
+}

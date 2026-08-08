@@ -1,0 +1,73 @@
+@page "/auth/login"
+@namespace Hyveman.Server.Web.Pages
+@using System.Text.Json
+@using Hyveman.Server.Auth
+
+<div class="auth-card">
+    <h1>◆ Hyveman</h1>
+    <p class="muted">Passkey-only sign in. Touch your authenticator when prompted.</p>
+
+    @if (!string.IsNullOrEmpty(Error)) { <div class="err">@Error</div> }
+
+    <button @onclick="LoginAsync" disabled="@Busy">@(Busy ? "Waiting for authenticator…" : "Sign in with passkey")</button>
+
+    @if (!HasPasskeys)
+    {
+        <p class="muted" style="margin-top:14px">No passkeys registered — <a href="/auth/setup">run first-run setup</a>.</p>
+    }
+</div>
+
+@code {
+    [Inject] private IJSRuntime Js { get; set; } = default!;
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+    [Inject] private PasskeyService Passkeys { get; set; } = default!;
+
+    private string? Error { get; set; }
+    private bool Busy { get; set; }
+    private bool HasPasskeys { get; set; } = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        HasPasskeys = await Passkeys.HasPasskeysAsync();
+    }
+
+    private async Task LoginAsync()
+    {
+        Busy = true; Error = null;
+        try
+        {
+            var client = new HttpClient();
+            var optionsResp = await client.PostAsync(Nav.BaseUri + "api/auth/login-options", null);
+            if (!optionsResp.IsSuccessStatusCode) { Error = "Server refused login options."; return; }
+            var optionsJson = await optionsResp.Content.ReadAsStringAsync();
+
+            var assertion = await Js.InvokeAsync<JsonElement>("hyveman.getCredential", optionsJson);
+            var verifyResp = await client.PostAsJsonAsync(Nav.BaseUri + "api/auth/login-verify", new
+            {
+                response = new
+                {
+                    id = assertion.GetProperty("id").GetString(),
+                    clientDataJson = assertion.GetProperty("response").GetProperty("clientDataJSON").GetString(),
+                    authenticatorData = assertion.GetProperty("response").GetProperty("authenticatorData").GetString(),
+                    signature = assertion.GetProperty("response").GetProperty("signature").GetString(),
+                    userHandle = assertion.GetProperty("response").TryGetProperty("userHandle", out var uh)
+                        ? uh.GetString() : null,
+                }
+            });
+            if (!verifyResp.IsSuccessStatusCode)
+            {
+                Error = "Passkey assertion failed — try again.";
+                return;
+            }
+            Nav.NavigateTo("/dashboard", forceLoad: true);
+        }
+        catch (Exception ex)
+        {
+            Error = ex.Message;
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
+}

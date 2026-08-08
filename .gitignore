@@ -1,0 +1,48 @@
+# ── .NET build artifacts ───────────────────────────────────────────────────
+bin/
+obj/
+out/                    # agent build.ps1 output (out\hyveman-agent.exe)
+publish/
+*.nupkg
+
+# ── Test results & coverage ────────────────────────────────────────────────
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage.*
+*.opencover.xml
+
+# ── Visual Studio / Rider / VS Code ────────────────────────────────────────
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.ncrunch*
+*_i.c
+*_p.c
+*.njsproj
+*.sln.ide
+
+# ── Logs & temp files ──────────────────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+*.bak
+~$*
+*~
+
+# ── OS noise ───────────────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ── Local server data dir (never commit) ───────────────────────────────────
+# If you run the server with a repo-local --data-dir, the SQLite DB, config/
+# (including the AES-GCM server key K — losing it loses all vault secrets),
+# backup/ and logs/ land here. Keep dev data out of the repo:
+# .data/
+# hyveman-dev-data/

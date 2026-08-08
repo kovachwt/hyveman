@@ -1,0 +1,30 @@
+@namespace Hyveman.Server.Web.Layout
+@inherits LayoutComponentBase
+
+<div class="app">
+    <header class="topbar">
+        <a class="brand" href="/dashboard">◆ Hyveman</a>
+        <nav class="nav">
+            <NavLink href="/dashboard" Match="NavLinkMatch.Prefix">Fleet</NavLink>
+            <NavLink href="/search">Search</NavLink>
+            <NavLink href="/alerts">Alerts</NavLink>
+            <NavLink href="/admin">Admin</NavLink>
+        </nav>
+        <span class="spacer"></span>
+        <button class="btn btn-small" @onclick="Logout">Sign out</button>
+    </header>
+    <main class="content">
+        @Body
+    </main>
+</div>
+
+@code {
+    [Inject] private NavigationManager Nav { get; set; } = default!;
+
+    private async Task Logout()
+    {
+        var client = new HttpClient();
+        await client.PostAsync(Nav.BaseUri + "api/auth/logout", null);
+        Nav.NavigateTo("/auth/login", forceLoad: true);
+    }
+}

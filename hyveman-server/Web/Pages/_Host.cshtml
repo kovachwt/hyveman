@@ -1,0 +1,23 @@
+@page "/"
+@namespace Hyveman.Server.Web.Pages
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+@{
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hyveman</title>
+    <base href="~/" />
+    <link rel="stylesheet" href="~/css/site.css" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%232563eb'/><text x='8' y='12' font-size='11' text-anchor='middle' fill='white' font-family='monospace'>H</text></svg>" />
+</head>
+<body>
+    <component type="typeof(Hyveman.Server.Web.App)" render-mode="ServerPrerendered" />
+
+    <script src="~/js/webauthn.js"></script>
+    <script src="_framework/blazor.server.js"></script>
+</body>
+</html>
