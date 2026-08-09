@@ -26,7 +26,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | [D3](#d3) | P1 | api | Alert evaluator state is per-request: cooldown dead, alerts never auto-resolve | ~~inspection~~ **fixed** |
 | [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | ~~inspection~~ **fixed** |
 | [D5](#d5) | P1 | api | Event search skips a row at every page boundary | ~~verified~~ **fixed** |
-| [D6](#d6) | P1 | api | Web session lifetime compounds without bound | inspection |
+| [D6](#d6) | P1 | api | Web session lifetime compounds without bound | ~~inspection~~ **fixed** |
 | [D7](#d7) | P2 | api | `heartbeat_ok: false` coerced to `null` | verified |
 | [D8](#d8) | P2 | api | Duplicate, never-resolving agent-silent alerts from the reconcile path | inspection |
 | [D9](#d9) | P2 | api | Reconcile pass ignores maintenance windows | inspection |
@@ -369,6 +369,27 @@ successful slide (or on a threshold, to avoid a `Set-Cookie` per request).
 
 **Test to add.** Validate a session repeatedly across simulated days and assert
 `expires_at - now` never exceeds 14 days.
+
+**Status: FIXED (2026-08-09).** The slide window is now a fixed, configured
+lifetime — `HyvemanOptions.SessionLifetime` (default 14 days) is the single
+source of truth, bound into `SessionAuthOptions.Lifetime` at scheme
+registration and passed to `WebAuthnService` (which creates the session with
+it, replacing its private constant) and to
+`ISessionStore.ValidateAsync(sessionId, now, lifetime, ct)`, which now computes
+`newExpiry = now + lifetime` — never `now + (expires − created)`, so the window
+cannot compound. Both halves of the defect are closed: the server record slides
+by a fixed window, and the browser cookie is re-issued on **every** successful
+validation by `SessionAuthHandler` (via a shared `SessionCookies` helper also
+used at login and logout in `AuthController`), so the cookie slides in lockstep
+with the record instead of expiring 14 days after login regardless of activity.
+Regression coverage: `SessionStore_SlidingExpiry_And_Revocation`
+(store-level: 30 daily validations across a fresh SQLite DB and asserts every
+slide lands at exactly `now + lifetime`, never beyond — the pre-fix code
+compounds to `now + 15d` on the second slide and fails) and
+`WebApi_Session_CookieAndRecord_SlideByFixedLifetime` (API-level: an
+authenticated request re-issues the cookie with `max-age=1209600` and the
+record slides to `now + 14 days` — the pre-fix code re-issued no cookie at
+all). Both were verified to fail against the pre-fix code.
 
 ---
 

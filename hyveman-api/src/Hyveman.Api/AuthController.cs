@@ -3,6 +3,7 @@ using Hyveman.Application;
 using Hyveman.Contracts;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace Hyveman.Api;
 
@@ -16,6 +17,7 @@ public sealed class AuthController(
     ISessionStore sessions,
     IClock clock,
     RateLimiterRegistry rateLimiter,
+    IOptionsMonitor<SessionAuthOptions> sessionOptions,
     ILogger<AuthController> log) : ControllerBase
 {
     private const string SessionCookie = SessionAuthOptions.CookieName;
@@ -81,7 +83,7 @@ public sealed class AuthController(
         if (Request.Cookies.TryGetValue(SessionCookie, out var sessionId))
         {
             await sessions.RevokeAsync(sessionId, ct);
-            Response.Cookies.Delete(SessionCookie);
+            SessionCookies.Delete(Response);
         }
         return NoContent();
     }
@@ -131,15 +133,7 @@ public sealed class AuthController(
 
     private void AppendSessionCookie(string sessionId)
     {
-        Response.Cookies.Append(SessionCookie, sessionId, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = Request.IsHttps,
-            SameSite = SameSiteMode.Strict,
-            Path = "/",
-            IsEssential = true,
-            MaxAge = TimeSpan.FromDays(14),
-        });
+        SessionCookies.Append(Response, sessionId, sessionOptions.CurrentValue.Lifetime, Request.IsHttps);
     }
 
     private string Origin()

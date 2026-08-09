@@ -580,6 +580,36 @@ public class AgentContractTests
         Assert.Equal("validation_failed", badJson.GetProperty("code").GetString());
         Assert.NotNull(badJson.GetProperty("errors").GetProperty("name"));
     }
+
+    [Fact]
+    public async Task WebApi_Session_CookieAndRecord_SlideByFixedLifetime()
+    {
+        var client = _fx.NewClient();
+        _fx.SeedSession(client); // seeded record expires in 1 day
+        var sessionId = client.DefaultRequestHeaders.GetValues("Cookie").First()
+            .Split(';').First(c => c.TrimStart().StartsWith("hyveman_session=", StringComparison.OrdinalIgnoreCase))
+            .Trim().Split('=')[1];
+
+        var resp = await client.GetAsync("/api/v1/overview");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // D6: the cookie is re-issued on every successful validation with a
+        // fixed Max-Age (14 days), so it slides instead of expiring 14 days
+        // after login regardless of activity.
+        var sessionCookie = _fx.GetSessionCookie(resp);
+        Assert.NotNull(sessionCookie);
+
+        Assert.Contains("max-age=1209600", sessionCookie, StringComparison.OrdinalIgnoreCase); // 14 days in seconds
+
+        // D6: the server record slides to now + fixed lifetime — never
+        // now + (created→expires) which compounds without bound.
+        using var scope = _fx.Factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<Hyveman.Application.ISessionStore>();
+        var now = DateTimeOffset.UtcNow;
+        var session = await store.ValidateAsync(sessionId, now, TimeSpan.FromDays(14), CancellationToken.None);
+        Assert.NotNull(session);
+        Assert.Equal(now.AddDays(14), session!.ExpiresAt);
+    }
 }
 
 /// <summary>One test-hosted API per collection with a throwaway data directory.
@@ -684,6 +714,19 @@ public sealed class ApiFixture : IDisposable
         {
             var pair = cookie.Split(';').FirstOrDefault(c => c.StartsWith("hyveman_csrf=", StringComparison.OrdinalIgnoreCase));
             if (pair is not null) return pair[(pair.IndexOf('=') + 1)..].Trim();
+        }
+        return null;
+    }
+
+    /// <summary>Returns the full hyveman_session Set-Cookie header value
+    /// (name=value; max-age=...; ...) if the response re-issued the cookie.</summary>
+    public string? GetSessionCookie(HttpResponseMessage response)
+    {
+        if (!response.Headers.TryGetValues("Set-Cookie", out var cookies)) return null;
+        foreach (var cookie in cookies)
+        {
+            if (cookie.Split(';').FirstOrDefault(c => c.StartsWith("hyveman_session=", StringComparison.OrdinalIgnoreCase)) is not null)
+                return cookie;
         }
         return null;
     }

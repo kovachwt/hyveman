@@ -341,8 +341,10 @@ public interface ISessionStore
     /// <summary>Creates a session; returns the opaque id (server keeps the hash).</summary>
     Task<string> CreateAsync(DateTimeOffset now, TimeSpan lifetime, CancellationToken ct);
 
-    /// <summary>Validates a session id; slides the expiry and last_seen.</summary>
-    Task<WebSession?> ValidateAsync(string sessionId, DateTimeOffset now, CancellationToken ct);
+    /// <summary>Validates a session id; slides the expiry to a fixed
+    /// <paramref name="lifetime"/> from <paramref name="now"/> (the window
+    /// never compounds, API.md §8.2) and updates last_seen.</summary>
+    Task<WebSession?> ValidateAsync(string sessionId, DateTimeOffset now, TimeSpan lifetime, CancellationToken ct);
 
     Task RevokeAsync(string sessionId, CancellationToken ct);
     Task CleanupExpiredAsync(DateTimeOffset now, CancellationToken ct);

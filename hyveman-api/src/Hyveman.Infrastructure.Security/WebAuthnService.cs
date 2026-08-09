@@ -26,10 +26,10 @@ public sealed class WebAuthnService(
     IAuditStore audit,
     IClock clock,
     Func<string?, bool> isTrustedNetwork,
-    ILogger<WebAuthnService> log) : IWebAuthnService
+    ILogger<WebAuthnService> log,
+    TimeSpan sessionLifetime) : IWebAuthnService
 {
     private static readonly TimeSpan CeremonyLifetime = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(14);
     private static readonly byte[] AdminUserId = SHA256.HashData(Encoding.UTF8.GetBytes("hyveman-single-admin"))[..16];
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
@@ -213,7 +213,7 @@ public sealed class WebAuthnService(
 
         var now = clock.UtcNow;
         await passkeys.UpdateSignCountAsync(passkey.Id, result.SignCount, now, ct);
-        var sessionId = await sessions.CreateAsync(now, SessionLifetime, ct);
+        var sessionId = await sessions.CreateAsync(now, sessionLifetime, ct);
         await audit.RecordAsync("admin", "auth.login", "passkey", passkey.Id, null, now, ct);
         log.LogInformation("WebAuthn login succeeded (passkey {passkeyId}, origin {origin})", passkey.Id, origin);
         return sessionId;

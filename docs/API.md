@@ -650,9 +650,13 @@ On successful verification, the API issues a persistent session cookie with:
 HttpOnly; Secure; SameSite=Strict; Path=/
 ```
 
-The cookie has a 14-day sliding expiry. It contains an opaque session ID whose
-server-side record is revocable; it does not contain credentials or authorization
-state that cannot be invalidated.
+The cookie has a 14-day sliding expiry: the API re-issues it with a fixed
+`Max-Age` on every successful validation, and the server-side record slides to
+`now + SessionLifetime` on each use — a fixed window that never compounds
+(activity extends the session, but each extension is the same lifetime, never
+an accumulating one). The cookie contains an opaque session ID whose
+server-side record is revocable; it does not contain credentials or
+authorization state that cannot be invalidated.
 
 For unsafe web requests, the API also requires:
 
@@ -889,6 +893,7 @@ SQLiteBusyTimeoutMs
 LogRetention
 HardwarePollInterval
 HeartbeatSilenceThreshold
+SessionLifetime
 IdracCertPolicy
 RateLimits
 VaultKeyPath

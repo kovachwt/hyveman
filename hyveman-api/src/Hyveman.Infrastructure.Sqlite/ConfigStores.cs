@@ -108,7 +108,7 @@ public sealed class SessionStore(SqliteDb db) : ISessionStore
         return raw;
     }
 
-    public async Task<WebSession?> ValidateAsync(string sessionId, DateTimeOffset now, CancellationToken ct)
+    public async Task<WebSession?> ValidateAsync(string sessionId, DateTimeOffset now, TimeSpan lifetime, CancellationToken ct)
     {
         var hash = StoreHelpers.HashToken(sessionId);
         using var conn = StoreHelpers.Open(db);
@@ -124,8 +124,11 @@ public sealed class SessionStore(SqliteDb db) : ISessionStore
                 "DELETE FROM web_sessions WHERE id_hash = @hash", new { hash }, cancellationToken: ct));
             return null;
         }
-        // 14-day sliding expiry: extend on each valid use.
-        var newExpiry = now.Add(session.ExpiresAt - session.CreatedAt);
+        // Sliding expiry: each valid use extends the session by a *fixed*
+        // lifetime from now. Recomputing from created_at would compound the
+        // window without bound (D6); a fixed window keeps the server-side
+        // record aligned with the 14-day cookie.
+        var newExpiry = now.Add(lifetime);
         await conn.ExecuteAsync(new CommandDefinition(
             "UPDATE web_sessions SET expires_at = @Expires, last_seen = @LastSeen WHERE id_hash = @hash",
             new { hash, Expires = StoreHelpers.Fmt(newExpiry), LastSeen = StoreHelpers.Fmt(now) }, cancellationToken: ct));

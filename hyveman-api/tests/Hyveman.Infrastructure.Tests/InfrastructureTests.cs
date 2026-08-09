@@ -345,20 +345,33 @@ public class SqliteIntegrationTests : IDisposable
     {
         var store = new SessionStore(_db);
         var now = DateTimeOffset.UtcNow;
-        var id = await store.CreateAsync(now, TimeSpan.FromDays(14), CancellationToken.None);
+        var lifetime = TimeSpan.FromDays(14);
+        var id = await store.CreateAsync(now, lifetime, CancellationToken.None);
 
-        var session = await store.ValidateAsync(id, now.AddDays(5), CancellationToken.None);
+        // Sliding: a valid use extends expiry by the fixed lifetime from now.
+        var session = await store.ValidateAsync(id, now.AddDays(5), lifetime, CancellationToken.None);
         Assert.NotNull(session);
-        // Sliding: expiry extends from the new use.
-        Assert.True(session!.ExpiresAt > now.AddDays(14));
+        Assert.Equal(now.AddDays(5).Add(lifetime), session!.ExpiresAt);
+
+        // D6 regression: repeated validations across simulated days never
+        // compound the window — every slide resets expiry to now + lifetime.
+        var cursor = now.AddDays(5);
+        for (var i = 0; i < 30; i++)
+        {
+            cursor = cursor.AddDays(1);
+            session = await store.ValidateAsync(id, cursor, lifetime, CancellationToken.None);
+            Assert.NotNull(session);
+            Assert.Equal(cursor.Add(lifetime), session!.ExpiresAt);
+        }
+        Assert.True(session!.ExpiresAt <= cursor.Add(lifetime));
 
         // Expired sessions are rejected and removed.
-        var expired = await store.ValidateAsync(id, now.AddDays(20), CancellationToken.None);
+        var expired = await store.ValidateAsync(id, cursor.Add(lifetime).AddMinutes(1), lifetime, CancellationToken.None);
         Assert.Null(expired);
 
-        var id2 = await store.CreateAsync(now, TimeSpan.FromDays(14), CancellationToken.None);
+        var id2 = await store.CreateAsync(now, lifetime, CancellationToken.None);
         await store.RevokeAsync(id2, CancellationToken.None);
-        Assert.Null(await store.ValidateAsync(id2, now.AddDays(1), CancellationToken.None));
+        Assert.Null(await store.ValidateAsync(id2, now.AddDays(1), lifetime, CancellationToken.None));
     }
 
     [Fact]

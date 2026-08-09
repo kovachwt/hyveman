@@ -129,7 +129,16 @@ public partial class Program
         builder.Services.AddScoped<MaintenanceWindowsService>();
         builder.Services.AddScoped<SettingsService>();
         builder.Services.AddScoped<AuditService>();
-        builder.Services.AddScoped<IWebAuthnService, WebAuthnService>();
+        builder.Services.AddScoped<IWebAuthnService>(sp => new WebAuthnService(
+            sp.GetRequiredService<Fido2Configuration>(),
+            sp.GetRequiredService<IPasskeyStore>(),
+            sp.GetRequiredService<ICeremonyStore>(),
+            sp.GetRequiredService<ISessionStore>(),
+            sp.GetRequiredService<IAuditStore>(),
+            sp.GetRequiredService<IClock>(),
+            sp.GetRequiredService<Func<string?, bool>>(),
+            sp.GetRequiredService<ILogger<WebAuthnService>>(),
+            sp.GetRequiredService<HyvemanOptions>().SessionLifetime));
         builder.Services.AddScoped<IMaintenanceJob, MaintenanceJob>();
         builder.Services.AddSingleton<IReadinessCheck, ReadinessCheck>();
 
@@ -154,7 +163,8 @@ public partial class Program
         builder.Services.AddControllers()
             .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
         builder.Services.AddAuthentication(SessionAuthOptions.SchemeName)
-            .AddScheme<SessionAuthOptions, SessionAuthHandler>(SessionAuthOptions.SchemeName, null);
+            .AddScheme<SessionAuthOptions, SessionAuthHandler>(SessionAuthOptions.SchemeName,
+                o => o.Lifetime = opts.SessionLifetime);
         builder.Services.AddAuthorization(o =>
         {
             o.FallbackPolicy = new AuthorizationPolicyBuilder()

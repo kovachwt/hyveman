@@ -31,18 +31,48 @@ public sealed class SessionAuthHandler(
             string.IsNullOrEmpty(sessionId))
             return AuthenticateResult.NoResult();
 
-        var session = await sessions.ValidateAsync(sessionId, clock.UtcNow, Context.RequestAborted);
+        var lifetime = options.CurrentValue.Lifetime;
+        var session = await sessions.ValidateAsync(sessionId, clock.UtcNow, lifetime, Context.RequestAborted);
         if (session is null)
         {
-            Response.Cookies.Delete(SessionAuthOptions.CookieName);
+            SessionCookies.Delete(Response);
             return AuthenticateResult.Fail("invalid or expired session");
         }
+
+        // Sliding cookie (API.md §8.2): re-issue on each successful slide so
+        // the browser cookie tracks the server record instead of expiring 14
+        // days after login regardless of activity (D6).
+        SessionCookies.Append(Response, sessionId, lifetime, Request.IsHttps);
 
         var identity = new ClaimsIdentity(
             [new Claim(ClaimTypes.Name, "admin"), new Claim("session_id_hash", session.IdHash)],
             Scheme.Name);
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name));
     }
+}
+
+/// <summary>Shared session-cookie issuance (API.md §8.2): HttpOnly, Secure,
+/// SameSite=Strict, Path=/, with a MaxAge equal to the configured session
+/// lifetime. Used both at login (AuthController) and on every successful
+/// validation (SessionAuthHandler) so the cookie slides in lockstep with the
+/// server-side record.</summary>
+public static class SessionCookies
+{
+    public static void Append(HttpResponse response, string sessionId, TimeSpan lifetime, bool isHttps)
+    {
+        response.Cookies.Append(SessionAuthOptions.CookieName, sessionId, new CookieOptions
+        {
+            HttpOnly = true,
+            Secure = isHttps,
+            SameSite = SameSiteMode.Strict,
+            Path = "/",
+            IsEssential = true,
+            MaxAge = lifetime,
+        });
+    }
+
+    public static void Delete(HttpResponse response) =>
+        response.Cookies.Delete(SessionAuthOptions.CookieName);
 }
 
 /// <summary>CSRF + Origin enforcement for unsafe web requests (API.md §5.2/§8.2):

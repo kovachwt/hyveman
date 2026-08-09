@@ -19,6 +19,11 @@ public sealed class HyvemanOptions
     public int HardwarePollIntervalS { get; set; } = 60;
     public int HeartbeatSilenceThresholdS { get; set; } = 300;
 
+    /// <summary>Web session sliding lifetime (API.md §8.2): the server-side
+    /// record and the browser cookie both slide to now + this window on each
+    /// use; it never compounds.</summary>
+    public TimeSpan SessionLifetime { get; set; } = TimeSpan.FromDays(14);
+
     /// <summary>iDRAC TLS certificate verification (API.md §9.1): "strict"
     /// validates against the OS trust store; "trust-on-first-use" accepts and
     /// pins the first certificate each host presents (TOFU, SSH-style).
