@@ -25,7 +25,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | [D2](#d2) | P1 | api | Second resolve of an alert key throws; cascades to telemetry 500s | ~~verified~~ **fixed** |
 | [D3](#d3) | P1 | api | Alert evaluator state is per-request: cooldown dead, alerts never auto-resolve | ~~inspection~~ **fixed** |
 | [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | ~~inspection~~ **fixed** |
-| [D5](#d5) | P1 | api | Event search skips a row at every page boundary | verified |
+| [D5](#d5) | P1 | api | Event search skips a row at every page boundary | ~~verified~~ **fixed** |
 | [D6](#d6) | P1 | api | Web session lifetime compounds without bound | inspection |
 | [D7](#d7) | P2 | api | `heartbeat_ok: false` coerced to `null` | verified |
 | [D8](#d8) | P2 | api | Duplicate, never-resolving agent-silent alerts from the reconcile path | inspection |
@@ -316,6 +316,18 @@ events are stored correctly; only the operator's view of them drops rows.
 
 **Test to add.** 3 events, `limit=2`, assert the union of both pages is all 3
 with no duplicates. API.md §6.8/§14 has no pagination fixture at all today.
+
+**Status: FIXED (2026-08-09).** `EventsService.SearchAsync` now encodes
+`NextCursor` from `items[^1]` — the last row actually returned to the client —
+instead of `page.Items[^1]`, the +1 probe row deliberately withheld by the
+`Take(limit)` trim. Regression coverage per the test above:
+`WebApi_EventSearch_PagesCoverEveryRow_NoGapsNoDuplicates` (API-level: ingests
+3 events, walks `limit=2` through both pages scoped to the agent's source,
+asserts page 1 is `[pg-3, pg-2]` with `hasMore`, the cursor resolves to the
+last *returned* row, page 2 delivers `pg-1` alone with `hasMore=false` and a
+null cursor, and the union of both pages is all 3 rows with no duplicates).
+The test was verified to fail against the pre-fix code — page 2 came back
+empty, exactly the field report.
 
 ---
 

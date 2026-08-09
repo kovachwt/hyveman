@@ -23,7 +23,11 @@ public sealed class EventsService(IEventStore store)
         return new EventSearchResponse
         {
             Items = items,
-            NextCursor = page.HasMore ? CursorCodec.Encode(page.Items[^1].Time, page.Items[^1].Id) : null,
+            // DEFECTS.md D5: the cursor must encode the last *returned* row.
+            // page.Items[^1] is the +1 probe row deliberately withheld from the
+            // client; cursor-encoding it makes the next page start after a row
+            // neither page delivers.
+            NextCursor = page.HasMore ? CursorCodec.Encode(items[^1].Time, items[^1].Id) : null,
             HasMore = page.HasMore,
         };
     }

@@ -453,6 +453,58 @@ public class AgentContractTests
     }
 
     [Fact]
+    public async Task WebApi_EventSearch_PagesCoverEveryRow_NoGapsNoDuplicates()
+    {
+        // DEFECTS.md D5 (API.md §7.2): the +1 probe row must never become the
+        // cursor. 3 events at limit=2: page 1 returns the newest two, the
+        // cursor must point at the last *returned* row, and page 2 must then
+        // deliver the remaining one — the union of the pages is all 3 rows
+        // with no duplicates. Before the fix the cursor was encoded from the
+        // withheld probe row, so page 2 started after a row neither page
+        // delivered (verified: page 2 came back empty, pg-1 unreachable).
+        var (token, sourceId) = await _fx.RegisterAgentWithSourceAsync("D5-PAGES");
+        var batch = """
+            {"v":1,"items":[
+              {"kind":"log","record_id":"pg-1","dedup_scope":"System","time":"2024-08-07T10:00:00Z","severity":4,"message":"first"},
+              {"kind":"log","record_id":"pg-2","dedup_scope":"System","time":"2024-08-07T10:00:01Z","severity":4,"message":"second"},
+              {"kind":"log","record_id":"pg-3","dedup_scope":"System","time":"2024-08-07T10:00:02Z","severity":4,"message":"third"}
+            ]}
+            """;
+        var resp = await PostAsync("/ingest/logs", token, batch);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal(3, (await ReadJson(resp)).GetProperty("accepted").GetInt32());
+
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+
+        // Scope to this agent's source — the fixture's data dir is shared by
+        // the whole collection and the search endpoint is cross-source.
+        var page1 = await ReadJson(await client.GetAsync($"/api/v1/events?limit=2&sourceId={sourceId}"));
+        var page1Items = page1.GetProperty("items").EnumerateArray().ToList();
+        Assert.Equal(2, page1Items.Count);
+        Assert.True(page1.GetProperty("hasMore").GetBoolean());
+        var cursor1 = page1.GetProperty("nextCursor").GetString();
+        Assert.NotNull(cursor1);
+        // Descending: page 1 is [pg-3, pg-2]; the cursor must be the last
+        // *returned* row (pg-2), not the withheld probe (pg-1).
+        Assert.Equal("pg-3", page1Items[0].GetProperty("recordId").GetString());
+        Assert.Equal("pg-2", page1Items[1].GetProperty("recordId").GetString());
+
+        var page2 = await ReadJson(await client.GetAsync(
+            $"/api/v1/events?limit=2&sourceId={sourceId}&cursor={Uri.EscapeDataString(cursor1)}"));
+        var page2Items = page2.GetProperty("items").EnumerateArray().ToList();
+        Assert.Equal(1, page2Items.Count);
+        Assert.False(page2.GetProperty("hasMore").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, page2.GetProperty("nextCursor").ValueKind);
+        Assert.Equal("pg-1", page2Items[0].GetProperty("recordId").GetString());
+
+        // Union of both pages is all 3 events, each exactly once.
+        var seen = page1Items.Concat(page2Items).Select(i => i.GetProperty("recordId").GetString()).ToList();
+        Assert.Equal(3, seen.Distinct().Count());
+        Assert.Equal(["pg-3", "pg-2", "pg-1"], seen);
+    }
+
+    [Fact]
     public async Task WebApi_HostHealth_Endpoint()
     {
         var client = _fx.NewClient();
@@ -598,6 +650,22 @@ public sealed class ApiFixture : IDisposable
         using var resp = await Client.SendAsync(req);
         var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
         return body.GetProperty("token").GetString()!;
+    }
+
+    /// <summary>Registers an agent and returns (token, sourceId) — for tests
+    /// that must scope cross-source queries (e.g. event search) to their own
+    /// agent's rows.</summary>
+    public async Task<(string Token, string SourceId)> RegisterAgentWithSourceAsync(string hostname)
+    {
+        var (regToken, _) = await CreateRegistrationTokenAsync("windows-agent");
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/register");
+        req.Headers.Add("X-Hyveman-Protocol", "1");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", regToken);
+        req.Content = new StringContent("{\"v\":1,\"kind\":\"windows-agent\",\"hostname\":\"" + hostname + "\"}",
+            Encoding.UTF8, "application/json");
+        using var resp = await Client.SendAsync(req);
+        var body = JsonDocument.Parse(await resp.Content.ReadAsStringAsync()).RootElement;
+        return (body.GetProperty("token").GetString()!, body.GetProperty("source_id").GetString()!);
     }
 
     public async Task RevokeAgentTokenAsync(string rawToken)
