@@ -4,8 +4,9 @@
  * the small fleet and persisted in the URL like the other list pages.
  */
 import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Route, Routes } from 'react-router-dom';
 import { mockApi } from '@/test/setup';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import HostsPage from './HostsPage';
@@ -114,5 +115,53 @@ describe('HostsPage filters', () => {
     expect(screen.queryByText('dc01')).not.toBeInTheDocument();
     expect(screen.queryByText('old-db')).not.toBeInTheDocument();
     expect(screen.getByText(/Showing 1 of 3 hosts/)).toBeInTheDocument();
+  });
+});
+
+describe('HostsPage edit button', () => {
+  /** Renders with a real /hosts/:hostId route so navigation is observable. */
+  function renderWithDetailRoute() {
+    return renderWithProviders(
+      <Routes>
+        <Route path="/hosts" element={<HostsPage />} />
+        <Route path="/hosts/:hostId" element={<div>HOST DETAIL PAGE</div>} />
+      </Routes>,
+      { route: '/hosts' },
+    );
+  }
+
+  it('opens the edit dialog without navigating to host details', async () => {
+    const user = userEvent.setup();
+    mockApi([
+      { path: '/api/v1/sources', respond: { body: [] } },
+      { path: '/api/v1/hosts', respond: { body: hostsPayload } },
+    ]);
+    renderWithDetailRoute();
+
+    const row = (await screen.findByRole('row', { name: /dc01/ })) as HTMLTableRowElement;
+    await user.click(await within(row).findByRole('button', { name: 'Edit dc01' }));
+
+    // The dialog stays open and the page is still the hosts list.
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Edit dc01' })).toBeVisible());
+    expect(screen.queryByText('HOST DETAIL PAGE')).not.toBeInTheDocument();
+
+    // Give any stray navigation a chance to happen; it must not.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole('dialog', { name: 'Edit dc01' })).toBeVisible();
+    expect(screen.queryByText('HOST DETAIL PAGE')).not.toBeInTheDocument();
+  });
+
+  it('still navigates to host details when the row body is clicked', async () => {
+    const user = userEvent.setup();
+    mockApi([
+      { path: '/api/v1/sources', respond: { body: [] } },
+      { path: '/api/v1/hosts', respond: { body: hostsPayload } },
+    ]);
+    renderWithDetailRoute();
+
+    const row = (await screen.findByRole('row', { name: /dc01/ })) as HTMLTableRowElement;
+    await user.click(within(row).getByText('dc01'));
+
+    expect(await screen.findByText('HOST DETAIL PAGE')).toBeInTheDocument();
   });
 });

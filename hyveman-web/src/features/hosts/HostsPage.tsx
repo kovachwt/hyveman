@@ -139,7 +139,7 @@ export default function HostsPage() {
           <IconButton
             size="small"
             aria-label={`Open ${h.name} details`}
-            onClick={() => navigate(`/hosts/${h.id}`)}
+            onClick={(e) => { e.stopPropagation(); navigate(`/hosts/${h.id}`); }}
           >
             <OpenInNew fontSize="inherit" />
           </IconButton>
@@ -188,17 +188,17 @@ export default function HostsPage() {
       render: (h) => (
         <Stack direction="row" spacing={0.5} justifyContent="flex-end">
           <Tooltip title="Logon stats">
-            <IconButton size="small" aria-label={`Logon stats for ${h.name}`} onClick={() => navigate(`/hosts/${h.id}/logons`)}>
+            <IconButton size="small" aria-label={`Logon stats for ${h.name}`} onClick={(e) => { e.stopPropagation(); navigate(`/hosts/${h.id}/logons`); }}>
               <Login fontSize="small" />
             </IconButton>
           </Tooltip>
           <Tooltip title="Edit">
-            <IconButton size="small" aria-label={`Edit ${h.name}`} onClick={() => { setEditing(h); setFormOpen(true); }}>
+            <IconButton size="small" aria-label={`Edit ${h.name}`} onClick={(e) => { e.stopPropagation(); setEditing(h); setFormOpen(true); }}>
               <Edit fontSize="small" />
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete">
-            <IconButton size="small" aria-label={`Delete ${h.name}`} color="error" onClick={() => setDeleting(h)}>
+            <IconButton size="small" aria-label={`Delete ${h.name}`} color="error" onClick={(e) => { e.stopPropagation(); setDeleting(h); }}>
               <Delete fontSize="small" />
             </IconButton>
           </Tooltip>
@@ -301,7 +301,17 @@ export default function HostsPage() {
             rowKey={(h) => h.id ?? ''}
             aria-label="Hosts"
             getRowProps={(h) => ({
-              onClick: () => navigate(`/hosts/${h.id}`),
+              onClick: (e) => {
+                // Clicks on the row's own interactive elements (edit/delete/
+                // logon/open buttons) are handled by their own handlers; never
+                // let them fall through to row navigation (event propagation
+                // from the button is stopped too — this is defense in depth).
+                const target = e.target as HTMLElement | null;
+                if (target?.closest('button, a, input, select, textarea, [role="button"], [contenteditable="true"]')) {
+                  return;
+                }
+                navigate(`/hosts/${h.id}`);
+              },
               style: { cursor: 'pointer' },
             })}
           />
