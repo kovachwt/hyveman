@@ -57,9 +57,14 @@ public sealed class SchemaValidator
         return null;
     }
 
-    private List<string> Validate(JsonNode? schemaNode, JsonNode instance, string path)
+    private List<string> Validate(JsonNode? schemaNode, JsonNode? instance, string path)
     {
         var errors = new List<string>();
+        // .NET 10 STJ represents JSON null as a C# null reference everywhere
+        // (JsonNode.Parse("null") and JsonValue.Create(null) both return null,
+        // and null object members / array elements surface as null). So a null
+        // `instance` IS the JSON null literal — TypeMatches handles it; never
+        // dereference instance without a null check.
         if (schemaNode is JsonValue v)
         {
             if (v.TryGetValue<bool>(out var b))
@@ -199,7 +204,7 @@ public sealed class SchemaValidator
         "integer" => instance is JsonValue v2 && v2.TryGetValue<double>(out var d) && d == Math.Truncate(d),
         "number" => instance is JsonValue v3 && v3.TryGetValue<double>(out _),
         "boolean" => instance is JsonValue v4 && v4.TryGetValue<bool>(out _),
-        "null" => instance.GetValueKind() == JsonValueKind.Null,
+        "null" => instance is null || instance.GetValueKind() == JsonValueKind.Null,
         _ => true,
     };
 }

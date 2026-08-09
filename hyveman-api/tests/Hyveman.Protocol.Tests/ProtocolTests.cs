@@ -87,6 +87,22 @@ public class SchemaValidatorTests
     }
 
     [Fact]
+    public void TelemetryRequest_NullableFactFields_NullValuesValid()
+    {
+        // PROTOCOL §7.1: heartbeat_ok/cpu_pct/mem_mb are nullable. JSON null
+        // members must validate clean and must NOT crash the validator
+        // (JsonObject stores them as a null JsonNode — regression for the
+        // NullReferenceException on /ingest/telemetry).
+        var json = """
+            {"v":1,"items":[
+              {"kind":"facts","collected_at":"2024-08-07T15:02:10Z","stale":false,
+               "vms":[{"name":"VM1","state":"on","heartbeat_ok":null,"cpu_pct":null,"mem_mb":null,
+                       "last_seen":"2024-08-07T15:02:09Z"}]}]}
+            """;
+        Assert.Empty(V.Validate("#", json));
+    }
+
+    [Fact]
     public void TelemetryRequest_EmptyVmList_IsValid()
     {
         // PROTOCOL §7.4: "vms": [] with stale:false means the scan succeeded.

@@ -233,6 +233,7 @@ host tile on **Overview**.
 | Agent: `auth_rejected` after registration | `reg_` token already consumed (response lost) — reissue |
 | Agent: Event Log error at startup | console mode, event source unregistered — harmless |
 | Git Bash: `C:\...` args produce junk `C:Dev...` files | bash ate the backslashes — use forward slashes or run from PowerShell |
+| Git Bash: inline PowerShell fails with `/usr/bin/bash.ProcessName`-style junk | bash expanded `$_` inside double quotes — never use `powershell -Command "..."` from bash; use the `.ps1` launchers / `-File`, or single-quote the whole command |
 | API listens on 5080 instead of your URL | `--data-dir` didn't reach the app (see previous row) and no `config.json` was found |
 
 ## 10. Stopping
