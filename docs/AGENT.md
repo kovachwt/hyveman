@@ -124,11 +124,17 @@ The agent places itself in a Win32 Job Object at startup (PInvoke
 
 ### 4.3 Service config (set by `install.ps1`, §11)
 ```
-sc create hyveman-agent binPath= "<exe> --service" start= delayed-auto
+# Create via New-Service, NOT `sc create`: the binPath value embeds quotes
+# around a path with spaces, and PowerShell 5.1 does not escape embedded quotes
+# in native command lines — sc.exe would receive `binPath= C:\Program ...`
+# (broken path, or exit 1639 ERROR_INVALID_COMMANDLINE on Server builds).
+# New-Service / Win32_Service.Change pass the string to the SCM API verbatim.
+New-Service hyveman-agent -BinaryPathName '"C:\Program Files\hyveman-agent\hyveman-agent.exe" --service' -StartupType Automatic
+  # (PS 5.1 New-Service only accepts ServiceStartMode; delayed-auto set below)
+sc config hyveman-agent start= delayed-auto
 sc description hyveman-agent "Hyveman log & health agent"
 sc failure hyveman-agent reset= 14400 actions= restart/5000/restart/5000/restart/5000
   # 3 restarts within 4 h then STOP (no infinite loop). Trigger backend "agent silent".
-sc config hyveman-agent start= delayed-auto
 ```
 - `DelayedAutoStart` — don't compete with boot-critical services.
 - Process priority **Below Normal** (set via Job Object `PriorityClass`).
@@ -579,8 +585,12 @@ Steps (idempotent — re-run is safe):
    dedicated least-privilege account (member of *Event Log Readers*) is a
    later option the installer will expose via a `-Account` flag; not used
    now to avoid per-host account provisioning on the small fleet.
-6. `sc create/update` with `start= delayed-auto`, `binPath= "<exe> --service"`,
-   recovery settings from §4.3, description.
+6. Create/update the service via `New-Service` (create) or
+   `Win32_Service.Change` (update) with `binPath= "<exe> --service"` — NOT
+   `sc.exe`, whose native command line mangles embedded quotes under
+   PowerShell 5.1 (`binPath= C:\Program ...`, exit 1639 on Server builds).
+   Then `sc.exe` for `start= delayed-auto`, recovery settings from §4.3,
+   description.
 7. **Preflight** (§11.3); if it fails, roll back and abort (don't leave a
    half-installed service).
 8. Start the service.

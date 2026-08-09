@@ -271,17 +271,27 @@ Write-Step "Create/update service (recovery: 3 restarts / 4 h then STOP, AGENT �
 
 $binPath = "`"$(Join-Path $InstallDir $ExeName)`" --service"
 
+# binPath embeds quotes around a path with spaces. Passing it through sc.exe
+# (a native command line) breaks under Windows PowerShell 5.1: embedded quotes
+# are not escaped, so sc.exe receives `binPath= C:\Program ...` and either
+# registers a broken path or aborts with exit 1639 (ERROR_INVALID_COMMANDLINE,
+# observed on Server builds). New-Service / Win32_Service.Change hand the
+# string to CreateServiceW/ChangeServiceConfig verbatim — no shell quoting — so
+# this works identically on PS 5.1 and 7. The remaining sc.exe calls carry no
+# spaces/quotes in values (start= delayed-auto, recovery actions) and are safe.
 $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($null -eq $svc) {
-    sc.exe create $ServiceName binPath= $binPath start= delayed-auto | Out-Null
-    Assert ($LASTEXITCODE -eq 0) "sc create failed (exit $LASTEXITCODE)"
+    # PS 5.1 New-Service -StartupType accepts only ServiceStartMode values
+    # (Automatic/Manual/Disabled); delayed-auto is applied below via sc.exe.
+    New-Service -Name $ServiceName -BinaryPathName $binPath -StartupType Automatic
 } else {
-    sc.exe config $ServiceName binPath= $binPath | Out-Null
-    sc.exe config $ServiceName start= delayed-auto | Out-Null
+    $wmiSvc = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+    $change = Invoke-CimMethod -InputObject $wmiSvc -MethodName Change -Arguments @{ PathName = $binPath }
+    Assert ($change.ReturnValue -eq 0) "could not update service binPath (Win32_Service.Change returned $($change.ReturnValue))"
 }
+sc.exe config $ServiceName start= delayed-auto | Out-Null
 sc.exe description $ServiceName "Hyveman log & health agent" | Out-Null
 sc.exe failure $ServiceName reset= 14400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
-sc.exe config $ServiceName start= delayed-auto | Out-Null
 
 # ---------------------------------------------------------------------------
 Write-Step "Validate config with the real binary (fail closed)"
