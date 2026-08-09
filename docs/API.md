@@ -504,6 +504,7 @@ resource surface is:
 | Hosts | `GET/POST/PATCH /api/v1/hosts`, `GET /api/v1/hosts/{id}` | Hardware metadata and agent association |
 | Health | `GET /api/v1/hosts/{id}/health`, `/health-history` | Current components, snapshots, metrics |
 | VMs | `GET /api/v1/hosts/{id}/vms` | Latest Hyper-V facts |
+| Logon stats | `GET /api/v1/logon-stats` | Per-user/per-day security-logon aggregates; bounded with `hasMore` |
 | Events | `GET /api/v1/events`, `GET /api/v1/events/{id}` | FTS5-backed server-side search |
 | Saved searches | CRUD under `/api/v1/saved-searches` | Single-admin configuration |
 | Sources/tokens | `GET /api/v1/sources`, `POST /api/v1/registration-tokens`, revoke actions | Raw registration token returned once |
@@ -541,6 +542,11 @@ component summaries, recent critical alerts, and a bounded recent-event preview.
 Separate history endpoints return chart data at a requested time range and
 server-selected resolution. The API is responsible for downsampling or
 bucketing; the browser must not download an entire multi-year metric series.
+
+Host create/update accepts `idracUrl` plus write-only `idracUsername`/
+`idracPassword` — both required when setting credentials; on update,
+omitted/blank leaves the stored credential unchanged. Read responses expose
+only `idracCredentialSet`, never the credential value.
 
 ### 7.2 Event search
 
@@ -583,6 +589,18 @@ endpoint queues or performs a clearly labeled test notification and records the
 result without revealing the secret.
 
 ---
+
+### 7.5 Logon stats
+
+`GET /api/v1/logon-stats` returns per-user/per-day security-logon aggregates
+derived server-side from accepted Security-channel events (PROTOCOL §6.6):
+4624 interactive/RDP successes, 4625 failures (all types), 4740 lockouts.
+Query parameters: `from`/`to` (inclusive UTC day range), `sourceId` (exact),
+`user` (exact), `limit` (default 50, max 200). Results are ordered by day
+descending; a `hasMore` flag reports additional rows — there is no cursor, so
+paging means narrowing filters or raising `limit`. Rows carry `day`
+(UTC `yyyy-MM-dd`), `sourceId`/`sourceName`, `user`, `logonType` (`2`, `10`,
+or `null` for lockouts), `successCount`, and `failureCount`.
 
 ## 8. Authentication and session design
 

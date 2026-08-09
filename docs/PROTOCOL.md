@@ -26,6 +26,7 @@ In scope (v1):
 - `POST /ingest/logs` — idempotent event batches (§6)
 - `POST /ingest/telemetry` — heartbeats + facts, latest-wins (§7)
 - `GET /health` — connectivity & token check (§8)
+- Server-side security-logon aggregate derived from accepted curated Security items (§6.6)
 - Headers reference (§9)
 - Severity/facility semantics per source kind (§10)
 - `record_id` / `dedup_scope` construction (§11)
@@ -334,6 +335,37 @@ The item maps onto the `events` table (DESIGN §5.1):
 See §13. On 4xx non-retryable, the agent quarantines the batch — **except**
 `400 too_many_items` / `413 payload_too_large`, which split & resend (§14);
 on 5xx/408/429 it keeps the spool file and retries (AGENT §6.5).
+
+### 6.6 Server-side derived aggregate — security-logon stats
+
+The server derives per-user/per-day security-logon counts (`logon_stats`,
+DESIGN §4.1/§13 #5) from **accepted** `/ingest/logs` items. This is
+server-owned derived data and never appears on the wire to agents, but it
+makes the following agent-shipped content load-bearing:
+
+- `fields.channel` must be `Security` (compared case-insensitively).
+- The curated event IDs, using `fields.event_data`:
+
+  | Event ID | Meaning | Counted as |
+  |---|---|---|
+  | 4624 | successful logon — **only** `event_data.LogonType` `2` (interactive) or `10` (RDP) | success |
+  | 4625 | failed logon, all logon types | failure |
+  | 4740 | account lockout (carries no logon type) | failure |
+
+- `fields.event_data.TargetUserName` (string, non-empty) must be present for
+  an item to aggregate; the day is the UTC calendar day (`yyyy-MM-dd`) of
+  `time`.
+
+Semantics:
+
+- Only **newly accepted** items count; deduped replays (§6.2) never
+  double-count.
+- The server applies its own curation to whatever arrives; the agent's
+  Security filter (DESIGN §4.1) and the server-side policy are independent.
+- An aggregation failure never rejects or affects the already-committed batch
+  (derived data).
+- The aggregate is read-only to agents and is exposed to the frontend through
+  the web admin API (API.md §7.5).
 
 ---
 
@@ -868,6 +900,7 @@ envelope. Provisional (finalized with the syslog spec):
 |---|---|---|
 | 2024-08-07 | v1 (draft) | Initial: registration, two ingest endpoints, health, idempotency+epoch, command reservation |
 | 2026-08-09 | v1 (rev) | Clarity-only revision (no wire changes): `commands: []` in §5.3/§8.2 examples; version-mismatch response + validation precedence (§3); `(kind, hostname)` identity rule and `boot_id` semantics (§5); response-loss recovery procedure (§5.4); telemetry latest-wins ordering rule + facts empty/stale semantics (§7.4); size-limit semantics for gzip/chunked/encoding (§12); stable codes for 408/502/503/504 and proxy-error note (§13.3); machine-readable schema reference (§13.5); per-stream retry limits + split special case (§14); new open items (§19) |
+| 2026-08-09 | v1 (rev) | Documentation-only: added §6.6 — server-side `logon_stats` aggregate: curated Security items (4624 LogonType 2/10, 4625, 4740, `TargetUserName`) are load-bearing; dedup-safe counting |
 
 ---
 

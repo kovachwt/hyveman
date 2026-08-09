@@ -183,6 +183,7 @@ The route table is:
 | `/` | Admin | Fleet overview |
 | `/hosts` | Admin | Host list and filters |
 | `/hosts/:hostId` | Admin | Host health, components, VMs, events, and history |
+| `/hosts/:hostId/logons` | Admin | Per-user/per-day security-logon aggregates for the host |
 | `/logs` | Admin | Event search and saved searches |
 | `/alerts` | Admin | Active/history alert list and actions |
 | `/rules` | Admin | Alert rule CRUD |
@@ -261,6 +262,7 @@ Query keys include every server-side filter that changes the result. Examples:
 ["hosts", filters]
 ["host", hostId]
 ["healthHistory", hostId, range, resolution]
+["logonStats", hostId, range, user]
 ["events", eventFilters]
 ["alerts", alertFilters]
 ["rules"]
@@ -444,7 +446,7 @@ exposing provider response bodies that may contain URLs or credentials.
 
 The admin area includes:
 
-- source and host registration;
+- source and host registration, including iDRAC URL and write-only iDRAC credentials;
 - one-time agent registration-token creation;
 - token revocation and last-used metadata;
 - retention settings;
@@ -457,7 +459,34 @@ is not placed in the URL, query string, analytics event, browser local storage,
 or application logs. The API remains responsible for expiration, binding, and
 single-use enforcement.
 
----
+Host create/edit forms accept the iDRAC URL and iDRAC credentials as
+write-only fields, with the same rules as notification secrets (§8.5):
+username and password are both required when setting them, blank on edit
+means "leave the stored value unchanged", and responses expose only a
+credential-set flag — never the value. Entered secrets are cleared after
+submission and never placed in the URL, browser storage, or application logs.
+
+### 8.7 Logon stats
+
+The logon-stats view answers "who logged on where, how often" per host. It
+consumes `GET /api/v1/logon-stats` with time-range, source, and user filters.
+The API returns per-user/per-day rows with success and failure counts and a
+`hasMore` flag; there is no cursor, so when more rows are available the view
+offers "narrow the filters or raise the page size" (the API caps page size at
+200). Filters persist in the URL (same pattern as §8.3), and the source and
+user filters are exact matches.
+
+The aggregates are derived server-side from curated Security events (4624
+interactive/RDP successes, 4625 failures, 4740 lockouts), so the view is
+read-only and never re-aggregates events in the browser. Because the API
+filters by source, the host page resolves the host's associated source before
+querying; a host without an associated source returns no rows.
+
+Days are UTC calendar days (`yyyy-MM-dd`) and are labeled as UTC to avoid
+off-by-one ambiguity. Lockout rows have no logon type. Presentation combines a
+summary strip (successes, failures, lockouts), a dense table (day, user, logon
+type with Interactive/RDP labels, success, failure), and ECharts
+visualizations such as a stacked per-day success/failure bar chart.
 
 ## 9. Visual system and accessibility
 
@@ -617,6 +646,7 @@ Test:
 
 - status/severity formatting and stale-state logic;
 - query-string serialization/deserialization for event filters;
+- logon-stats filter serialization, UTC-day handling, and count formatting;
 - form schemas and validation messages;
 - alert/rule form transformations;
 - API error mapping;
@@ -630,6 +660,7 @@ Using Testing Library and mocked API responses, cover:
 - overview tiles and stale banners;
 - host component tables and health charts;
 - event filtering, cursor navigation, and detail rendering;
+- logon stats table, UTC-day labels, and the bounded-result notice;
 - alert acknowledgement/silence flows;
 - notification secret create/edit behavior; and
 - loading, empty, error, and retry states.
@@ -664,7 +695,7 @@ menus, tables, and passkey actions.
    fetch mutator, Problem Details mapping, query client, and CSRF handling.
 3. Implement session bootstrap, login, setup, logout, route guards, and
    passkey management.
-4. Implement the overview, host list/detail, current health, and VM views.
+4. Implement the overview, host list/detail, current health, VM views, and logon stats.
 5. Implement event search, detail rendering, cursor pagination, and saved
    searches.
 6. Implement alerts, acknowledgement/silence, rules, and maintenance windows.
