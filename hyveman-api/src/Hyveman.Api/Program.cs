@@ -58,6 +58,11 @@ public partial class Program
 
         builder.WebHost.UseUrls(opts.ApiListenUrls.Split(';', StringSplitOptions.RemoveEmptyEntries));
 
+        // Windows service hosting (API.md §2): a no-op when not running under
+        // the Service Control Manager, so the same binary still runs as a
+        // console process on Linux/Docker or in a terminal.
+        builder.Host.UseWindowsService(o => o.ServiceName = "hyveman-api");
+
         // ── Configuration & core singletons ──────────────────────────────
         builder.Services.AddSingleton(opts);
         builder.Services.AddSingleton<Hyveman.Application.IClock, Hyveman.Application.SystemClock>();
@@ -79,6 +84,7 @@ public partial class Program
         builder.Services.AddScoped<IRegistrationTokenStore, RegistrationTokenStore>();
         builder.Services.AddScoped<IRegistrationUnit, RegistrationUnit>();
         builder.Services.AddScoped<IEventStore, EventStore>();
+        builder.Services.AddScoped<ILogonStatsStore, LogonStatsStore>();
         builder.Services.AddScoped<IAgentStatusStore, AgentStatusStore>();
         builder.Services.AddScoped<IHostStore, HostStore>();
         builder.Services.AddScoped<IHealthStore, HealthStore>();
@@ -107,6 +113,7 @@ public partial class Program
 
         builder.Services.AddScoped<RegistrationService>();
         builder.Services.AddScoped<LogIngestService>();
+        builder.Services.AddScoped<LogonStatsService>();
         builder.Services.AddScoped<TelemetryService>();
         builder.Services.AddScoped<IAlertEvaluator, AlertEvaluatorService>();
         builder.Services.AddScoped<HeartbeatMonitor>();

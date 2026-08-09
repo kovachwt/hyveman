@@ -253,6 +253,33 @@ public sealed record SavedSearchRecord(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
+/// <summary>One aggregated security-logon delta (DESIGN §4.1/§13 #5).
+/// Day is the UTC event day (yyyy-MM-dd). LogonType is null for account
+/// lockouts (4740), which carry no logon type.</summary>
+public sealed record LogonStatEntry(
+    string Day,
+    string User,
+    int? LogonType,
+    long SuccessDelta,
+    long FailureDelta);
+
+/// <summary>Aggregated per-user/per-day logon counts (logon_stats row).</summary>
+public sealed record LogonStatRow(
+    string Day,
+    string SourceId,
+    string? SourceName,
+    string User,
+    int? LogonType,
+    long SuccessCount,
+    long FailureCount);
+
+public sealed record LogonStatsQuery(
+    DateTimeOffset? From,
+    DateTimeOffset? To,
+    string? SourceId,
+    string? User,
+    int Limit);
+
 /// <summary>Outcome of a VACUUM INTO backup (API.md §9.5).</summary>
 public sealed record BackupResult(bool Ok, string Path, long SizeBytes, string? Error);
 

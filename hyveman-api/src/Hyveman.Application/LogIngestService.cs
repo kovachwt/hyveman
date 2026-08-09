@@ -11,6 +11,7 @@ namespace Hyveman.Application;
 public sealed class LogIngestService(
     IEventStore events,
     IAlertEvaluator evaluator,
+    LogonStatsService logonStats,
     ILogger<LogIngestService> log)
 {
     /// <summary>Validates and inserts one batch. The caller has already
@@ -66,6 +67,19 @@ public sealed class LogIngestService(
                 // Alert evaluation must never break ingest durability; the
                 // reconciliation pass repairs state after a crash (API.md §9.3).
                 log.LogError(ex, "Event rule evaluation failed for source {sourceId}; will reconcile later", sourceId);
+            }
+
+            try
+            {
+                // Per-user/per-day security-logon aggregates (DESIGN §4.1/§13 #5).
+                // Accepted rows only: deduped replays must not double-count.
+                await logonStats.RecordAcceptedAsync(sourceId, acceptedItems, ct);
+            }
+            catch (Exception ex)
+            {
+                // Stats are derived data; an aggregation failure must not reject
+                // the already-committed batch (API.md §13 failure behavior).
+                log.LogError(ex, "Logon stats aggregation failed for source {sourceId}", sourceId);
             }
         }
 

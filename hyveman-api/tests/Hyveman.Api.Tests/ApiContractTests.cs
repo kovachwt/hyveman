@@ -340,6 +340,54 @@ public class AgentContractTests
     // ── web API ────────────────────────────────────────────────────────────
 
     [Fact]
+    public async Task WebApi_LogonStats_AggregatesSecurityEvents_AndIgnoresDedupedReplays()
+    {
+        // DESIGN §4.1/§13 #5: accepted Security events aggregate into
+        // per-user/per-day logon counts; deduped replays must not double-count.
+        var token = await _fx.RegisterAgentAsync("LOGON-01");
+        var batch = """
+            {"v":1,"items":[
+              {"kind":"log","record_id":"sec-1","dedup_scope":"Security","time":"2024-08-07T10:00:00Z","severity":4,"message":"logon","fields":{"channel":"Security","event_id":4624,"event_data":{"LogonType":"10","TargetUserName":"admin"}}},
+              {"kind":"log","record_id":"sec-2","dedup_scope":"Security","time":"2024-08-07T10:00:01Z","severity":4,"message":"network-logon","fields":{"channel":"Security","event_id":4624,"event_data":{"LogonType":"3","TargetUserName":"svc"}}},
+              {"kind":"log","record_id":"sec-3","dedup_scope":"Security","time":"2024-08-07T10:00:02Z","severity":4,"message":"failed","fields":{"channel":"Security","event_id":4625,"event_data":{"LogonType":"3","TargetUserName":"bob"}}},
+              {"kind":"log","record_id":"sec-4","dedup_scope":"Security","time":"2024-08-07T10:00:03Z","severity":4,"message":"lockout","fields":{"channel":"Security","event_id":4740,"event_data":{"TargetUserName":"bob"}}}
+            ]}
+            """;
+
+        var resp = await PostAsync("/ingest/logs", token, batch);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var ingest = await ReadJson(resp);
+        Assert.Equal(4, ingest.GetProperty("accepted").GetInt32());
+
+        // Replay: identical key → all deduped → counts must not grow.
+        var replay = await PostAsync("/ingest/logs", token, batch);
+        Assert.Equal(4, (await ReadJson(replay)).GetProperty("deduped").GetInt32());
+
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var stats = await client.GetAsync("/api/v1/logon-stats");
+        Assert.Equal(HttpStatusCode.OK, stats.StatusCode);
+        var json = await ReadJson(stats);
+
+        // 4624 type 10 → success; 4624 type 3 (curated out) → no row;
+        // 4625 type 3 → failure; 4740 (no logon type) → failure with null type.
+        var items = json.GetProperty("items").EnumerateArray().ToList();
+        Assert.Equal(3, items.Count);
+        var admin = Assert.Single(items, i => i.GetProperty("user").GetString() == "admin");
+        Assert.Equal(1, admin.GetProperty("successCount").GetInt32());
+        Assert.Equal(0, admin.GetProperty("failureCount").GetInt32());
+        Assert.Equal(10, admin.GetProperty("logonType").GetInt32());
+        Assert.Equal("2024-08-07", admin.GetProperty("day").GetString());
+        var failed = Assert.Single(items, i => i.GetProperty("user").GetString() == "bob"
+            && i.GetProperty("logonType").ValueKind == JsonValueKind.Number);
+        Assert.Equal(1, failed.GetProperty("failureCount").GetInt32());
+        var locked = Assert.Single(items, i => i.GetProperty("user").GetString() == "bob"
+            && i.GetProperty("logonType").ValueKind == JsonValueKind.Null);
+        Assert.Equal(1, locked.GetProperty("failureCount").GetInt32());
+        Assert.False(json.GetProperty("hasMore").GetBoolean());
+    }
+
+    [Fact]
     public async Task WebApi_HostHealth_Endpoint()
     {
         var client = _fx.NewClient();

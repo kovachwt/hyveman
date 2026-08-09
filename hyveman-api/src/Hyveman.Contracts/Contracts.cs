@@ -457,6 +457,27 @@ public sealed class AuditListResponse
     public bool HasMore { get; set; }
 }
 
+// ─── Logon stats (DESIGN §4.1, Phase 2) ─────────────────────────────────────
+
+public sealed class LogonStatsResponse
+{
+    public List<LogonStatDto> Items { get; set; } = [];
+    public bool HasMore { get; set; }
+}
+
+public sealed class LogonStatDto
+{
+    /// <summary>UTC event day (yyyy-MM-dd).</summary>
+    public string Day { get; set; } = "";
+    public string SourceId { get; set; } = "";
+    public string? SourceName { get; set; }
+    public string User { get; set; } = "";
+    /// <summary>Null for account lockouts (4740), which carry no logon type.</summary>
+    public int? LogonType { get; set; }
+    public long SuccessCount { get; set; }
+    public long FailureCount { get; set; }
+}
+
 // ─── Errors (API.md §5.2) ───────────────────────────────────────────────────
 
 public sealed class ApiProblem

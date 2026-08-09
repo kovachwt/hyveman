@@ -270,6 +270,15 @@ public interface IAuditStore
     Task<IReadOnlyList<AuditEntry>> ListAsync(AuditQuery query, CancellationToken ct);
 }
 
+/// <summary>Per-user/per-day security-logon aggregates (DESIGN §4.1, §13 #5).
+/// Fed from accepted Security events at ingest (never from deduped replays);
+/// NULL logon_type rows are account lockouts (4740).</summary>
+public interface ILogonStatsStore
+{
+    Task IncrementAsync(string sourceId, IReadOnlyList<LogonStatEntry> entries, CancellationToken ct);
+    Task<IReadOnlyList<LogonStatRow>> QueryAsync(LogonStatsQuery query, CancellationToken ct);
+}
+
 public sealed record AuditQuery(string? Action, string? TargetKind, DateTimeOffset? From, DateTimeOffset? To, int Limit, string? Cursor);
 
 /// <summary>Encrypted-at-rest credential vault (DESIGN §7, API.md §10.1).</summary>

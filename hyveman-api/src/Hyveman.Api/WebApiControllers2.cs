@@ -221,3 +221,17 @@ public sealed class AuditController(AuditService audit) : ControllerBase
         [FromQuery] int? limit, [FromQuery] string? cursor, CancellationToken ct)
         => audit.ListAsync(action, targetKind, from, to, limit, cursor, ct);
 }
+
+/// <summary>Per-user/per-day security-logon aggregates (DESIGN §4.1/§13 #5,
+/// Phase 2): who logged on where and how often — 4624 successes (LogonType
+/// 2/10), 4625 failures, 4740 lockouts.</summary>
+[ApiController]
+[Route("api/v1/logon-stats")]
+[Authorize]
+public sealed class LogonStatsController(LogonStatsService logonStats) : ControllerBase
+{
+    [HttpGet]
+    public Task<LogonStatsResponse> List([FromQuery] DateTimeOffset? from, [FromQuery] DateTimeOffset? to,
+        [FromQuery] string? sourceId, [FromQuery] string? user, [FromQuery] int? limit, CancellationToken ct)
+        => logonStats.QueryAsync(from, to, sourceId, user, limit, ct);
+}
