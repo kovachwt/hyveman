@@ -221,6 +221,41 @@ public class AgentContractTests : IClassFixture<ApiFixture>
         Assert.Equal("invalid_request", (await ReadJson(resp)).GetProperty("error").GetProperty("code").GetString());
     }
 
+    [Fact]
+    public async Task Logs_TypeMismatchedItem_RejectedPerItem_NotWholeBatch()
+    {
+        // PROTOCOL §6.2/§6.4: a malformed item (wrong JSON type) must be
+        // rejected per-item with "schema", while the valid items are stored.
+        var token = await _fx.RegisterAgentAsync("TYPEMISMATCH-01");
+        var body = """
+            {"v":1,"items":[
+              {"kind":"log","record_id":"1","dedup_scope":"S","time":"2024-08-07T00:00:00Z","message":"good"},
+              {"kind":"log","record_id":"2","dedup_scope":"S","time":"2024-08-07T00:00:01Z","facility":123,"message":"bad-facility"}
+            ]}
+            """;
+        var resp = await PostAsync("/ingest/logs", token, body);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var json = await ReadJson(resp);
+        Assert.Equal(1, json.GetProperty("accepted").GetInt32());
+        Assert.Equal(0, json.GetProperty("deduped").GetInt32());
+        var rejected = json.GetProperty("rejected");
+        Assert.Equal(1, rejected.GetArrayLength());
+        Assert.Equal("schema", rejected[0].GetProperty("reason").GetString());
+        Assert.True(rejected[0].GetProperty("permanent").GetBoolean());
+        // Invariant holds: 1 + 0 + 1 == 2 items.
+        Assert.Equal(2, json.GetProperty("accepted").GetInt32() + json.GetProperty("deduped").GetInt32()
+            + json.GetProperty("rejected").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Logs_EmptyBatch_Rejected()
+    {
+        var token = await _fx.RegisterAgentAsync("EMPTY-01");
+        var resp = await PostAsync("/ingest/logs", token, """{"v":1,"items":[]}""");
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal("invalid_request", (await ReadJson(resp)).GetProperty("error").GetProperty("code").GetString());
+    }
+
     // ── telemetry (latest-wins) ────────────────────────────────────────────
 
     [Fact]
@@ -302,6 +337,35 @@ public class AgentContractTests : IClassFixture<ApiFixture>
     }
 
     // ── web API ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task WebApi_HostHealth_Endpoint()
+    {
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+
+        using var create = new HttpRequestMessage(HttpMethod.Post, "/api/v1/hosts");
+        create.Headers.Add("X-CSRF-Token", csrf);
+        create.Headers.Add("Origin", "http://localhost:5173");
+        create.Content = new StringContent("""{"name":"HEALTH-API-01"}""", Encoding.UTF8, "application/json");
+        var created = await client.SendAsync(create);
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var hostId = (await ReadJson(created)).GetProperty("id").GetString();
+
+        // GET /api/v1/hosts/{id}/health (API.md §7.1): components, rollup, metrics, snapshots.
+        var health = await client.GetAsync($"/api/v1/hosts/{hostId}/health");
+        Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+        var body = await ReadJson(health);
+        Assert.Equal(hostId, body.GetProperty("hostId").GetString());
+        Assert.Equal("unknown", body.GetProperty("rollupState").GetString());
+        Assert.Equal(JsonValueKind.Array, body.GetProperty("components").ValueKind);
+        Assert.Equal(JsonValueKind.Array, body.GetProperty("latestMetrics").ValueKind);
+        Assert.Equal(JsonValueKind.Array, body.GetProperty("recentSnapshots").ValueKind);
+
+        var missing = await client.GetAsync("/api/v1/hosts/nope/health");
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
 
     [Fact]
     public async Task WebApi_Session_AndCsrf_Gate()

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hyveman.Domain;
 using Hyveman.Protocol;
 using Microsoft.Extensions.Logging;
@@ -9,30 +10,39 @@ namespace Hyveman.Application;
 /// documented 400/413 cases handled by the endpoint).</summary>
 public sealed class LogIngestService(
     IEventStore events,
-    IAgentStatusStore agentStatus,
     IAlertEvaluator evaluator,
-    IClock clock,
     ILogger<LogIngestService> log)
 {
     /// <summary>Validates and inserts one batch. The caller has already
     /// authenticated the token; sourceKind drives severity semantics
-    /// (PROTOCOL §10).</summary>
+    /// (PROTOCOL §10). Items are raw JSON elements so a malformed item is
+    /// rejected per-item ("schema") instead of failing the batch at
+    /// deserialization (PROTOCOL §6.2/§6.4).</summary>
     public async Task<IngestResult> IngestAsync(string sourceId, string sourceKind,
-        IReadOnlyList<LogItemDto> items, CancellationToken ct)
+        IReadOnlyList<JsonElement> items, CancellationToken ct)
     {
         if (items.Count > ProtocolValidation.MaxItemsPerBatch)
             throw new ProtocolException(ProtocolErrorCodes.TooManyItems, 400,
                 $"batch has {items.Count} items; maximum is {ProtocolValidation.MaxItemsPerBatch}");
+        if (items.Count == 0)
+            throw new ProtocolException(ProtocolErrorCodes.InvalidRequest, 400, "items must not be empty");
 
-        // items are homogeneous: only kind:"log" (PROTOCOL §6.1).
-        if (items.Any(i => i.Kind != "log"))
-            throw new ProtocolException(ProtocolErrorCodes.InvalidRequest, 400, "wrong_item_kind: /ingest/logs accepts only kind:\"log\"");
+        // items are homogeneous: only kind:"log" (PROTOCOL §6.1). A well-formed
+        // item of another kind is a whole-batch error; an item with a missing
+        // or non-string kind is malformed and rejected per-item below.
+        foreach (var item in items)
+        {
+            if (item.ValueKind == JsonValueKind.Object &&
+                item.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String &&
+                kind.GetString() != "log")
+                throw new ProtocolException(ProtocolErrorCodes.InvalidRequest, 400, "wrong_item_kind: /ingest/logs accepts only kind:\"log\"");
+        }
 
         var valid = new List<ValidatedLogItem>(items.Count);
         var rejected = new List<ItemRejection>(items.Count);
         foreach (var item in items)
         {
-            var (row, rejection) = ProtocolValidation.ValidateLogItem(item, sourceKind);
+            var (row, rejection) = ProtocolValidation.ParseLogItem(item, sourceKind);
             if (rejection is not null)
                 rejected.Add(rejection);
             else if (row is not null)

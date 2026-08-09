@@ -168,6 +168,28 @@ public sealed class HostsService(
         await audit.RecordAsync(actor, "host.deleted", "host", id, null, clock.UtcNow, ct);
     }
 
+    public async Task<HostHealthResponse> GetHealthAsync(string id, CancellationToken ct)
+    {
+        var host = await store.GetAsync(id, ct) ?? throw new NotFoundException($"host '{id}' not found");
+        var components = await health.GetComponentsAsync(id, ct);
+        var metrics = await health.GetLatestMetricsAsync(id, maxPerName: 1, ct);
+        var now = clock.UtcNow;
+        var snapshots = await health.GetSnapshotsAsync(id, now.AddDays(-7), now, limit: 200, ct);
+        return new HostHealthResponse
+        {
+            HostId = id,
+            RollupState = OverviewService.RollupOf(components),
+            RollupAt = components.Count > 0 ? components.Max(c => c.LastSeen) : null,
+            Components = components.Select(c => new ComponentDto
+            {
+                Type = c.Type, Name = c.Name, State = HealthStates.ToWire(c.State),
+                Detail = c.Detail, LastSeen = c.LastSeen,
+            }).OrderBy(c => c.Type).ToList(),
+            LatestMetrics = metrics.Select(m => new MetricDto { Name = m.Name, Value = m.Value, Unit = m.Unit, Time = m.Time }).ToList(),
+            RecentSnapshots = snapshots.Select(s => new HealthSnapshotDto { Time = s.Time, RollupState = s.RollupState }).ToList(),
+        };
+    }
+
     public async Task<HealthHistoryResponse> GetHealthHistoryAsync(string id, DateTimeOffset? from, DateTimeOffset? to, string? resolution, CancellationToken ct)
     {
         if (await store.GetAsync(id, ct) is null) throw new NotFoundException($"host '{id}' not found");

@@ -269,15 +269,18 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
 
         WarnSourceHintMismatch(ctx, root, sourceId);
 
-        var req = JsonSerializer.Deserialize<LogBatchRequest>(root.GetRawText(), ProtocolJson.Options);
-        if (req?.Items is null)
+        // Read items structurally (never typed deserialization): a malformed
+        // item is rejected per-item with "schema", not whole-batch (PROTOCOL
+        // §6.2); a missing/non-array items field is a whole-batch 400.
+        if (!root.TryGetProperty("items", out var itemsProp) || itemsProp.ValueKind != JsonValueKind.Array)
         {
             await WriteErrorAsync(ctx, 400, ErrorCodes.InvalidRequest, "items must be an array");
             return;
         }
+        var items = itemsProp.EnumerateArray().ToList();
 
         var service = ctx.RequestServices.GetRequiredService<LogIngestService>();
-        var result = await service.IngestAsync(sourceId, sourceKind, req.Items, ctx.RequestAborted);
+        var result = await service.IngestAsync(sourceId, sourceKind, items, ctx.RequestAborted);
         var response = new LogsResponse
         {
             V = ProtocolVersion.Current,
@@ -411,16 +414,22 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
 
     private static async Task<byte[]?> ReadBodyAsync(HttpContext ctx, bool gzip)
     {
-        if (ctx.Request.ContentLength is { } cl && cl > MaxBodyBytes) return null;
+        // The 4 MiB limit is on the decompressed (identity) JSON (PROTOCOL §12),
+        // so the Content-Length precheck applies to identity bodies only.
+        // Compressed bytes are buffered up to a safety bound; a gzip stream
+        // larger than that would decompress well past the cap (DEFLATE can
+        // expand by at most ~12%), so rejecting there is still spec-correct.
+        if (!gzip && ctx.Request.ContentLength is { } cl && cl > MaxBodyBytes) return null;
         using var ms = new MemoryStream();
         var buffer = new byte[81920];
         long total = 0;
+        var compressedCap = gzip ? MaxBodyBytes * 2 : MaxBodyBytes;
         while (true)
         {
             var read = await ctx.Request.Body.ReadAsync(buffer, ctx.RequestAborted);
             if (read == 0) break;
             total += read;
-            if (total > MaxBodyBytes) return null;
+            if (total > compressedCap) return null;
             ms.Write(buffer, 0, read);
         }
         var raw = ms.ToArray();

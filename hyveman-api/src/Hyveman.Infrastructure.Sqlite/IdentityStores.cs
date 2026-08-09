@@ -210,3 +210,98 @@ public sealed class RegistrationTokenStore(SqliteDb db) : IRegistrationTokenStor
             (long)r.revoked == 1)).ToList();
     }
 }
+
+/// <summary>Atomic registration (API.md §6.2): the reg_ token check, source
+/// resolve/create, agent-token mint and token consumption run in one
+/// BEGIN IMMEDIATE transaction. SQLite serializes writers on the immediate
+/// lock, so a concurrent registration with the same reg_ token either waits
+/// and then sees the consumed flag (→ Consumed → 410) or fails the source
+/// UNIQUE constraint — the single-use property and UNIQUE(kind, name) hold.</summary>
+public sealed class RegistrationUnit(SqliteDb db) : IRegistrationUnit
+{
+    public async Task<RegistrationUnitResult> ExecuteAsync(string rawRegToken, string kind, string hostname,
+        DateTimeOffset now, CancellationToken ct)
+    {
+        var hash = StoreHelpers.HashToken(rawRegToken);
+        using var conn = StoreHelpers.Open(db);
+        await conn.ExecuteAsync(new CommandDefinition("BEGIN IMMEDIATE", cancellationToken: ct));
+        try
+        {
+            var row = await conn.QuerySingleOrDefaultAsync(new CommandDefinition("""
+                SELECT id, kind, revoked, expires_at, consumed_at
+                FROM registration_tokens WHERE token_hash = @hash
+                """, new { hash }, cancellationToken: ct));
+            if (row is null)
+                return await FailAsync(conn, new RegistrationUnitResult(RegistrationStatus.UnknownToken), ct);
+
+            var tokenId = (string)row.id;
+            if ((long)row.revoked == 1)
+                return await FailAsync(conn, new RegistrationUnitResult(RegistrationStatus.Revoked), ct);
+            if (StoreHelpers.ParseOpt((string?)row.expires_at) is { } expiry && expiry <= now)
+                return await FailAsync(conn, new RegistrationUnitResult(RegistrationStatus.Expired), ct);
+            if (StoreHelpers.ParseOpt((string?)row.consumed_at) is not null)
+                return await FailAsync(conn, new RegistrationUnitResult(RegistrationStatus.Consumed), ct);
+            var boundKind = (string)row.kind;
+            if (boundKind != kind)
+                return await FailAsync(conn, new RegistrationUnitResult(RegistrationStatus.KindMismatch, BoundKind: boundKind), ct);
+
+            // (kind, hostname) is authoritative in v1 (PROTOCOL §5.2): reuse or create.
+            var source = await conn.QuerySingleOrDefaultAsync(new CommandDefinition(
+                "SELECT id, kind, name, created_at FROM sources WHERE kind = @kind AND name = @name",
+                new { kind, name = hostname }, cancellationToken: ct));
+            string sourceId;
+            bool sourceCreated;
+            if (source is null)
+            {
+                sourceId = StoreHelpers.RandomId("src_", 18);
+                await conn.ExecuteAsync(new CommandDefinition(
+                    "INSERT INTO sources(id, kind, name, created_at) VALUES (@Id, @Kind, @Name, @CreatedAt)",
+                    new { Id = sourceId, Kind = kind, Name = hostname, CreatedAt = StoreHelpers.Fmt(now) },
+                    cancellationToken: ct));
+                sourceCreated = true;
+            }
+            else
+            {
+                sourceId = (string)source.id;
+                sourceCreated = false;
+            }
+
+            // Mint the long-lived ingest token; the raw value exists only here
+            // and in the registration response (PROTOCOL §5.3).
+            var rawToken = "agt_" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+            await conn.ExecuteAsync(new CommandDefinition("""
+                INSERT INTO tokens(id, source_id, token_hash, prefix, scopes, created)
+                VALUES (@Id, @SourceId, @Hash, 'agt_', @Scopes, @Created)
+                """, new
+            {
+                Id = StoreHelpers.RandomId("tok_", 18),
+                SourceId = sourceId,
+                Hash = StoreHelpers.HashToken(rawToken),
+                Scopes = System.Text.Json.JsonSerializer.Serialize(new[] { TokenKinds.ScopeIngest }),
+                Created = StoreHelpers.Fmt(now),
+            }, cancellationToken: ct));
+
+            // Consume the one-time token in the same transaction.
+            await conn.ExecuteAsync(new CommandDefinition(
+                "UPDATE registration_tokens SET consumed_at = @At WHERE id = @Id",
+                new { Id = tokenId, At = StoreHelpers.Fmt(now) }, cancellationToken: ct));
+
+            await conn.ExecuteAsync(new CommandDefinition("COMMIT", cancellationToken: ct));
+            return new RegistrationUnitResult(RegistrationStatus.Ok, sourceId, kind, hostname, rawToken,
+                [TokenKinds.ScopeIngest], now, sourceCreated, boundKind);
+        }
+        catch
+        {
+            try { await conn.ExecuteAsync(new CommandDefinition("ROLLBACK", cancellationToken: ct)); }
+            catch { /* the connection may already be broken; the original error wins */ }
+            throw;
+        }
+    }
+
+    private static async Task<RegistrationUnitResult> FailAsync(
+        Microsoft.Data.Sqlite.SqliteConnection conn, RegistrationUnitResult result, CancellationToken ct)
+    {
+        await conn.ExecuteAsync(new CommandDefinition("ROLLBACK", cancellationToken: ct));
+        return result;
+    }
+}

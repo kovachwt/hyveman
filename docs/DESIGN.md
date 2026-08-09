@@ -297,7 +297,7 @@ audit_log(id, time, actor, action, target_kind, target_id, detail_json)
 
 | Piece | Recommendation | Why |
 |---|---|---|
-| Agent + API | **C# / .NET 8** (LTS), self-contained single-file exes | Native Win32 Event Log APIs (`EvtSubscribe`), WMI via `System.Management`/CimSession`, excellent HTTP/Kestrel, trivial Windows-service hosting; runs fine on Server 2019+. The API is cross-platform — .NET 8 runs the same binary on Linux (systemd/Docker) as on Windows; only the agent is Windows-only |
+| Agent + API | **Agent: C# / .NET 8** (LTS); **API: C# / .NET 10**, self-contained single-file exes | Native Win32 Event Log APIs (`EvtSubscribe`), WMI via `System.Management`/CimSession`, excellent HTTP/Kestrel, trivial Windows-service hosting; runs fine on Server 2019+. The API is cross-platform — .NET 10 runs the same binary on Linux (systemd/Docker) as on Windows; only the agent is Windows-only |
 | Web frontend | **React + TypeScript SPA (Vite)** | Independent static build and deployment, mature ecosystem for data-heavy dashboards, tables, charts, testing, and browser WebAuthn support |
 | API contract | **ASP.NET Core REST/JSON + OpenAPI**, with a generated TypeScript client | Keeps frontend/backend DTOs synchronized while allowing independent releases |
 | Frontend libraries | React Router, TanStack Query, MUI, Apache ECharts, `@simplewebauthn/browser` | Covers navigation, server-state caching/polling, accessible operations UI, health visualization, and passkey ceremonies |

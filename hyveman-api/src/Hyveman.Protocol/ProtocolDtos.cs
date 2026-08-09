@@ -42,13 +42,9 @@ public sealed class RegisterRequest
     [JsonPropertyName("boot_id")] public string? BootId { get; set; }
 }
 
-public sealed class LogBatchRequest
-{
-    [JsonPropertyName("v")] public int V { get; set; }
-    [JsonPropertyName("source")] public string? Source { get; set; }
-    [JsonPropertyName("items")] public List<LogItemDto>? Items { get; set; }
-}
-
+// Log batches are parsed structurally from the root JsonElement (items are
+// List<JsonElement>) so a malformed item is rejected per-item with "schema"
+// instead of failing the whole batch at typed deserialization (PROTOCOL §6.2).
 public sealed class LogItemDto
 {
     [JsonPropertyName("kind")] public string? Kind { get; set; }

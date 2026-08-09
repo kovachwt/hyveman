@@ -77,6 +77,7 @@ public partial class Program
         builder.Services.AddScoped<ISourceStore, SourceStore>();
         builder.Services.AddScoped<ITokenStore, TokenStore>();
         builder.Services.AddScoped<IRegistrationTokenStore, RegistrationTokenStore>();
+        builder.Services.AddScoped<IRegistrationUnit, RegistrationUnit>();
         builder.Services.AddScoped<IEventStore, EventStore>();
         builder.Services.AddScoped<IAgentStatusStore, AgentStatusStore>();
         builder.Services.AddScoped<IHostStore, HostStore>();

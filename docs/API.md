@@ -1,7 +1,7 @@
 # Hyveman API Server — Technical Design
 
 **Status:** Draft implementation design  
-**Runtime:** .NET 8 / ASP.NET Core  
+**Runtime:** .NET 10 / ASP.NET Core  
 **Executable:** `hyveman-api`
 
 This document defines the implementation design for the Hyveman backend API. It

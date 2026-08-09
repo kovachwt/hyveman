@@ -12,60 +12,35 @@ public class RegistrationServiceTests
         public DateTimeOffset UtcNow { get; } = now;
     }
 
-    private sealed class FakeRegTokens : IRegistrationTokenStore
+    private sealed class FakeRegistrationUnit : IRegistrationUnit
     {
-        public RegistrationTokenLookup? Lookup { get; set; }
-        public bool MarkedConsumed { get; private set; }
-        public Task<(string Id, string RawToken)> CreateAsync(string kind, TimeSpan? lifetime, string? createdBy, DateTimeOffset now, CancellationToken ct)
-            => Task.FromResult(("rt_new", "reg_newtoken"));
-        public Task<RegistrationTokenLookup?> LookupAsync(string rawToken, CancellationToken ct) => Task.FromResult(Lookup);
-        public Task MarkConsumedAsync(string id, DateTimeOffset at, CancellationToken ct) { MarkedConsumed = true; return Task.CompletedTask; }
-        public Task<bool> RevokeAsync(string id, CancellationToken ct) => Task.FromResult(true);
-        public Task<IReadOnlyList<RegistrationTokenInfo>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<RegistrationTokenInfo>>([]);
-    }
+        public RegistrationUnitResult Result { get; set; } = new(
+            RegistrationStatus.Ok, "src_1", "windows-agent", "HOST01", "agt_fresh",
+            [TokenKinds.ScopeIngest], DateTimeOffset.Parse("2024-08-07T15:00:00Z"),
+            SourceCreated: true, BoundKind: "windows-agent");
 
-    private sealed class FakeSources : ISourceStore
-    {
-        public Source? Existing { get; set; }
-        public readonly List<Source> Created = [];
-        public Task<Source?> GetByIdAsync(string id, CancellationToken ct) => Task.FromResult<Source?>(null);
-        public Task<Source?> GetByKindNameAsync(string kind, string name, CancellationToken ct) => Task.FromResult(Existing);
-        public Task<Source> CreateAsync(string kind, string name, DateTimeOffset now, CancellationToken ct)
+        public string? LastRawToken { get; private set; }
+        public string? LastKind { get; private set; }
+        public string? LastHostname { get; private set; }
+
+        public Task<RegistrationUnitResult> ExecuteAsync(string rawRegToken, string kind, string hostname,
+            DateTimeOffset now, CancellationToken ct)
         {
-            var s = new Source("src_" + Created.Count, kind, name, now);
-            Created.Add(s);
-            return Task.FromResult(s);
+            LastRawToken = rawRegToken;
+            LastKind = kind;
+            LastHostname = hostname;
+            return Task.FromResult(Result);
         }
-        public Task<IReadOnlyList<Source>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<Source>>(Created);
-        public Task DeleteAsync(string id, CancellationToken ct) => Task.CompletedTask;
     }
 
-    private sealed class FakeTokens : ITokenStore
+    private static (RegistrationService Service, FakeRegistrationUnit Unit, List<AuditEntry> Audit) Build()
     {
-        public string? LastSourceId { get; private set; }
-        public Task<TokenAuthResult?> AuthenticateAsync(string rawToken, CancellationToken ct) => Task.FromResult<TokenAuthResult?>(null);
-        public Task<bool> IsRevokedAsync(string rawToken, CancellationToken ct) => Task.FromResult(false);
-        public Task<bool> SourceMissingAsync(string rawToken, CancellationToken ct) => Task.FromResult(false);
-        public Task<string> CreateAgentTokenAsync(string sourceId, string[] scopes, DateTimeOffset now, CancellationToken ct)
-        {
-            LastSourceId = sourceId;
-            return Task.FromResult("agt_fresh");
-        }
-        public Task<IReadOnlyList<TokenInfo>> ListForSourceAsync(string sourceId, CancellationToken ct) => Task.FromResult<IReadOnlyList<TokenInfo>>([]);
-        public Task<bool> RevokeAsync(string tokenId, CancellationToken ct) => Task.FromResult(true);
-        public Task TouchAsync(string tokenId, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
-    }
-
-    private static (RegistrationService Service, FakeRegTokens Tokens, FakeSources Sources, FakeTokens AgentTokens, List<AuditEntry> Audit) Build()
-    {
-        var regTokens = new FakeRegTokens();
-        var sources = new FakeSources();
-        var agentTokens = new FakeTokens();
+        var unit = new FakeRegistrationUnit();
         var audit = new List<AuditEntry>();
-        var svc = new RegistrationService(regTokens, sources, agentTokens,
-            new FakeAudit(audit), new FakeClock(DateTimeOffset.Parse("2024-08-07T15:00:00Z")),
+        var svc = new RegistrationService(unit, new FakeAudit(audit),
+            new FakeClock(DateTimeOffset.Parse("2024-08-07T15:00:00Z")),
             NullLogger<RegistrationService>.Instance);
-        return (svc, regTokens, sources, agentTokens, audit);
+        return (svc, unit, audit);
     }
 
     private sealed class FakeAudit(List<AuditEntry> sink) : IAuditStore
@@ -82,74 +57,69 @@ public class RegistrationServiceTests
     [Fact]
     public async Task Register_NewSource_MintsTokenAndConsumesReg()
     {
-        var (svc, regTokens, sources, agentTokens, _) = Build();
-        regTokens.Lookup = new RegistrationTokenLookup("rt_1", "windows-agent", false, null, null);
+        var (svc, unit, audit) = Build();
 
         var outcome = await svc.RegisterAsync("reg_x", "windows-agent", "HOST01", "0.1.0", "17763", CancellationToken.None);
 
         Assert.Equal("agt_fresh", outcome.RawToken);
         Assert.Equal(["ingest"], outcome.Scopes);
-        Assert.True(regTokens.MarkedConsumed);
-        Assert.Equal("HOST01", Assert.Single(sources.Created).Name);
-        Assert.Equal(outcome.SourceId, agentTokens.LastSourceId);
         Assert.Equal("windows-agent", outcome.Kind);
+        Assert.Equal("reg_x", unit.LastRawToken);
+        Assert.Equal("windows-agent", unit.LastKind);
+        Assert.Equal("HOST01", unit.LastHostname);
+        Assert.Contains(audit, a => a.Action == "source.created");
+        Assert.Contains(audit, a => a.Action == "token.minted");
     }
 
     [Fact]
-    public async Task Register_ExistingSource_ReusesIt()
+    public async Task Register_ExistingSource_ReusesIt_AndSkipsCreateAudit()
     {
-        var (svc, regTokens, sources, _, _) = Build();
-        regTokens.Lookup = new RegistrationTokenLookup("rt_1", "windows-agent", false, null, null);
-        sources.Existing = new Source("src_existing", "windows-agent", "HOST01", DateTimeOffset.MinValue);
+        var (svc, unit, audit) = Build();
+        unit.Result = unit.Result with { SourceId = "src_existing", SourceCreated = false };
 
         var outcome = await svc.RegisterAsync("reg_x", "windows-agent", "HOST01", null, null, CancellationToken.None);
 
         Assert.Equal("src_existing", outcome.SourceId);   // reinstall path (PROTOCOL §5.2)
-        Assert.Empty(sources.Created);                     // no new row
+        Assert.DoesNotContain(audit, a => a.Action == "source.created");
+        Assert.Contains(audit, a => a.Action == "token.minted");
     }
 
-    [Fact]
-    public async Task Register_ConsumedToken_Throws410()
+    [Theory]
+    [InlineData(RegistrationStatus.Consumed, 410, "token_consumed")]
+    [InlineData(RegistrationStatus.Revoked, 401, "token_revoked")]
+    [InlineData(RegistrationStatus.Expired, 401, "token_revoked")]
+    [InlineData(RegistrationStatus.UnknownToken, 401, "token_invalid")]
+    public async Task Register_UnitFailures_MapToProtocolErrors(RegistrationStatus status, int httpStatus, string code)
     {
-        var (svc, regTokens, _, _, _) = Build();
-        regTokens.Lookup = new RegistrationTokenLookup("rt_1", "windows-agent", false, null, DateTimeOffset.UtcNow);
+        var (svc, unit, _) = Build();
+        unit.Result = unit.Result with { Status = status };
 
         var ex = await Assert.ThrowsAsync<RegistrationException>(
             () => svc.RegisterAsync("reg_x", "windows-agent", "HOST01", null, null, CancellationToken.None));
-        Assert.Equal(410, ex.Status);
-        Assert.Equal("token_consumed", ex.Code);
-    }
-
-    [Fact]
-    public async Task Register_RevokedToken_Throws401()
-    {
-        var (svc, regTokens, _, _, _) = Build();
-        regTokens.Lookup = new RegistrationTokenLookup("rt_1", "windows-agent", true, null, null);
-
-        var ex = await Assert.ThrowsAsync<RegistrationException>(
-            () => svc.RegisterAsync("reg_x", "windows-agent", "HOST01", null, null, CancellationToken.None));
-        Assert.Equal(401, ex.Status);
-        Assert.Equal("token_revoked", ex.Code);
+        Assert.Equal(httpStatus, ex.Status);
+        Assert.Equal(code, ex.Code);
     }
 
     [Fact]
     public async Task Register_KindMismatch_Throws400()
     {
-        var (svc, regTokens, _, _, _) = Build();
-        regTokens.Lookup = new RegistrationTokenLookup("rt_1", "syslog-feed", false, null, null);
+        var (svc, unit, _) = Build();
+        unit.Result = unit.Result with { Status = RegistrationStatus.KindMismatch, BoundKind = "syslog-feed" };
 
         var ex = await Assert.ThrowsAsync<RegistrationException>(
             () => svc.RegisterAsync("reg_x", "windows-agent", "HOST01", null, null, CancellationToken.None));
         Assert.Equal(400, ex.Status);
+        Assert.Equal("invalid_request", ex.Code);
+        Assert.Contains("syslog-feed", ex.Message);
     }
 
     [Fact]
-    public async Task Register_UnknownToken_Throws401()
+    public async Task Register_UnknownKind_Throws400()
     {
-        var (svc, _, _, _, _) = Build();
+        var (svc, _, _) = Build();
         var ex = await Assert.ThrowsAsync<RegistrationException>(
-            () => svc.RegisterAsync("reg_x", "windows-agent", "HOST01", null, null, CancellationToken.None));
-        Assert.Equal("token_invalid", ex.Code);
+            () => svc.RegisterAsync("reg_x", "not-a-kind", "HOST01", null, null, CancellationToken.None));
+        Assert.Equal(400, ex.Status);
     }
 }
 

@@ -61,8 +61,9 @@ public static class ProtocolValidation
         if (!TryParseUtcTime(item.Time, out var time))
             return (null, new ItemRejection(item.RecordId, item.DedupScope, RejectionReasons.BadTime));
 
-        // Severity is per source kind (PROTOCOL §10). Absent is allowed and
-        // defaulted at ingest (Windows Level 0 is omitted, not sent).
+        // Severity is per source kind (PROTOCOL §10). Absent severity (Windows
+        // Level 0 is omitted, not sent) is defaulted at ingest so severity
+        // filters and alert rules always see a value.
         int? severity = null;
         if (item.Severity is { } sev)
         {
@@ -70,6 +71,10 @@ public static class ProtocolValidation
             if (sev < min || sev > max)
                 return (null, new ItemRejection(item.RecordId, item.DedupScope, RejectionReasons.Schema));
             severity = sev;
+        }
+        else
+        {
+            severity = SourceKinds.DefaultSeverity(sourceKind);
         }
 
         if (item.Message is { } msg && System.Text.Encoding.UTF8.GetByteCount(msg) > MaxMessageBytes)
@@ -128,6 +133,80 @@ public static class ProtocolValidation
             Opcode: opcode,
             Keywords: keywords);
         return (row, null);
+    }
+
+    /// <summary>Parses one raw JSON log item with explicit type checks so a
+    /// malformed item (a field of the wrong JSON type) is rejected per-item
+    /// with "schema" instead of failing the whole batch at deserialization
+    /// (PROTOCOL §6.2/§6.4). JSON null is treated as absent to keep the
+    /// documented null semantics (e.g. null dedup_scope → bad_dedup_scope,
+    /// PROTOCOL §11.4). Semantic checks delegate to ValidateLogItem.</summary>
+    public static (ValidatedLogItem? Item, ItemRejection? Rejection) ParseLogItem(
+        JsonElement item, string sourceKind)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+            return (null, new ItemRejection("", "", RejectionReasons.Schema));
+
+        // kind: a wrong-but-string kind is the whole-batch wrong_item_kind case
+        // handled by LogIngestService; missing/non-string kind is a malformed
+        // item and is rejected here per-item.
+        if (!item.TryGetProperty("kind", out var kindProp) || kindProp.ValueKind != JsonValueKind.String
+            || kindProp.GetString() != "log")
+            return (null, new ItemRejection("", "", RejectionReasons.Schema));
+
+        static bool IsStringOrNull(JsonElement e) =>
+            e.ValueKind is JsonValueKind.String or JsonValueKind.Null;
+
+        // Type checks first: wrong JSON types are "schema" rejections.
+        string? recordId = null, dedupScope = null;
+        if (item.TryGetProperty("record_id", out var ridProp) && !IsStringOrNull(ridProp))
+            return (null, new ItemRejection("", "", RejectionReasons.Schema));
+        if (item.TryGetProperty("dedup_scope", out var scopeProp) && !IsStringOrNull(scopeProp))
+            return (null, new ItemRejection(recordId, "", RejectionReasons.Schema));
+        if (item.TryGetProperty("time", out var timeProp) && !IsStringOrNull(timeProp))
+            return (null, new ItemRejection(recordId, dedupScope, RejectionReasons.Schema));
+        if (item.TryGetProperty("severity", out var sevProp) &&
+            (sevProp.ValueKind is not (JsonValueKind.Number or JsonValueKind.Null)
+             || (sevProp.ValueKind == JsonValueKind.Number && !sevProp.TryGetInt32(out _))))
+            return (null, new ItemRejection(recordId, dedupScope, RejectionReasons.Schema));
+        if (item.TryGetProperty("facility", out var facProp) && !IsStringOrNull(facProp))
+            return (null, new ItemRejection(recordId, dedupScope, RejectionReasons.Schema));
+        if (item.TryGetProperty("message", out var msgProp) && !IsStringOrNull(msgProp))
+            return (null, new ItemRejection(recordId, dedupScope, RejectionReasons.Schema));
+        if (item.TryGetProperty("raw", out var rawProp) && !IsStringOrNull(rawProp))
+            return (null, new ItemRejection(recordId, dedupScope, RejectionReasons.Schema));
+        if (item.TryGetProperty("fields", out var fieldsProp) &&
+            fieldsProp.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null))
+            return (null, new ItemRejection(recordId, dedupScope, RejectionReasons.Schema));
+
+        // Read values (GetString returns null for JSON null, preserving the
+        // documented null semantics) and defer to the semantic validator.
+        string? time = null, facility = null, message = null, raw = null;
+        int? severity = null;
+        if (item.TryGetProperty("record_id", out var rid2)) recordId = rid2.GetString();
+        if (item.TryGetProperty("dedup_scope", out var scope2)) dedupScope = scope2.GetString();
+        if (item.TryGetProperty("time", out var t2)) time = t2.GetString();
+        if (item.TryGetProperty("severity", out var sev2) && sev2.ValueKind == JsonValueKind.Number)
+            severity = sev2.GetInt32();
+        if (item.TryGetProperty("facility", out var fac2)) facility = fac2.GetString();
+        if (item.TryGetProperty("message", out var msg2)) message = msg2.GetString();
+        if (item.TryGetProperty("raw", out var raw2)) raw = raw2.GetString();
+        JsonElement? fields = null;
+        if (item.TryGetProperty("fields", out var fields2) && fields2.ValueKind == JsonValueKind.Object)
+            fields = fields2;
+
+        return ValidateLogItem(new LogItemDto
+        {
+            Kind = "log",
+            RecordId = recordId,
+            DedupScope = dedupScope,
+            Time = time,
+            Severity = severity,
+            Facility = facility,
+            Message = message,
+            Fields = fields,
+            Raw = raw,
+        }, sourceKind);
     }
 
     /// <summary>Parses a telemetry item. Returns null and a whole-batch

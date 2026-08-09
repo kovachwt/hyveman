@@ -205,12 +205,19 @@ public class ProtocolValidationTests
             new LogItemDto { Kind = "log", RecordId = "1", DedupScope = "", Time = "2024-08-07T15:02:11Z", Severity = 8 },
             SourceKinds.SyslogFeed);
         Assert.Equal(RejectionReasons.Schema, r3!.Reason);
-        // Absent severity is allowed (Level 0 is omitted, PROTOCOL §10).
+        // Absent severity is allowed (Level 0 is omitted, PROTOCOL §10) and is
+        // defaulted at ingest: Windows Information for windows-agent.
         var (i4, r4) = ProtocolValidation.ValidateLogItem(
             new LogItemDto { Kind = "log", RecordId = "1", DedupScope = "S", Time = "2024-08-07T15:02:11Z" },
             SourceKinds.WindowsAgent);
         Assert.Null(r4);
-        Assert.Null(i4!.Severity);
+        Assert.Equal(4, i4!.Severity!.Value);
+        // syslog-feed default is RFC 5424 informational (6).
+        var (i5, r5) = ProtocolValidation.ValidateLogItem(
+            new LogItemDto { Kind = "log", RecordId = "1", DedupScope = "", Time = "2024-08-07T15:02:11Z" },
+            SourceKinds.SyslogFeed);
+        Assert.Null(r5);
+        Assert.Equal(6, i5!.Severity!.Value);
     }
 
     [Fact]
@@ -273,6 +280,50 @@ public class ProtocolValidationTests
             Assert.Null(rejection);
             Assert.Equal(id, item!.RecordId);
         }
+    }
+
+    [Fact]
+    public void ParseLogItem_TypeMismatches_ArePerItemSchemaRejections()
+    {
+        // A field of the wrong JSON type must reject the item per-item with
+        // "schema", never fail the whole batch at deserialization (PROTOCOL §6.2/§6.4).
+        var badFacility = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":"1","dedup_scope":"S","time":"2024-08-07T15:02:11Z","facility":123}""");
+        Assert.Equal(RejectionReasons.Schema, ProtocolValidation.ParseLogItem(badFacility, SourceKinds.WindowsAgent).Rejection!.Reason);
+
+        var badSeverity = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":"1","dedup_scope":"S","time":"2024-08-07T15:02:11Z","severity":"3"}""");
+        Assert.Equal(RejectionReasons.Schema, ProtocolValidation.ParseLogItem(badSeverity, SourceKinds.WindowsAgent).Rejection!.Reason);
+
+        var badRecordId = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":123,"dedup_scope":"S","time":"2024-08-07T15:02:11Z"}""");
+        Assert.Equal(RejectionReasons.Schema, ProtocolValidation.ParseLogItem(badRecordId, SourceKinds.WindowsAgent).Rejection!.Reason);
+
+        var badTime = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":"1","dedup_scope":"S","time":42}""");
+        Assert.Equal(RejectionReasons.Schema, ProtocolValidation.ParseLogItem(badTime, SourceKinds.WindowsAgent).Rejection!.Reason);
+
+        var notObject = JsonSerializer.Deserialize<JsonElement>("\"nope\"");
+        Assert.Equal(RejectionReasons.Schema, ProtocolValidation.ParseLogItem(notObject, SourceKinds.WindowsAgent).Rejection!.Reason);
+
+        // JSON null preserves the documented per-reason semantics (PROTOCOL §11.4).
+        var nullScope = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":"1","dedup_scope":null,"time":"2024-08-07T15:02:11Z"}""");
+        Assert.Equal(RejectionReasons.BadDedupScope, ProtocolValidation.ParseLogItem(nullScope, SourceKinds.WindowsAgent).Rejection!.Reason);
+
+        var nullSeverity = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":"1","dedup_scope":"S","time":"2024-08-07T15:02:11Z","severity":null}""");
+        Assert.Null(ProtocolValidation.ParseLogItem(nullSeverity, SourceKinds.WindowsAgent).Rejection);
+
+        // A well-formed item parses and maps promoted fields.
+        var ok = JsonSerializer.Deserialize<JsonElement>(
+            """{"kind":"log","record_id":"e1:5","dedup_scope":"System","time":"2024-08-07T15:02:11.123Z","severity":3,"facility":"X","message":"m","fields":{"channel":"System","event_id":6008},"raw":"<Event/>"}""");
+        var (item, rejection) = ProtocolValidation.ParseLogItem(ok, SourceKinds.WindowsAgent);
+        Assert.Null(rejection);
+        Assert.Equal("e1:5", item!.RecordId);
+        Assert.Equal("System", item.Channel);
+        Assert.Equal(6008, item.EventId);
+        Assert.Equal(3, item.Severity!.Value);
     }
 
     [Fact]

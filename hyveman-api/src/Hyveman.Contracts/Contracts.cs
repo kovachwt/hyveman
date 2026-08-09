@@ -161,6 +161,24 @@ public sealed class HealthHistoryPoint
     public double? PowerWatts { get; set; }
 }
 
+/// <summary>GET /api/v1/hosts/{id}/health (API.md §7.1): current components,
+/// rollup, latest metrics and a bounded recent-snapshot preview.</summary>
+public sealed class HostHealthResponse
+{
+    public string HostId { get; set; } = "";
+    public string RollupState { get; set; } = "unknown";
+    public DateTimeOffset? RollupAt { get; set; }
+    public List<ComponentDto> Components { get; set; } = [];
+    public List<MetricDto> LatestMetrics { get; set; } = [];
+    public List<HealthSnapshotDto> RecentSnapshots { get; set; } = [];
+}
+
+public sealed class HealthSnapshotDto
+{
+    public DateTimeOffset Time { get; set; }
+    public string RollupState { get; set; } = "";
+}
+
 public sealed class VmDto
 {
     public string Name { get; set; } = "";

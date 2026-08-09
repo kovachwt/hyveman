@@ -9,13 +9,14 @@ public sealed class RegistrationException(string code, int status, string messag
     public int Status { get; } = status;
 }
 
-/// <summary>POST /register (PROTOCOL §5). One transaction: validate the reg_
-/// token, resolve or create the (kind, hostname) source, mint and hash the
-/// agt_ token, mark the reg_ token consumed, commit before responding.</summary>
+/// <summary>POST /register (PROTOCOL §5). Validates the request shape, runs the
+/// atomic registration unit (one BEGIN IMMEDIATE transaction: token check,
+/// (kind, hostname) source resolve/create, agt_ token mint, reg_ token
+/// consumption — API.md §6.2) and maps the outcome to protocol errors. Audit
+/// rows are written after the commit; a failure there surfaces as a 500 whose
+/// retry hits the documented 410 token_consumed recovery path (§5.4).</summary>
 public sealed class RegistrationService(
-    IRegistrationTokenStore registrationTokens,
-    ISourceStore sources,
-    ITokenStore tokens,
+    IRegistrationUnit registrationUnit,
     IAuditStore audit,
     IClock clock,
     ILogger<RegistrationService> log)
@@ -32,35 +33,36 @@ public sealed class RegistrationService(
         if (string.IsNullOrWhiteSpace(hostname) || hostname.Length > 255)
             throw new RegistrationException(Protocol.ErrorCodes.InvalidRequest, 400, "hostname must be 1..255 characters");
 
-        var lookup = await registrationTokens.LookupAsync(rawRegToken, ct)
-            ?? throw new RegistrationException(Protocol.ErrorCodes.TokenInvalid, 401, "unknown registration token");
-        if (lookup.Revoked)
-            throw new RegistrationException(Protocol.ErrorCodes.TokenRevoked, 401, "registration token revoked");
-        if (lookup.ConsumedAt is not null)
-            throw new RegistrationException(Protocol.ErrorCodes.TokenConsumed, 410, "registration token already consumed; reissue via the admin UI");
-        if (lookup.ExpiresAt is { } expiry && expiry <= now)
-            throw new RegistrationException(Protocol.ErrorCodes.TokenRevoked, 401, "registration token expired");
-        if (lookup.Kind != kind)
-            throw new RegistrationException(Protocol.ErrorCodes.InvalidRequest, 400,
-                $"registration token is bound to kind '{lookup.Kind}', not '{kind}'");
-
-        // (kind, hostname) is authoritative in v1 (PROTOCOL §5.2): reuse or create.
-        var source = await sources.GetByKindNameAsync(kind, hostname, ct);
-        if (source is null)
+        var result = await registrationUnit.ExecuteAsync(rawRegToken, kind, hostname, now, ct);
+        switch (result.Status)
         {
-            source = await sources.CreateAsync(kind, hostname, now, ct);
-            await audit.RecordAsync(null, "source.created", "source", source.Id,
-                $"{{\"kind\":\"{kind}\",\"name\":\"{hostname}\"}}", now, ct);
+            case RegistrationStatus.UnknownToken:
+                throw new RegistrationException(Protocol.ErrorCodes.TokenInvalid, 401, "unknown registration token");
+            case RegistrationStatus.Revoked:
+                throw new RegistrationException(Protocol.ErrorCodes.TokenRevoked, 401, "registration token revoked");
+            case RegistrationStatus.Expired:
+                throw new RegistrationException(Protocol.ErrorCodes.TokenRevoked, 401, "registration token expired");
+            case RegistrationStatus.Consumed:
+                throw new RegistrationException(Protocol.ErrorCodes.TokenConsumed, 410, "registration token already consumed; reissue via the admin UI");
+            case RegistrationStatus.KindMismatch:
+                throw new RegistrationException(Protocol.ErrorCodes.InvalidRequest, 400,
+                    $"registration token is bound to kind '{result.BoundKind}', not '{kind}'");
+            case RegistrationStatus.Ok:
+                break;
+            default:
+                throw new InvalidOperationException($"unexpected registration status '{result.Status}'");
         }
 
-        var rawToken = await tokens.CreateAgentTokenAsync(source.Id, [TokenKinds.ScopeIngest], now, ct);
-        await registrationTokens.MarkConsumedAsync(lookup.Id, now, ct);
-        await audit.RecordAsync(null, "token.minted", "source", source.Id,
+        if (result.SourceCreated)
+            await audit.RecordAsync(null, "source.created", "source", result.SourceId,
+                $"{{\"kind\":\"{kind}\",\"name\":\"{hostname}\"}}", now, ct);
+        await audit.RecordAsync(null, "token.minted", "source", result.SourceId,
             $"{{\"kind\":\"agent\",\"hostname\":\"{hostname}\",\"agent_version\":{Json(agentVersion)},\"os_build\":{Json(osBuild)}}}",
             now, ct);
 
-        log.LogInformation("Registered source {sourceId} ({kind}/{hostname}); agent token minted", source.Id, kind, hostname);
-        return new RegistrationOutcome(source.Id, source.Kind, source.Name, rawToken, [TokenKinds.ScopeIngest], now);
+        log.LogInformation("Registered source {sourceId} ({kind}/{hostname}); agent token minted", result.SourceId, kind, hostname);
+        return new RegistrationOutcome(result.SourceId!, result.SourceKind!, result.SourceName!,
+            result.RawToken!, result.Scopes!, result.IssuedAt!.Value);
     }
 
     private static string Json(string? s) => s is null ? "null" : $"\"{s.Replace("\"", "\\\"")}\"";

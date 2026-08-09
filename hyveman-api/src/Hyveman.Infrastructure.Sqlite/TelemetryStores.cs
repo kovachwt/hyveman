@@ -29,8 +29,13 @@ public sealed class AgentStatusStore(SqliteDb db) : IAgentStatusStore
     public async Task<bool> ApplyHeartbeatAsync(string sourceId, HeartbeatPayload hb, DateTimeOffset receivedAt, CancellationToken ct)
     {
         var existing = await GetAsync(sourceId, ct);
+        // PROTOCOL §7.4 ordering rule: replace when there is no prior state,
+        // the incoming boot_time differs from the stored boot session, or
+        // sent_at is newer. An unknown stored boot session is established by
+        // the first heartbeat that names one (otherwise boot_time could never
+        // be recorded once a boot_time-less heartbeat was stored).
         var storeState = existing is null
-            || (hb.BootTime is { } bt && existing.BootTime is { } ebt && bt != ebt)
+            || (hb.BootTime is { } bt && (existing.BootTime is null || bt != existing.BootTime))
             || (hb.SentAt > (existing.LastSentAt ?? DateTimeOffset.MinValue));
 
         var now = DateTimeOffset.UtcNow;

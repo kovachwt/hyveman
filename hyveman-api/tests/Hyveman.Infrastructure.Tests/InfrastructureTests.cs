@@ -319,6 +319,77 @@ public class SqliteIntegrationTests : IDisposable
         var revoked = await store.LookupAsync(raw, CancellationToken.None);
         Assert.True(revoked!.Revoked);
     }
+
+    [Fact]
+    public async Task RegistrationUnit_IsAtomic_SingleUseAndSourceReuse()
+    {
+        var tokens = new RegistrationTokenStore(_db);
+        var (_, rawReg) = await tokens.CreateAsync("windows-agent", null, "admin", DateTimeOffset.UtcNow, CancellationToken.None);
+        var unit = new RegistrationUnit(_db);
+
+        // First use: creates the source, mints the token, consumes the reg_ token.
+        var first = await unit.ExecuteAsync(rawReg, "windows-agent", "HOST-ATOMIC", DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(RegistrationStatus.Ok, first.Status);
+        Assert.True(first.SourceCreated);
+        Assert.NotNull(first.SourceId);
+        Assert.StartsWith("agt_", first.RawToken);
+        Assert.Equal(["ingest"], first.Scopes);
+
+        // Replay of the same reg_ token → consumed (PROTOCOL §5.4), no second token.
+        var replay = await unit.ExecuteAsync(rawReg, "windows-agent", "HOST-ATOMIC", DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(RegistrationStatus.Consumed, replay.Status);
+
+        // Reinstall path: a fresh reg_ token for the same (kind, hostname)
+        // reuses the source and mints a fresh agent token (PROTOCOL §5.2).
+        var (_, rawReg2) = await tokens.CreateAsync("windows-agent", null, "admin", DateTimeOffset.UtcNow, CancellationToken.None);
+        var second = await unit.ExecuteAsync(rawReg2, "windows-agent", "HOST-ATOMIC", DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(RegistrationStatus.Ok, second.Status);
+        Assert.False(second.SourceCreated);
+        Assert.Equal(first.SourceId, second.SourceId);
+        Assert.NotEqual(first.RawToken, second.RawToken);
+
+        // Only one token row was ever minted for the consumed reg_ token.
+        using var conn = _db.Open();
+        var count = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM tokens WHERE source_id = @sid", new { sid = first.SourceId });
+        Assert.Equal(2, count);
+
+        // Wrong kind → KindMismatch; unknown token → UnknownToken; revoked → Revoked.
+        var (_, rawReg3) = await tokens.CreateAsync("syslog-feed", null, "admin", DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(RegistrationStatus.KindMismatch,
+            (await unit.ExecuteAsync(rawReg3, "windows-agent", "HOST-ATOMIC", DateTimeOffset.UtcNow, CancellationToken.None)).Status);
+        Assert.Equal(RegistrationStatus.UnknownToken,
+            (await unit.ExecuteAsync("reg_nonexistent", "windows-agent", "HOST-ATOMIC", DateTimeOffset.UtcNow, CancellationToken.None)).Status);
+        var (revId, rawReg4) = await tokens.CreateAsync("windows-agent", null, "admin", DateTimeOffset.UtcNow, CancellationToken.None);
+        await tokens.RevokeAsync(revId, CancellationToken.None);
+        Assert.Equal(RegistrationStatus.Revoked,
+            (await unit.ExecuteAsync(rawReg4, "windows-agent", "HOST-ATOMIC", DateTimeOffset.UtcNow, CancellationToken.None)).Status);
+    }
+
+    [Fact]
+    public async Task RegistrationUnit_ParallelSameRegToken_OnlyOneWins()
+    {
+        var tokens = new RegistrationTokenStore(_db);
+        var (_, rawReg) = await tokens.CreateAsync("windows-agent", null, "admin", DateTimeOffset.UtcNow, CancellationToken.None);
+        var unit = new RegistrationUnit(_db);
+
+        // Four concurrent registrations with the same reg_ token: the BEGIN
+        // IMMEDIATE transaction serializes writers, so exactly one succeeds
+        // and the rest observe the consumed flag (API.md §6.2 single-use).
+        var results = await Task.WhenAll(
+            unit.ExecuteAsync(rawReg, "windows-agent", "RACE-HOST", DateTimeOffset.UtcNow, CancellationToken.None),
+            unit.ExecuteAsync(rawReg, "windows-agent", "RACE-HOST", DateTimeOffset.UtcNow, CancellationToken.None),
+            unit.ExecuteAsync(rawReg, "windows-agent", "RACE-HOST", DateTimeOffset.UtcNow, CancellationToken.None),
+            unit.ExecuteAsync(rawReg, "windows-agent", "RACE-HOST", DateTimeOffset.UtcNow, CancellationToken.None));
+
+        Assert.Equal(1, results.Count(r => r.Status == RegistrationStatus.Ok));
+        Assert.Equal(3, results.Count(r => r.Status == RegistrationStatus.Consumed));
+        Assert.Equal(1, results.Where(r => r.SourceId is not null).Select(r => r.SourceId).Distinct().Count());
+
+        using var conn = _db.Open();
+        Assert.Equal(1, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM sources"));       // UNIQUE(kind, name)
+        Assert.Equal(1, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM tokens"));         // exactly one agt_ token minted
+    }
 }
 
 public class RedfishNormalizationTests

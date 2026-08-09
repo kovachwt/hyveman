@@ -67,6 +67,10 @@ public sealed class HostsController(
         }).ToList();
     }
 
+    [HttpGet("{id}/health")]
+    public Task<HostHealthResponse> Health(string id, CancellationToken ct)
+        => hosts.GetHealthAsync(id, ct);
+
     [HttpGet("{id}/health-history")]
     public Task<HealthHistoryResponse> HealthHistory(string id, [FromQuery] DateTimeOffset? from,
         [FromQuery] DateTimeOffset? to, [FromQuery] string? resolution, CancellationToken ct)

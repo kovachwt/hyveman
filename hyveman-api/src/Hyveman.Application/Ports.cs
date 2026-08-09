@@ -57,6 +57,41 @@ public interface IRegistrationTokenStore
     Task<IReadOnlyList<RegistrationTokenInfo>> ListAsync(CancellationToken ct);
 }
 
+/// <summary>Outcome of an atomic registration attempt (API.md §6.2).</summary>
+public enum RegistrationStatus
+{
+    Ok,
+    UnknownToken,
+    Revoked,
+    Expired,
+    Consumed,
+    KindMismatch,
+}
+
+/// <summary>Result of a registration-unit attempt. On Ok, the identity/token
+/// fields are populated; otherwise Status carries the failure classification.</summary>
+public sealed record RegistrationUnitResult(
+    RegistrationStatus Status,
+    string? SourceId = null,
+    string? SourceKind = null,
+    string? SourceName = null,
+    string? RawToken = null,
+    string[]? Scopes = null,
+    DateTimeOffset? IssuedAt = null,
+    bool SourceCreated = false,
+    string? BoundKind = null);
+
+/// <summary>Atomic registration unit (API.md §6.2): validates the reg_ token,
+/// resolves or creates the (kind, hostname) source, mints the agt_ token and
+/// marks the reg_ token consumed in one transaction, so concurrent
+/// registrations can neither consume the same registration token twice nor
+/// create duplicate source rows.</summary>
+public interface IRegistrationUnit
+{
+    Task<RegistrationUnitResult> ExecuteAsync(string rawRegToken, string kind, string hostname,
+        DateTimeOffset now, CancellationToken ct);
+}
+
 /// <summary>Idempotent event store with FTS5-backed search (API.md §10).</summary>
 public interface IEventStore
 {
