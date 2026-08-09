@@ -98,7 +98,7 @@ public sealed class WebAuthnService(
         }
 
         var clientData = ParseClientData(response.Response.ClientDataJson);
-        var challenge = Convert.FromBase64String(clientData.RootElement.GetProperty("challenge").GetString()!);
+        var challenge = DecodeChallenge(clientData, "Malformed registration challenge.");
         var storedOptionsJson = await ceremonies.TakeAsync(ChallengeHash(challenge), "register", clock.UtcNow, ct)
             ?? throw new ValidationProblemException(new Dictionary<string, List<string>>
             {
@@ -174,7 +174,7 @@ public sealed class WebAuthnService(
         }
 
         var clientData = ParseClientData(response.Response.ClientDataJson);
-        var challenge = Convert.FromBase64String(clientData.RootElement.GetProperty("challenge").GetString()!);
+        var challenge = DecodeChallenge(clientData, "Malformed login challenge.");
         var storedOptionsJson = await ceremonies.TakeAsync(ChallengeHash(challenge), "login", clock.UtcNow, ct)
             ?? throw new ValidationProblemException(new Dictionary<string, List<string>>
             {
@@ -266,4 +266,32 @@ public sealed class WebAuthnService(
 
     private static string RandomHex(int bytes) =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(bytes)).ToLowerInvariant();
+
+    /// <summary>
+    /// Decode the challenge from clientDataJSON. The client echoes the
+    /// challenge from the server options verbatim into clientDataJSON, where
+    /// it is base64url (RFC 4648 §5: '-'/'_' instead of '+'/'/', padding
+    /// stripped). Also accepts padded standard base64 for robustness.
+    /// </summary>
+    private static byte[] DecodeChallenge(JsonDocument clientData, string malformedMessage)
+    {
+        var raw = clientData.RootElement.TryGetProperty("challenge", out var el) ? el.GetString() : null;
+        if (raw is null)
+            throw new ValidationProblemException(new Dictionary<string, List<string>> { ["challenge"] = [malformedMessage] });
+        var b = raw.Replace('-', '+').Replace('_', '/');
+        try
+        {
+            return (b.Length % 4) switch
+            {
+                0 => Convert.FromBase64String(b),
+                2 => Convert.FromBase64String(b + "=="),
+                3 => Convert.FromBase64String(b + "="),
+                _ => throw new FormatException(),
+            };
+        }
+        catch (FormatException)
+        {
+            throw new ValidationProblemException(new Dictionary<string, List<string>> { ["challenge"] = [malformedMessage] });
+        }
+    }
 }
