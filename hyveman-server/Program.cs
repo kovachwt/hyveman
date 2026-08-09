@@ -10,6 +10,7 @@ using Hyveman.Server.Notifications;
 using Hyveman.Server.RateLimit;
 using Hyveman.Server.Storage;
 using Hyveman.Server.Web.Api;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Data.Sqlite;
 using Serilog;
 using Serilog.Events;
@@ -84,7 +85,12 @@ public static class Program
             var builder = WebApplication.CreateBuilder(new WebApplicationOptions
             {
                 Args = args,
-                ApplicationName = typeof(Program).Assembly.FullName,
+                // Simple assembly name, NOT Assembly.FullName: the runtime locates the static web
+                // assets manifests ({app}.staticwebassets.runtime.json / .endpoints.json) by this
+                // name, and MSBuild generates them from $(AssemblyName) ("hyveman-server"). A full
+                // name ("hyveman-server, Version=0.1.0, ...") never matches, so _framework/*
+                // (blazor.server.js etc.) silently 404s while physical wwwroot files still serve.
+                ApplicationName = typeof(Program).Assembly.GetName().Name,
             });
             builder.Host.UseSerilog();
             builder.Host.UseWindowsService(o => o.ServiceName = "HyvemanServer");
@@ -147,7 +153,22 @@ public static class Program
 
             // Blazor Server UI (§11). Pages live under Web/Pages (Razor Pages root must be set).
             builder.Services.AddRazorPages(o => o.RootDirectory = "/Web/Pages");
-            builder.Services.AddServerSideBlazor();
+            // DetailedErrors: surface the real exception when circuit start fails (the SignalR
+            // JS client otherwise hides the server message behind "Failed to invoke 'StartCircuit'").
+            // Remove once the startup issue is resolved.
+            // The data dir is registered in DI as a bare `string` (PasskeyService/BackupService
+            // constructor-inject it). SignalR's implicit from-services parameter binding then treats
+            // every `string` parameter of the Blazor ComponentHub methods (StartCircuit, …) as
+            // DI-supplied, so the server expects 0 arguments while the JS client sends 4 →
+            // "Invocation provides 4 argument(s) but target expects 0" / StartCircuit failure
+            // (dotnet/aspnetcore#46471). ComponentHub is internal, so disable implicit from-services
+            // binding globally — this app has no other hubs.
+            builder.Services.AddSignalR(o =>
+            {
+                o.EnableDetailedErrors = true;
+                o.DisableImplicitFromServicesParameters = true;
+            });
+            builder.Services.AddServerSideBlazor(o => o.DetailedErrors = true);
 
             var app = builder.Build();
 
@@ -283,8 +304,11 @@ public static class Program
             if (builder.Environment.IsDevelopment())
             {
                 // Kestrel falls back to the ASP.NET Core dev cert in Development.
-                builder.WebHost.ConfigureKestrel(k => k.ConfigureHttpsDefaults(h =>
-                    h.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13));
+                builder.WebHost.ConfigureKestrel(k =>
+                {
+                    k.ConfigureHttpsDefaults(h =>
+                        h.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13);
+                });
                 return;
             }
             throw new InvalidOperationException(
@@ -298,11 +322,14 @@ public static class Program
             ? new System.Security.Cryptography.X509Certificates.X509Certificate2(certPath)
             : new System.Security.Cryptography.X509Certificates.X509Certificate2(certPath, tls.CertPassword);
 
-        builder.WebHost.ConfigureKestrel(k => k.ConfigureHttpsDefaults(h =>
+        builder.WebHost.ConfigureKestrel(k =>
         {
-            h.ServerCertificate = cert;
-            h.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
-        }));
+            k.ConfigureHttpsDefaults(h =>
+            {
+                h.ServerCertificate = cert;
+                h.SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13;
+            });
+        });
     }
 
     /// <summary>Parse <c>urls</c> ("scheme://host:port;...") into (host, port, isHttps) bind triples; falls back to the default https 0.0.0.0:443.</summary>

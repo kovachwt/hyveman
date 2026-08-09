@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Hyveman.Server</RootNamespace>
@@ -14,9 +14,7 @@
     <!-- Windows publishes a self-contained single-file exe by default (Windows is the
          agent/server production form). On Linux the same flags are passed explicitly at
          publish time (linux-x64, self-contained, single-file), so the build stays
-         portable here. RollForward lets net8.0 dev runs/tests work on machines that only
-         have a newer .NET runtime installed. -->
-    <RollForward>LatestMajor</RollForward>
+         portable here. -->
     <RuntimeIdentifier Condition="'$(OS)' == 'Windows_NT'">win-x64</RuntimeIdentifier>
     <SelfContained Condition="'$(OS)' == 'Windows_NT'">true</SelfContained>
     <PublishSingleFile Condition="'$(OS)' == 'Windows_NT'">true</PublishSingleFile>

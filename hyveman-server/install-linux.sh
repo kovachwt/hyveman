@@ -224,9 +224,11 @@ if [[ "$SYSTEM" -eq 1 ]] && ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 mkdir -p "$INSTALL_DIR" "$DATA_DIR/config" "$DATA_DIR/backup/daily" \
-    "$DATA_DIR/backup/weekly" "$DATA_DIR/backup/monthly" "$DATA_DIR/logs" "$DATA_DIR/state"
+    "$DATA_DIR/backup/weekly" "$DATA_DIR/backup/monthly" "$DATA_DIR/logs" "$DATA_DIR/state" \
+    "$DATA_DIR/.net"   # single-file bundle extraction dir (see DOTNET_BUNDLE_EXTRACT_BASE_DIR below)
 chmod 700 "$DATA_DIR" "$DATA_DIR/config" "$DATA_DIR/backup" "$DATA_DIR/backup/daily" \
-    "$DATA_DIR/backup/weekly" "$DATA_DIR/backup/monthly" "$DATA_DIR/logs" "$DATA_DIR/state"
+    "$DATA_DIR/backup/weekly" "$DATA_DIR/backup/monthly" "$DATA_DIR/logs" "$DATA_DIR/state" \
+    "$DATA_DIR/.net"
 if [[ "$SYSTEM" -eq 1 ]]; then
     # Data dir must be owned by the service account; the install dir stays root-owned
     # (0755) so only root can replace the binary.
@@ -442,6 +444,12 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart="$INSTALL_DIR/hyveman-server" --data-dir "$DATA_DIR"
 Environment="HYVEMAN_DATA_DIR=$DATA_DIR"
 Environment=ASPNETCORE_ENVIRONMENT=Production
+# The binary is a self-contained single-file publish; the .NET host must extract
+# embedded native libs to a writable dir at startup. Its default is derived from
+# $HOME, which is /nonexistent for the service account (and /tmp is only tried
+# when HOME is unset) — so pin it to the data dir or startup fails with "Failed
+# to determine location for extracting embedded files.".
+Environment="DOTNET_BUNDLE_EXTRACT_BASE_DIR=$DATA_DIR/.net"
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -480,6 +488,9 @@ WorkingDirectory=$INSTALL_DIR
 ExecStart="$INSTALL_DIR/hyveman-server" --data-dir "$DATA_DIR"
 Environment="HYVEMAN_DATA_DIR=$DATA_DIR"
 Environment=ASPNETCORE_ENVIRONMENT=Production
+# Single-file bundle extraction needs a writable dir; the default ($HOME/.net) is
+# read-only under ProtectHome, and /tmp is only tried when HOME is unset.
+Environment="DOTNET_BUNDLE_EXTRACT_BASE_DIR=$DATA_DIR/.net"
 Restart=on-failure
 RestartSec=5
 UMask=0077
