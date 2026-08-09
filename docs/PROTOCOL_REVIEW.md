@@ -2,6 +2,12 @@
 
 **Status:** Review notes only; no protocol behavior has been changed here.
 
+> **Resolution status (2026-08-09):** all items below were resolved in
+> `docs/PROTOCOL.md` rev 1 (clarity-only revision — no wire-semantic changes,
+> protocol version stays `1`) plus the agent implementation. See the
+> resolution table at the end of this file. The original notes are preserved
+> as the record of the review.
+
 `PROTOCOL.md` is treated as the implemented v1 agent contract. The notes below
 identify ambiguities and possible improvements for a future revision or an
 implementation clarification. Because the agent is already implemented, any
@@ -172,3 +178,30 @@ The following decisions are clear and worth preserving:
 - bounded request/item/raw/message limits;
 - per-source and global rate limiting; and
 - reserving the `commands` response slot before implementing commands.
+
+## Resolution status (2026-08-09)
+
+Each item above, and where it was addressed:
+
+| # | Item | Resolution |
+|---|---|---|
+| 1 | `commands` missing from §5.3/§8.2 examples | PROTOCOL.md §5.3/§8.2: `"commands": []` added to both examples; invariant kept (§16). |
+| 2 | Unsupported-version response semantics | PROTOCOL.md §3: version-mismatch exception (server answers with its own version + `error.supported`) and validation precedence (header absent → `missing_version`; unsupported → `unsupported_version`; body ≠ header → `invalid_request`). |
+| 3 | Registration response loss | PROTOCOL.md §5.4: documented response-loss recovery (reissue `reg_` token; §5.2 reuse path keeps `source_id`). Agent: `Program.cs` now catches network failures mid-exchange with a clean diagnostic (previously an unhandled exception); fail-closed behavior unchanged. Idempotent recovery flow tracked in §19 item 7. |
+| 4 | Hostname reuse / identity rule | PROTOCOL.md §5.2: `(kind, hostname)` declared authoritative for v1; collision-disambiguation claim removed; `boot_id` redefined as a per-boot identifier, explicitly not part of source resolution. `409 name_collision` retained as reserved. §19 item 8 tracks a future stable machine identity. |
+| 5 | `413` vs. no-resplit contradiction | PROTOCOL.md §12/§14: `413 payload_too_large` and `400 too_many_items` are now a documented special case overriding the no-resplit rule, with the bounded recursive-halving algorithm (matches the existing agent behavior in `EnvelopeBuilder.SplitInHalf`). §6.5 updated to name the exception. |
+| 6 | Telemetry ordering | PROTOCOL.md §7.4 (new): latest-wins defined — heartbeat compares `boot_time` (new session) then `sent_at`; facts compare `collected_at`; `received_at` stored independently; silence detection on server receive time; older payloads still get `200`. |
+| 7 | Formal JSON Schema | `docs/schemas/protocol-v1.json` (draft-07) added; referenced from PROTOCOL.md §13.5; validated against all §5–§8 examples with Ajv. |
+| 8 | Registration-token persistence | Server-side design item; covered by PROTOCOL.md §4.1/§5 (token hash storage, `reg_` single-use/expirable/revocable/consumed). No further action. |
+| 9 | Gateway/timeout error codes | PROTOCOL.md §13.3: stable codes assigned — `408 request_timeout`, `502 bad_gateway`, `503 unavailable`, `504 gateway_timeout`, plus `415 unsupported_media_type`; proxy-generated errors may lack the envelope and agents classify by status (§14 — the agent already does). |
+| 10 | Compressed vs. uncompressed limits | PROTOCOL.md §12: limits defined on the decompressed JSON; gzip only reduces wire bytes; chunked requests bounded by the same cap; unsupported `Content-Encoding` → `400 invalid_request`/`415`. |
+| 11 | Retry limits | PROTOCOL.md §14: per-stream limits stated — logs unbounded while spooled (60 s per-attempt cap), telemetry ≤ 3 attempts per interval with immediate discard of non-retriable outcomes; `Retry-After` honored but capped at 3600 s per wait. Agent: `LogSender` now caps `Retry-After`; `TelemetrySender` short-circuits non-retriable outcomes and surfaces `auth_rejected` on credential-class 4xx. |
+| 12 | Timestamp / clock skew | PROTOCOL.md §10/§12 and the schema: UTC ISO-8601 with trailing `Z`, ms precision; server-side skew policy left to the server implementation (no wire change needed). |
+| 13 | Facts snapshot semantics | PROTOCOL.md §7.1/§7.4: empty `vms` + `stale:false` = host has no VMs; failed scans re-emit prior facts with `stale:true`; multiple facts items applied in array order under the `collected_at` rule. Matches the existing agent (`WmiFactCollector`). |
+| 14 | Future command-token relationship | Deferred to the future command-channel spec (PROTOCOL.md §16); §19 notes the relationship question is open. No v1 action. |
+
+Agent-side code changes made alongside this resolution (all optional, none
+wire-semantic): `Program.cs` registration try/catch; `TelemetrySender`
+short-circuit + `auth_rejected`; `BackendClient` `X-Hyveman-Source` only when
+non-empty + ingest-scope check on register response; `LogSender` `Retry-After`
+cap (3600 s).

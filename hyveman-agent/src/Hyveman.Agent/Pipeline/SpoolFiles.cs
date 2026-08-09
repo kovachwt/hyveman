@@ -18,12 +18,22 @@ public static class SpoolFiles
            !fileName.StartsWith(".", StringComparison.Ordinal) &&
            !fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Characters never legal in a Windows file name: control chars 0–31 plus
+    /// &lt; &gt; : " / \ | ? *. Hardcoded rather than
+    /// <c>Path.GetInvalidFileNameChars()</c> because that API is
+    /// platform-dependent — on Linux it would allow ':', '*', … — which would
+    /// make bookmark/epoch file names (and their tests) differ by OS. The
+    /// agent is Windows-only, so the Windows set is the contract.
+    /// </summary>
+    private static readonly string InvalidChannelFileNameChars =
+        new string(Enumerable.Range(0, 32).Select(i => (char)i).ToArray()) + "<>:\"/\\|?*";
+
     public static string ChannelSafeName(string channel)
     {
-        var invalid = Path.GetInvalidFileNameChars();
         var sb = new System.Text.StringBuilder(channel.Length);
         foreach (var c in channel)
-            sb.Append(invalid.Contains(c) ? '_' : c);
+            sb.Append(InvalidChannelFileNameChars.IndexOf(c) >= 0 ? '_' : c);
         return sb.ToString();
     }
 }

@@ -168,8 +168,13 @@ These routes implement `PROTOCOL.md` v1 exactly:
 | `POST` | `/ingest/telemetry` | `agt_` token, `ingest` scope | Latest-wins heartbeat and VM facts |
 | `GET` | `/health` | Optional `agt_` token | Connectivity and optional token inspection |
 
-Agent responses use the protocol `v` field, `X-Hyveman-Protocol` response
-header, and reserved `commands` array. They do not use the web API envelope.
+Agent requests carry `X-Hyveman-Protocol` (including `GET /health`) and
+JSON requests also carry a matching top-level `v`. Agent responses use the
+protocol `v` field, `X-Hyveman-Protocol` response header, and reserved
+`commands` array. They do not use the web API envelope. For a missing,
+unsupported, or mismatched protocol version, the response uses the server's
+current protocol version and includes `error.supported` where specified by
+`PROTOCOL.md`; it must not echo an unsupported client version.
 
 ### 4.2 Web/admin API
 
@@ -201,24 +206,42 @@ The web API must never expose:
 Agent routes use a dedicated pipeline with the following order:
 
 1. assign a correlation/trace ID;
-2. enforce HTTPS and request-size limits;
-3. parse and validate `X-Hyveman-Protocol`;
-4. decompress gzip, enforcing the uncompressed body limit;
-5. deserialize JSON and verify the body `v` matches the header;
-6. authenticate the bearer token and resolve its source/scope;
+2. enforce HTTPS and reject plain HTTP;
+3. require and parse `X-Hyveman-Protocol` before deserializing the body or
+   authenticating: an absent header is `400 missing_version`, an unsupported
+   header is `400 unsupported_version`, and both responses use the server's
+   current version plus `error.supported`;
+4. inspect `Content-Encoding` and accept only identity/absent or gzip, then
+   decompress while enforcing the **4 MiB decompressed, reassembled** body
+   limit (including chunked requests);
+5. deserialize JSON and validate the body `v`: a present value different from
+   the supported header is `400 invalid_request`; a body `v` never substitutes
+   for the required header;
+6. authenticate the bearer token and resolve its source/scope (with optional
+   token introspection for `/health`);
 7. apply source/global rate limits;
-8. validate the endpoint-specific request; and
+8. validate the endpoint-specific request and source-kind semantics; and
 9. execute the application command and produce the protocol response.
 
+The version checks in step 3 have precedence over body-version and endpoint
+validation. A server-generated protocol response always carries the server's
+current `X-Hyveman-Protocol` and JSON `v` for a version error. All server-
+generated 2xx and error envelopes include `commands`; reverse-proxy-generated
+errors may lack the JSON envelope and are classified by HTTP status by agents.
+
 All protocol failures use the error codes and retry semantics from `PROTOCOL.md`.
-Unknown optional JSON fields are ignored. Required fields, limits, source kind,
-item kinds, and enum values are validated explicitly.
+Unknown optional JSON fields are ignored for forward compatibility. Required
+fields, limits, source kind, item kinds, and enum values are validated
+explicitly, with endpoint-specific semantic checks performed in the
+application service rather than by headers-only middleware.
 
 ### 5.2 Web API conventions
 
 - JSON property names are camelCase.
-- Timestamps are UTC RFC 3339 strings with an explicit `Z` or offset; the
-  application normalizes them to UTC before persistence.
+- Web API timestamps are UTC RFC 3339 strings with an explicit `Z` or offset;
+  the application normalizes them to UTC before persistence. This convenience
+  does not loosen the agent protocol: protocol body timestamps are validated as
+  UTC strings with a trailing `Z` by the protocol DTO/schema.
 - IDs are opaque strings to the client. The frontend must not infer database
   types or parse ID formats.
 - Collection responses use an `items` array and, where applicable, `nextCursor`
@@ -268,8 +291,11 @@ The authentication service:
 - distinguishes invalid, revoked, consumed, missing, and wrong-scope cases
   according to `PROTOCOL.md`.
 
-The request body `source` and `X-Hyveman-Source` header are logged only as
-corroborating values. They never determine identity.
+The request body `source`, `X-Hyveman-Source` header, and telemetry
+heartbeat `source_id` are corroborating values only. The authentication result
+always supplies the authoritative `source_id`; the API logs a warning on a
+mismatch but never changes identity or persistence routing based on a hint.
+The source header is omitted on `/register`, before a source exists.
 
 ### 6.2 Registration
 
@@ -281,31 +307,52 @@ corroborating values. They never determine identity.
 4. generate and hash a new `agt_` token;
 5. insert the token with the `ingest` scope;
 6. mark the registration token consumed; and
-7. commit before returning the token and `source_id`.
+7. commit before returning the token, `source_id`, scopes, `issued_at`, and
+   `commands`.
 
-A unique constraint and transaction prevent two concurrent registrations from
-consuming the same registration token or issuing ambiguous source records. The
-reinstall path reuses the existing source and issues a fresh agent token. The
-old token is not silently revoked; the administrator can revoke it from the
-web UI.
+The database requires `UNIQUE(kind, name)` and the transaction prevents two
+concurrent registrations from consuming the same registration token or
+creating duplicate source rows. In v1 the tuple is authoritative: a second
+physical host with the same kind and hostname reuses the existing source; the
+API must not auto-disambiguate it or emit `name_collision`. `boot_id` is
+informational, per-boot data and is never used for source resolution. The
+reinstall path issues a fresh agent token for the reused source. The old token
+is not silently revoked; the administrator can revoke it from the web UI.
+
+The transaction commits before the response is written. If the response is
+lost after commit, a retry with the one-time token correctly returns
+`410 token_consumed`; there is no implicit second token. The operator issues a
+fresh registration token, and the same `(kind, hostname)` lookup preserves the
+source ID. This is the documented response-loss recovery path and should be a
+clear diagnostic rather than an unhandled startup exception.
 
 ### 6.3 Log ingestion
 
 `LogIngestService` processes `/ingest/logs` as follows:
 
-1. enforce the 4 MiB uncompressed request and 1000-item limits;
-2. validate the envelope and each item;
-3. derive `source_id` from the token;
-4. map promoted Windows fields (`channel`, `event_id`, `task`, `opcode`,
+1. enforce the 4 MiB decompressed request and 1000-item limits;
+2. validate the envelope and each item, returning the documented permanent
+   per-item rejection reason for an invalid item;
+3. derive `source_id` from the token and warn, without trusting, mismatched
+   body/header source hints;
+4. validate severity/facility using the authenticated source kind: Windows
+   levels are 1–5 (or omitted when native Level is 0), while the future
+   `syslog-feed` uses RFC 5424 severity 0–7 and an opaque facility string;
+5. map promoted Windows fields (`channel`, `event_id`, `task`, `opcode`,
    `keywords`) into indexed event columns;
-5. insert valid items using the unique key
+6. insert valid items using the unique key
    `(source_id, dedup_scope, record_id)`;
-6. update FTS5 only for newly inserted messages; and
-7. return `accepted`, `deduped`, and permanent per-item rejections.
+7. update FTS5 only for newly inserted messages; and
+8. return `accepted`, `deduped`, and permanent per-item rejections.
 
-A malformed item does not reject the other valid items in the batch. A database
-or infrastructure failure rejects the whole request with a retryable 5xx; the
-agent retains the spool file. The invariant
+A malformed item does not reject the other valid items in the batch. The
+service must not reject unknown optional fields merely because they are absent
+from the current DTO; additive fields are ignored or retained in the JSON
+fields object according to the protocol. A database or infrastructure failure
+rejects the whole request with a retryable 5xx; the agent retains the spool
+file. `400 too_many_items` and `413 payload_too_large` are the two special
+whole-batch errors that trigger agent-side recursive splitting rather than
+quarantine. The invariant
 
 ```text
 accepted + deduped + rejected.length == items.length
@@ -328,30 +375,45 @@ strings. It does normalize and validate that `dedup_scope` is non-null and
 ### 6.4 Telemetry ingestion
 
 `TelemetryService` handles `/ingest/telemetry` without a spool or idempotency
-key:
+key. It applies the protocol's ordering rules rather than treating arrival
+order as latest-wins:
 
-- heartbeat state is replaced for the source when the new `sent_at` is
-  accepted;
-- the server records the actual receive time separately from agent `sent_at`;
-- `last_seen`/silence evaluation uses server receive time, not an old replayed
-  timestamp;
+- a heartbeat replaces stored heartbeat state when there is no prior state,
+  the incoming `boot_time` differs from the stored boot session, or its
+  `sent_at` is newer; an older `sent_at` in the same boot session is ignored;
+- `received_at` is captured from the server clock independently of `sent_at`,
+  and the heartbeat-silence timer uses that receive time. A valid heartbeat
+  arrival can therefore keep the source live even when its state payload is
+  older and is not stored;
 - the latest agent version, OS build, boot time, counters, degraded state, and
-  config hash are retained;
-- VM facts replace the current VM snapshot for that source; and
-- the heartbeat monitor is notified after the write so an agent-silent alert can
-  clear or recover.
+  config hash are retained with the accepted heartbeat state;
+- a facts snapshot replaces the stored snapshot only when `collected_at` is
+  newer. Multiple facts items in one request are applied in array order under
+  the same rule;
+- `stale:true` facts are still valid snapshots and may replace an older
+  snapshot, but the stale condition is retained for UI/alerting. `vms: []`
+  with `stale:false` means the scan succeeded and the host has no VMs; it is
+  not a scan failure; and
+- the heartbeat monitor is notified after processing so an agent-silent alert
+  can clear or recover.
 
-The service rejects malformed telemetry as a whole 4xx request. A later normal
-heartbeat replaces a degraded state; historical heartbeat samples are optional
-and are not required for MVP dashboards.
+The heartbeat item's `source_id`, like the envelope `source` hint, is never an
+identity source. The service rejects malformed telemetry as a whole 4xx
+request. A valid but older payload still receives HTTP 200 with
+`{"v":1,"accepted":true,"commands":[]}`; telemetry has no per-item result.
+Historical heartbeat
+samples are optional and are not required for MVP dashboards.
 
 ### 6.5 Health endpoint
 
 `GET /health` is intentionally separate from operational readiness endpoints.
 It always returns the protocol connectivity response when the process is
-reachable and healthy, even if an optional token is invalid. Token presence is
-reported only through the presence of `source_id` and `scopes`, as specified by
-`PROTOCOL.md`.
+reachable and healthy, even if an optional token is missing or invalid. Token
+presence is reported only through the presence of `source_id` and `scopes`, as
+specified by `PROTOCOL.md`. A healthy response is `200` with `v`, `ok`, server
+time/version, and `commands`; an unready process returns the protocol
+`503 unavailable` response. This endpoint's lenient token behavior must not be
+reused for the required-auth ingest endpoints.
 
 Additional non-agent endpoints may be provided for infrastructure monitoring:
 
@@ -364,18 +426,46 @@ These endpoints do not change the `/health` wire contract.
 ### 6.6 Limits and rate limiting
 
 Use ASP.NET Core request limits plus an explicit decompression counter so a
-compressed request cannot bypass the 4 MiB protocol limit. Apply:
+compressed request cannot bypass the 4 MiB protocol limit. Count the complete
+reassembled identity JSON for chunked requests, not just `Content-Length` or
+compressed bytes. Apply the protocol's per-item caps as well: 1000 items,
+16 KiB server hard cap for `raw`, 64 KiB for `message` and string `fields.*`
+values, and 128 characters for `record_id`. The agent's 8 KiB raw truncation
+is an optimization, not a server-side exemption.
+
+Accept only absent/identity or gzip `Content-Encoding`; return
+`unsupported_media_type` (or the permitted `invalid_request`) for other
+encodings. Apply:
 
 - a global request budget;
 - a per-source budget keyed by authenticated `source_id`;
 - a registration budget keyed by source/network; and
 - stricter limits to unauthenticated web authentication endpoints.
 
-The agent limits and `Retry-After` behavior are those in `PROTOCOL.md`. Logging
-must record rate-limit events without logging authorization headers or raw
-payloads.
+The API returns `Retry-After` on `429 too_many_requests` and `503 unavailable`
+as specified by the protocol. The agent, not the server, caps an advertised
+wait at 3600 seconds. Logging must record rate-limit events without logging
+authorization headers or raw payloads.
 
-### 6.7 Contract tests
+### 6.7 Machine-readable protocol schema
+
+`schemas/protocol-v1.json` is the draft-07 structural schema for the v1 JSON
+request and response bodies. It is deliberately separate from OpenAPI: it
+covers the agent protocol's `oneOf` body shapes, while headers, TLS,
+authorization, decompressed byte limits, token-derived identity, and
+latest-wins ordering remain application concerns. The API should use it as a
+structural check and then run the endpoint/token/source-kind validators
+explicitly. In particular, the schema cannot decide whether a severity is
+valid without the authenticated source kind, and it cannot implement the
+heartbeat/facts ordering rule.
+
+The protocol's additive compatibility rule is binding: unknown optional JSON
+members must be ignored (or preserved in `fields` where applicable), not
+turned into a 4xx solely because the current DTO or schema fixture does not
+name them. Schema validation must therefore be run in a forward-compatible
+mode; `PROTOCOL.md` wins over any stricter schema detail.
+
+### 6.8 Contract tests
 
 The API test suite must include golden request/response fixtures for:
 
@@ -387,7 +477,14 @@ The API test suite must include golden request/response fixtures for:
 - gzip and body-size limits;
 - latest-wins telemetry;
 - optional-token health checks; and
-- all protocol error codes and required response fields.
+- all protocol error codes and required response fields, including
+  `commands` on success/error envelopes and the server-version headers on
+  version errors;
+- schema validation for every request/response body shape, with unknown
+  optional members retained as forward-compatible fixtures; and
+- heartbeat reordering by `boot_time`/`sent_at`, facts reordering by
+  `collected_at`, stale snapshots, and an explicitly empty (successful) VM
+  list.
 
 These tests are compatibility tests, not merely controller unit tests. A
 protocol change requires updating `PROTOCOL.md` and its versioning decision
@@ -647,11 +744,11 @@ The implementation should add or materialize the following operational state:
 ```text
 agent_status(
   source_id PRIMARY KEY,
-  last_received,
-  last_sent_at,
+  last_received,             -- server receive time for silence detection
+  last_sent_at,               -- agent heartbeat sent_at, for diagnostics only
   agent_version,
   os_build,
-  boot_time,
+  boot_time,                  -- boot session of the accepted heartbeat,
   uptime_s,
   degraded,
   config_hash,
@@ -692,6 +789,8 @@ webauthn_challenges(
 Exact columns may be adjusted during migrations, but the following invariants
 are required:
 
+- `UNIQUE(kind, name)` on `sources`, which implements the v1 authoritative
+  `(kind, hostname)` registration lookup;
 - `UNIQUE(source_id, dedup_scope, record_id)` on `events`;
 - foreign keys are enforced;
 - credentials and session identifiers are never stored plaintext where a hash
@@ -734,6 +833,7 @@ ApiListenUrls
 WebAuthnRpId
 WebAuthnExpectedOrigin
 ServerVersion
+AgentProtocolCurrentVersion
 AgentProtocolSupportedVersions
 SQLiteBusyTimeoutMs
 LogRetention

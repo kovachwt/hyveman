@@ -1,0 +1,331 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hyveman.local/schemas/protocol-v1.json",
+  "title": "Hyveman Wire Protocol v1 — request/response bodies",
+  "description": "Machine-readable mirror of docs/PROTOCOL.md §5–§8, §13. Bodies only: headers (X-Hyveman-Protocol, Authorization, Content-Encoding, ...) are outside JSON Schema's scope. Unknown members are allowed for the protocol's additive forward-compatibility rule; endpoint, token, source-kind, and size semantics are enforced by the API. PROTOCOL.md is authoritative on any divergence. Draft-07 for broad tooling compatibility.",
+  "definitions": {
+    "utcTime": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?Z$",
+      "description": "UTC ISO-8601 with a trailing Z (PROTOCOL §10/§12). Offsets other than Z are not accepted."
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^src_[A-Za-z0-9]+$"
+    },
+    "recordId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque to the server; never parsed (PROTOCOL §11.4). Windows: EventRecordID, or e<epoch>:<id> after a channel clear (§11.1)."
+    },
+    "dedupScope": {
+      "type": "string",
+      "description": "Never null — must be \"\" if empty (PROTOCOL §11.4). Windows: channel name; syslog: \"\"."
+    },
+    "error": {
+      "type": "object",
+      "required": ["code"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Stable examples are listed in PROTOCOL §13.3. Codes are additive across revisions: clients must fall back to HTTP status for unknown codes."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable; may evolve — never parsed by clients."
+        },
+        "supported": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "Present only on unsupported_version (§3)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "commands": {
+      "type": "array",
+      "description": "Reserved (§16). Always [] in v1; v1 clients MUST ignore non-empty values and MUST NOT execute anything.",
+      "items": true
+    }
+  },
+  "oneOf": [
+    {
+      "$comment": "POST /register request (§5.1)",
+      "type": "object",
+      "required": ["v", "kind", "hostname"],
+      "properties": {
+        "v": { "const": 1 },
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Requested source kind; must match the reg token's bound kind (§5.1)."
+        },
+        "hostname": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "agent_version": { "type": "string" },
+        "os_build": { "type": "string" },
+        "boot_id": {
+          "type": "string",
+          "description": "Opaque per-boot identifier; changes every boot; informational only, never used for source resolution (§5.2)."
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "POST /register response (§5.3)",
+      "type": "object",
+      "required": ["v", "source_id", "token", "scopes", "issued_at", "commands"],
+      "properties": {
+        "v": { "const": 1 },
+        "source_id": { "$ref": "#/definitions/sourceId" },
+        "token": { "type": "string", "pattern": "^agt_[A-Za-z0-9]+$" },
+        "scopes": {
+          "type": "array",
+          "items": { "enum": ["ingest"] },
+          "minItems": 1
+        },
+        "issued_at": { "$ref": "#/definitions/utcTime" },
+        "commands": { "$ref": "#/definitions/commands" }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "POST /ingest/logs request (§6.1)",
+      "type": "object",
+      "required": ["v", "items"],
+      "properties": {
+        "v": { "const": 1 },
+        "source": { "$ref": "#/definitions/sourceId", "description": "Corroborating only; authoritative identity is the token (§4.2)." },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "required": ["kind", "record_id", "dedup_scope", "time"],
+            "properties": {
+              "kind": { "const": "log", "description": "Homogeneous batches: only kind:\"log\" (§6.1)." },
+              "record_id": { "$ref": "#/definitions/recordId" },
+              "dedup_scope": { "$ref": "#/definitions/dedupScope" },
+              "time": { "$ref": "#/definitions/utcTime", "description": "Event TimeCreated, UTC (§17)." },
+              "severity": {
+                "type": "integer",
+                "description": "Native severity; the API validates its range using the authenticated source kind (§10). Windows uses 1–5 and omits Level 0; syslog uses 0–7."
+              },
+              "facility": {
+                "type": "string",
+                "description": "Provider name for windows-agent (NOT the channel; channel is in fields.channel)."
+              },
+              "message": { "type": "string", "maxLength": 65536 },
+              "fields": {
+                "type": "object",
+                "properties": {
+                  "channel": { "type": "string", "description": "Promoted to events.channel." },
+                  "event_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                  "task": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                  "opcode": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                  "keywords": { "type": "string", "description": "Hex string, e.g. \"0x80000000000000\"." },
+                  "provider_guid": { "type": "string" },
+                  "computer": { "type": "string" },
+                  "activity_id": { "type": "string" },
+                  "process_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                  "thread_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+                  "event_data": {
+                    "type": "object",
+                    "additionalProperties": { "type": ["string", "number", "boolean", "object", "array", "null"] },
+                    "description": "Parsed EventData Name/Value for Windows; arbitrary k/v for syslog. Values are scalars (the rendered XML yields strings; the example in PROTOCOL §6.1 shows a number)."
+                  }
+                },
+                "additionalProperties": {
+                  "type": ["string", "number", "boolean", "object", "array", "null"],
+                  "description": "Other keys stay in fields_json; string values ≤ 64 KiB (field_oversize)."
+                }
+              },
+              "raw": {
+                "type": "string",
+                "maxLength": 16384,
+                "description": "Original XML (Windows). Agent truncates to 8 KiB with the …hyveman-truncated:<n> marker; 16 KiB server hard cap (§12)."
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "POST /ingest/logs response (§6.3)",
+      "type": "object",
+      "required": ["v", "accepted", "deduped", "rejected", "commands"],
+      "properties": {
+        "v": { "const": 1 },
+        "accepted": { "type": "integer", "minimum": 0 },
+        "deduped": { "type": "integer", "minimum": 0 },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["record_id", "dedup_scope", "reason", "permanent"],
+            "properties": {
+              "record_id": { "type": "string" },
+              "dedup_scope": { "type": "string" },
+              "reason": {
+                "type": "string",
+                "enum": ["raw_oversize", "message_oversize", "field_oversize", "bad_time", "bad_record_id", "bad_dedup_scope", "schema"]
+              },
+              "permanent": { "type": "boolean", "description": "true ⇒ agent quarantines the item's batch and never retries (§6.4)." }
+            },
+            "additionalProperties": true
+          }
+        },
+        "commands": { "$ref": "#/definitions/commands" }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "POST /ingest/telemetry request (§7.1)",
+      "type": "object",
+      "required": ["v", "items"],
+      "properties": {
+        "v": { "const": 1 },
+        "source": { "$ref": "#/definitions/sourceId" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              {
+                "$comment": "Heartbeat item",
+                "type": "object",
+                "required": ["kind", "sent_at"],
+                "properties": {
+                  "kind": { "const": "heartbeat" },
+                  "source_id": { "$ref": "#/definitions/sourceId", "description": "Corroborating only; additive-optional (§7.1)." },
+                  "sent_at": { "$ref": "#/definitions/utcTime" },
+                  "agent_version": { "type": "string" },
+                  "protocol_version": { "type": "integer" },
+                  "os_build": { "type": "string" },
+                  "boot_time": { "$ref": "#/definitions/utcTime", "description": "Used by the server for the §7.4 ordering rule." },
+                  "uptime_s": { "type": "integer", "minimum": 0 },
+                  "free_disk": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "bytes", "pct"],
+                      "properties": {
+                        "path": { "type": "string" },
+                        "bytes": { "type": "integer", "minimum": 0 },
+                        "pct": { "type": "number", "minimum": 0, "maximum": 1 }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "counters": {
+                    "type": "object",
+                    "required": [
+                      "events_sent", "events_dropped", "batches_sent", "batches_failed",
+                      "spool_bytes", "spool_files", "queue_depth", "wmi_timeouts",
+                      "send_errors_last_min"
+                    ],
+                    "properties": {
+                      "events_sent": { "type": "integer", "minimum": 0 },
+                      "events_dropped": { "type": "integer", "minimum": 0 },
+                      "batches_sent": { "type": "integer", "minimum": 0 },
+                      "batches_failed": { "type": "integer", "minimum": 0 },
+                      "spool_bytes": { "type": "integer", "minimum": 0 },
+                      "spool_files": { "type": "integer", "minimum": 0 },
+                      "queue_depth": { "type": "integer", "minimum": 0 },
+                      "wmi_timeouts": { "type": "integer", "minimum": 0 },
+                      "send_errors_last_min": { "type": "integer", "minimum": 0 }
+                    },
+                    "additionalProperties": true,
+                    "description": "Cumulative or per-interval; server diffs for rates (§7.1)."
+                  },
+                  "degraded": {
+                    "type": "string",
+                    "enum": ["", "spool_full", "overrun", "auth_rejected", "quarantined", "wmi_degraded", "channel_reset"]
+                  },
+                  "config_hash": { "type": "string" }
+                },
+                "additionalProperties": true
+              },
+              {
+                "$comment": "Facts item",
+                "type": "object",
+                "required": ["kind", "collected_at"],
+                "properties": {
+                  "kind": { "const": "facts" },
+                  "collected_at": { "$ref": "#/definitions/utcTime" },
+                  "stale": {
+                    "type": "boolean",
+                    "description": "true ⇒ prior facts re-emitted after a WMI timeout; a failed scan never yields an empty vms list (§7.4)."
+                  },
+                  "vms": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["name", "state"],
+                      "properties": {
+                        "name": { "type": "string" },
+                        "state": { "enum": ["on", "off", "paused", "saved", "other", "unknown"] },
+                        "heartbeat_ok": { "type": ["boolean", "null"] },
+                        "cpu_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                        "mem_mb": { "type": ["integer", "null"], "minimum": 0 },
+                        "last_seen": { "$ref": "#/definitions/utcTime" }
+                      },
+                      "additionalProperties": true
+                    },
+                    "description": "Empty with stale:false ⇒ the host has no VMs (§7.4)."
+                  }
+                },
+                "additionalProperties": true
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "POST /ingest/telemetry response (§7.3)",
+      "type": "object",
+      "required": ["v", "accepted", "commands"],
+      "properties": {
+        "v": { "const": 1 },
+        "accepted": { "const": true },
+        "commands": { "$ref": "#/definitions/commands" }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "GET /health response (§8.2)",
+      "type": "object",
+      "required": ["v", "ok", "server_time", "server_version", "commands"],
+      "properties": {
+        "v": { "const": 1 },
+        "ok": { "const": true },
+        "server_time": { "$ref": "#/definitions/utcTime" },
+        "server_version": { "type": "string" },
+        "source_id": { "$ref": "#/definitions/sourceId", "description": "Present only if Authorization resolved (§8.1)." },
+        "scopes": {
+          "type": "array",
+          "items": { "enum": ["ingest"] },
+          "description": "Present only if Authorization resolved (§8.1)."
+        },
+        "commands": { "$ref": "#/definitions/commands" }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$comment": "Error envelope — all non-2xx (§13.2)",
+      "type": "object",
+      "required": ["v", "error", "commands"],
+      "properties": {
+        "v": { "const": 1 },
+        "error": { "$ref": "#/definitions/error" },
+        "commands": { "$ref": "#/definitions/commands" }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

@@ -83,33 +83,48 @@ public static class Program
         // ---- Registration exchange on first contact (AGENT §11.2 step 9, PROTOCOL §5) ----
         if (string.IsNullOrEmpty(options.Backend.Token) && options.Registration?.Token is { } regToken)
         {
-            using var regClient = new BackendClient(snapshot, loggerFactory.CreateLogger<BackendClient>());
-            var regResp = await regClient.RegisterAsync(new RegisterRequest
+            try
             {
-                Kind = options.Registration.Kind,
-                Hostname = Environment.MachineName,
-                AgentVersion = AgentInfo.Version,
-                OsBuild = AgentInfo.OsBuild,
-                BootId = $"{Environment.MachineName}-{AgentInfo.BootTimeUtc:yyyyMMddHHmmss}"
-            }, regToken, CancellationToken.None);
+                using var regClient = new BackendClient(snapshot, loggerFactory.CreateLogger<BackendClient>());
+                var regResp = await regClient.RegisterAsync(new RegisterRequest
+                {
+                    Kind = options.Registration.Kind,
+                    Hostname = Environment.MachineName,
+                    AgentVersion = AgentInfo.Version,
+                    OsBuild = AgentInfo.OsBuild,
+                    BootId = $"{Environment.MachineName}-{AgentInfo.BootTimeUtc:yyyyMMddHHmmss}"
+                }, regToken, CancellationToken.None);
 
-            if (regResp?.Token is null)
+                if (regResp?.Token is null)
+                {
+                    var msg = "Registration with backend failed (invalid/expired reg_ token, or backend unreachable). Service will not start without an ingest token. Reissue an install token and restart.";
+                    Console.Error.WriteLine(msg);
+                    EventLogLifecycle.Write(EventLogLifecycle.EventIdPreflightFail, msg, EventLogEntryType.Error);
+                    return 1;
+                }
+
+                options.Backend.Token = regResp.Token;
+                options.SourceId = regResp.SourceId;
+                options.Registration = null; // discard the one-time reg token (§13: tokens never persisted beyond need)
+                loader.Rewrite(options);
+                var newHash = loader.ComputeHashOfCurrentFile();
+                snapshot.Swap(options, newHash);
+                loggerFactory.CreateLogger("Registration").LogInformation(
+                    "Registered as source {source} (scopes: {scopes}); ingest token stored in agent.json, reg token discarded",
+                    regResp.SourceId, string.Join(",", regResp.Scopes ?? new List<string>()));
+            }
+            catch (Exception ex)
             {
-                var msg = "Registration with backend failed (invalid/expired reg_ token, or backend unreachable). Service will not start without an ingest token. Reissue an install token and restart.";
+                // A network failure mid-exchange can mean the server consumed the
+                // one-time reg_ token but the response was lost (PROTOCOL §5.4
+                // response-loss). Fail closed with a clean diagnostic: the next
+                // restart would get 410 token_consumed, so the operator must
+                // reissue a fresh reg_ token either way.
+                var msg = $"Registration with backend failed: {ex.Message}. If the reg_ token was already consumed (response lost), reissue a fresh install token in the admin UI and restart.";
                 Console.Error.WriteLine(msg);
                 EventLogLifecycle.Write(EventLogLifecycle.EventIdPreflightFail, msg, EventLogEntryType.Error);
                 return 1;
             }
-
-            options.Backend.Token = regResp.Token;
-            options.SourceId = regResp.SourceId;
-            options.Registration = null; // discard the one-time reg token (§13: tokens never persisted beyond need)
-            loader.Rewrite(options);
-            var newHash = loader.ComputeHashOfCurrentFile();
-            snapshot.Swap(options, newHash);
-            loggerFactory.CreateLogger("Registration").LogInformation(
-                "Registered as source {source} (scopes: {scopes}); ingest token stored in agent.json, reg token discarded",
-                regResp.SourceId, string.Join(",", regResp.Scopes ?? new List<string>()));
         }
 
         var queueCapacity = options.Limits.InMemoryQueueEvents;

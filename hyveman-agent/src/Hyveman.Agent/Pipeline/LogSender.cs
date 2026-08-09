@@ -29,6 +29,10 @@ public sealed class LogSender : BackgroundService
     // spool, but a bad credential won't self-heal quickly (P1-3).
     private const int AuthErrorRetrySeconds = 5 * 60;
 
+    // Upper bound on honoring Retry-After (PROTOCOL §14): a server suggesting a
+    // huge delay must not stall the drain indefinitely.
+    private const int MaxRetryAfterSeconds = 3600;
+
     private sealed class PendingFile
     {
         public required string Path;
@@ -176,7 +180,7 @@ public sealed class LogSender : BackgroundService
         }
 
         var delay = retryAfterSeconds is > 0
-            ? TimeSpan.FromSeconds(retryAfterSeconds.Value)
+            ? TimeSpan.FromSeconds(Math.Min(retryAfterSeconds.Value, MaxRetryAfterSeconds))
             : Backoff.DelayFor(existing.Attempt);
 
         existing.RetryAt = DateTimeOffset.UtcNow + delay;

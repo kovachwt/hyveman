@@ -71,6 +71,17 @@ whole wire protocol (transport, endpoints, headers, auth, envelope, responses).
   - header `X-Hyveman-Protocol: <v>`, and
   - a top-level `"v": <v>` field in every JSON body (request and response).
 - Both **must** carry the same value on a given exchange.
+- **Version-mismatch responses (exception):** a client using an unsupported
+  version cannot be answered in that version. Responses to requests with a
+  missing, unsupported, or header/body-mismatched version therefore carry the
+  **server's** current version in `X-Hyveman-Protocol` and `v`, with
+  `error.supported` listing the versions the server serves (and/or
+  `missing_version` for the absent-header case).
+- **Validation precedence (server side), in order:** (1) `X-Hyveman-Protocol`
+  absent → `400 missing_version`; (2) header version unsupported → `400
+  unsupported_version` with `error.supported`; (3) body `v` present but ≠
+  header → `400 invalid_request`. A body `v` alone never substitutes for the
+  header.
 - **Bump rules:**
   - A **major** change (new *required* field, removed field, changed
     semantics, new endpoint that changes the contract) bumps `v`.
@@ -148,20 +159,26 @@ Content-Type: application/json; charset=utf-8
   "hostname": "HOST01",            // becomes sources.name (must be unique per kind)
   "agent_version": "0.1.0",        // informational
   "os_build": "17763",            // informational
-  "boot_id": "..."                 // optional; opaque host fingerprint for de-dup of reinstalls
+  "boot_id": "..."                 // optional; opaque *per-boot* identifier — changes on every
+                                     // boot; informational only, NEVER used for source resolution (§5.2)
 }
 ```
 
 ### 5.2 Server behavior
 1. Validate the `reg_` token: exists, not consumed, not expired, not revoked;
    its bound `kind` matches the body `kind`.
-2. **Source resolution (reinstall-friendly):**
-   - If a `sources` row with `(kind, name=hostname)` already exists → **reuse**
-     it (this is the reinstall path: same host, fresh ingest token).
-   - Else create a new `sources` row (`kind`, `name=hostname`).
-   - On `name` collision *across* distinct physical hosts sharing a hostname
-     (rare), the server appends a disambiguator (e.g. `HOST01-2`) and returns
-     the final `source_id`; the operator renames in the UI later.
+2. **Source resolution (reinstall-friendly) — identity rule:**
+   - **`(kind, hostname)` is authoritative in v1.** If a `sources` row with
+     `(kind, name=hostname)` already exists → **reuse** it (this is the
+     reinstall path: same host, fresh ingest token). Else create a new
+     `sources` row (`kind`, `name=hostname`).
+   - **Known v1 limitation (accepted):** two *distinct* physical hosts that
+     share a hostname resolve to the same source. `boot_id` is deliberately
+     **not** part of source resolution — it changes on every boot and cannot
+     distinguish hosts; the operator renames the source in the UI when this
+     is discovered. A future revision may add a stable machine identity and
+     true collision disambiguation (the `409 name_collision` code is
+     reserved for that, §5.4).
 3. Mint a new `agt_...` token → insert `tokens` row (`source_id`,
    `token_hash=hash(token)`, `scopes=[ingest]`, `created=now`).
 4. Mark the `reg_` token **consumed** (single-use). Consumed tokens cannot be
@@ -175,7 +192,8 @@ Content-Type: application/json; charset=utf-8
   "source_id": "src_01HW...",
   "token": "agt_01HW...",
   "scopes": ["ingest"],
-  "issued_at": "2024-08-07T15:02:11Z"
+  "issued_at": "2024-08-07T15:02:11Z",
+  "commands": []                // reserved (§16); always [] in v1
 }
 ```
 The agent writes `token` (and `source_id` for telemetry corroboration) into
@@ -191,8 +209,16 @@ step 9). Reinstall on the same host requires a freshly admin-issued `reg_` token
 | 401 | `token_invalid` | unknown / malformed `reg_` token |
 | 401 | `token_revoked` | `reg_` token revoked |
 | 410 | `token_consumed` | `reg_` token already used (reissue via admin UI) |
-| 409 | `name_collision` | `hostname+kind` collides and cannot be auto-disambiguated (shouldn't happen; operator action) |
+| 409 | `name_collision` | reserved — unused in v1: with `(kind, hostname)` authoritative (§5.2), registration either reuses or creates; kept for a future machine-identity scheme |
 | 429 | `too_many_requests` | rate-limited (§15); `Retry-After` set |
+
+**Response-loss recovery:** if the connection fails after the server consumed
+the `reg_` token but before the agent received the response, the agent has no
+token and a retry receives `410 token_consumed`. The agent fails closed (does
+not start; clear diagnostic). Recovery: reissue a fresh `reg_` token in the
+admin UI and restart — the §5.2 reuse path keeps the same `source_id`. (A
+future revision may add an idempotent registration/recovery flow; see
+PROTOCOL_REVIEW §3.)
 
 ---
 
@@ -305,8 +331,9 @@ The item maps onto the `events` table (DESIGN §5.1):
 | `schema` | true | item otherwise malformed |
 
 ### 6.5 Whole-batch errors (non-2xx)
-See §13. On 4xx non-retryable, the agent quarantines the batch; on 5xx/408/429
-it keeps the spool file and retries (AGENT §6.5).
+See §13. On 4xx non-retryable, the agent quarantines the batch — **except**
+`400 too_many_items` / `413 payload_too_large`, which split & resend (§14);
+on 5xx/408/429 it keeps the spool file and retries (AGENT §6.5).
 
 ---
 
@@ -332,6 +359,7 @@ Content-Type: application/json; charset=utf-8
   "items": [
     {
       "kind": "heartbeat",
+      "source_id": "src_01HW...",       // corroborating only (§4.2); additive-optional (§3)
       "sent_at": "2024-08-07T15:02:11Z",
       "agent_version": "0.1.0",
       "protocol_version": 1,
@@ -370,14 +398,20 @@ Content-Type: application/json; charset=utf-8
   per-interval (agent may send cumulative counters; the server diffs for
   rates). All fields are informational for the server; the server uses
   `sent_at`, `degraded`, `counters` for alerting (DESIGN §4.4 heartbeat rules).
+  The item may additionally carry `source_id` as corroboration only —
+  identity always comes from the token (§4.2).
 - **`kind:"facts"` `vms[].state`** ∈ `on|off|paused|saved|other|unknown`;
-  `heartbeat_ok` ∈ `true|false|null`.
+  `heartbeat_ok` ∈ `true|false|null`. `"vms": []` with `stale:false` means the
+  host has **no VMs** (scan succeeded); a failed scan never yields an empty
+  list — prior facts are re-emitted with `stale:true` (§7.4).
 - No `record_id`/`dedup_scope` on telemetry items — not idempotent.
 
 ### 7.2 Server behavior
-- Overwrites/stores the latest heartbeat per source (latest-wins). Stores facts
-  into `vms` (DESIGN §5.2) and `health_snapshots`-adjacent state.
-- Heartbeat arrival resets the "agent silent" timer (DESIGN §4.4 rule type 3).
+- Overwrites/stores the latest heartbeat per source (latest-wins, §7.4). Stores
+  facts into `vms` (DESIGN §5.2) and `health_snapshots`-adjacent state.
+- Heartbeat arrival resets the "agent silent" timer (DESIGN §4.4 rule type 3)
+  — based on the server's **receive time** (`received_at`), never on `sent_at`
+  (§7.4).
 
 ### 7.3 Response — 200
 ```jsonc
@@ -388,6 +422,23 @@ Content-Type: application/json; charset=utf-8
   malformed heartbeat is rare and fatal to the batch (4xx), discarded (resends
   next interval).
 - `commands` reserved (§16).
+
+### 7.4 Ordering rule (what "latest-wins" means)
+- **Heartbeat:** stored state is replaced iff the incoming item has a
+  *different* `boot_time` (a new boot session) **or** a `sent_at` newer than
+  the stored heartbeat's `sent_at`. An older `sent_at` with the same
+  `boot_time` is ignored — a reordered or retried request must not regress
+  state. The server records `received_at` independently of `sent_at`.
+- **Facts:** replaced iff `collected_at` is newer than the stored snapshot's
+  `collected_at`; otherwise ignored. Multiple `facts` items in one request are
+  applied in array order under the same rule.
+- **Stale snapshots:** a `stale:true` facts item replaces stored state the
+  same way (its `collected_at` is newer), but the server SHOULD flag it as
+  stale in the UI. An empty `vms` list is *not* a failure signal (§7.1).
+- **Response for a valid-but-older payload:** still `200 { "v": 1,
+  "accepted": true, "commands": [] }` — there is nothing to signal and the
+  next interval resends fresh state anyway. Telemetry never returns per-item
+  results.
 
 ---
 
@@ -413,7 +464,8 @@ Authorization: Bearer agt_<token>    # OPTIONAL
   "server_time": "2024-08-07T15:02:11Z",
   "server_version": "0.1.0",
   "source_id": "src_01HW...",      // present only if Authorization resolved
-  "scopes": ["ingest"]              // present only if Authorization resolved
+  "scopes": ["ingest"],            // present only if Authorization resolved
+  "commands": []                    // reserved (§16); always [] in v1
 }
 ```
 - Always 200 if the server is reachable & healthy, **regardless of token** (so
@@ -433,7 +485,7 @@ Authorization: Bearer agt_<token>    # OPTIONAL
 | `Authorization` | yes (except `GET /health` w/o token) | `Bearer <token>` | §4 |
 | `X-Hyveman-Protocol` | yes | `<int>` | §3; absent → `400 missing_version` |
 | `Content-Type` | yes (when body) | `application/json; charset=utf-8` | |
-| `X-Hyveman-Source` | no | `<source_id>` | corroborating only (§4.2) |
+| `X-Hyveman-Source` | no | `<source_id>` | corroborating only (§4.2); ingest endpoints only — omitted where no source is known (e.g. `/register`) |
 | `Content-Encoding` | no | `gzip` | omit ⇒ identity; §12 |
 | `Accept` | recommended | `application/json` | server only returns JSON |
 | `User-Agent` | recommended | `hyveman-agent/<ver> (+<kind>; os=<build>)` | hygiene |
@@ -534,6 +586,15 @@ The server uniqueness key is `(source_id, dedup_scope, record_id)` (DESIGN
 | `message` field | **64 KiB** | server | `message_oversize` reject |
 | Any `fields.*` value (string) | **64 KiB** | server | `field_oversize` reject |
 | `record_id` | ≤ 128 chars | server | `bad_record_id` reject |
+
+**Limit semantics:**
+- All limits are on the **decompressed (identity) JSON**. `Content-Encoding:
+  gzip` only reduces bytes on the wire; it never raises or lowers a limit.
+- The 4 MiB cap applies to the reassembled body for **chunked** requests too;
+  the v1 agent never sends chunked bodies (always `Content-Length`).
+- `Content-Encoding` other than `identity`/`gzip` → `400 invalid_request`
+  (`415 unsupported_media_type` also acceptable, §13.3). The v1 agent sends
+  only identity or gzip.
 - Agent-side truncation of `raw` (AGENT §9.3): truncate to 8 KiB and append
   marker `…hyveman-truncated:<n>` so the server still receives a valid item.
   The rendered `message` is never truncated.
@@ -577,18 +638,26 @@ shape: `{ "v": 1, ..., "commands": [] }`.
 | 403 | `wrong_scope` | no | token valid but scope insufficient (e.g. `register` on `/ingest`) |
 | 404 | `unknown_source` | no | token's source_id no longer exists (deleted) — re-register |
 | 410 | `token_consumed` | no | `reg_` token already used (reissue) |
-| 413 | `payload_too_large` | no (agent should split) | body > 4 MiB |
-| 409 | `name_collision` | no | registration hostname collision unresolved |
+| 413 | `payload_too_large` | no — **special case**: split & resend (bounded halving, §14) | body > 4 MiB (decompressed, §12) |
+| 409 | `name_collision` | no | reserved — unused in v1 (§5.2/§5.4) |
 | 429 | `too_many_requests` | **yes** (honor `Retry-After`) | rate-limited (§15) |
-| 408 | — | **yes** | request timed out |
+| 408 | `request_timeout` | **yes** | request timed out |
 | 500 | `internal` | yes | server bug |
-| 502 | — | **yes** | bad gateway / proxy |
-| 503 | `unavailable` (or none) | **yes** (honor `Retry-After`) | server not ready |
-| 504 | — | **yes** | upstream timeout |
+| 502 | `bad_gateway` | **yes** | bad gateway / proxy |
+| 503 | `unavailable` | **yes** (honor `Retry-After`) | server not ready |
+| 504 | `gateway_timeout` | **yes** | upstream timeout |
 | network err | — | **yes** | TLS/DNS/conn reset |
+| 415 | `unsupported_media_type` | no | unsupported `Content-Encoding` (§12); never sent by the v1 agent |
 
 - **4xx-other** (not in table) → treated as non-retryable; agent quarantines
   (logs) and surfaces in heartbeat.
+- **Proxy-generated errors:** 408/502/503/504 emitted by a reverse proxy may
+  arrive without the JSON envelope or with a non-standard `error.code`.
+  Agents MUST classify retryability from the HTTP status alone — they do
+  (§14); the codes above are what a hyveman-api server emits.
+- **`error.code` values are additive:** servers may introduce new codes
+  without a version bump (§3); agents treat unknown codes by HTTP status class
+  (§14).
 - **Credential-class errors** (`token_invalid`, `token_revoked`,
   `wrong_scope`, `unknown_source`, `token_consumed`) are the exception to
   quarantine: the batch is valid, so the agent keeps the spool file, retries
@@ -602,31 +671,52 @@ shape: `{ "v": 1, ..., "commands": [] }`.
   committed → first commit wins; a *duplicate* retry after a successful commit
   → `deduped` count. The agent cannot tell and doesn't need to.
 - `/ingest/telemetry` is **not** idempotent; retries are effectively harmless
-  because latest-wins, but old heartbeats should NOT be replayed (the agent
-  never spools them — AGENT §7.1/§8).
+  because latest-wins (§7.4), but old heartbeats should NOT be replayed (the
+  agent never spools them — AGENT §7.1/§8).
+
+### 13.5 Machine-readable schema
+All v1 request/response JSON bodies are also specified as JSON Schema
+(draft-07) at `docs/schemas/protocol-v1.json`. It mirrors this document and is
+kept in lockstep with it; **this document is authoritative** on any divergence.
+Server implementers SHOULD validate requests against the schema (bodies only —
+headers are outside JSON Schema's scope).
 
 ---
 
 ## 14. Retry & backoff (agent side)
 
-Applies to **logs** (spooled, retried) and **telemetry** (best-effort, 3 tries):
+Applies to **logs** (spooled, retried) and **telemetry** (best-effort):
 
 - Retriable: `408`, `429`, `5xx`, network/TLS errors.
 - Non-retriable: `2xx`, `4xx` (except `408/429`). On non-retriable 4xx for
   logs → quarantine; for telemetry → discard.
 - **Backoff:** exponential, base `1s`, factor `2`, per-attempt cap `60s`,
-  + ±20% jitter per attempt. Retries are **unbounded** (per-attempt delay is
-  capped; the spool honors its own caps), so a permanently-down backend can
-  neither spin the host nor fill the disk — logs remain safely in the spool;
-  the sender just keeps the queue.
+  + ±20% jitter per attempt.
+- **Retry limits (per stream):**
+  - **Logs: unbounded.** A log batch is retried indefinitely while its spool
+    file exists (per-attempt delay is capped at `60s`; the spool honors its
+    own disk caps), so a permanently-down backend can neither spin the host
+    nor fill the disk — logs remain safely in the spool; the sender just
+    keeps the queue.
+  - **Telemetry: at most 3 attempts per interval**, then the payload is
+    discarded (the next interval resends fresh state). Non-retriable
+    outcomes (4xx except `408/429`) are discarded immediately, without
+    burning attempts.
 - **`Retry-After`** (seconds, on `429`/`503`) is honored in place of the
-  computed backoff.
+  computed backoff, **capped at `3600s` per wait** — a server suggesting a
+  huge delay must not stall the drain indefinitely.
 - **Bounded concurrency:** `send_concurrency=2` for logs (AGENT §6.5). No retry
   storm: while the backend is down the sender sleeps on the backoff, CPU ~0
   (hazard H5 in AGENT §3).
 - **No partial-batch retry structure:** logs retry the *whole* batch file
   (one spool file = one batch = one POST). Server per-item rejects (§6.4) are
   final for those items; the agent does not re-split.
+- **Split special case (overrides the no-resplit rule):** `413
+  payload_too_large` and `400 too_many_items` do **not** quarantine. The
+  agent re-chunks the spooled batch by **recursive halving** until every part
+  is within limits; a single over-size item (the halving floor) is still sent
+  and the server per-item-rejects it if needed (§6.4). Only these two errors
+  ever trigger re-splitting.
 
 ---
 
@@ -722,8 +812,7 @@ envelope. Provisional (finalized with the syslog spec):
    `{source_id:"src_01HW", token:"agt_02HW", scopes:["ingest"]}`. Stores token,
    discards `reg_` token.
 3. Agent `POST /ingest/telemetry` with `Authorization: Bearer agt_02HW`, a
-   `heartbeat` item → 200 `{ok:true, source_id:"src_01HW", commands:[]}`.
-   Server's
+   `heartbeat` item → 200 `{v:1, accepted:true, commands:[]}`. Server's
    "agent silent" timer resets.
 4. Agent `POST /ingest/logs` with one `log` item
    `record_id:"41235", dedup_scope:"System"` → 200 `{accepted:1, deduped:0}`.
@@ -765,6 +854,11 @@ envelope. Provisional (finalized with the syslog spec):
    to 401 if we want a hard token check at preflight without a real POST.
 6. **Cumulative vs interval counters in heartbeat** — let the agent choose
    cumulative (server diffs by `source_id`+`time`); finalize in the agent.
+7. **Idempotent registration/recovery flow** — response loss currently
+   requires admin reissue (§5.4); a stable client installation ID + recovery
+   endpoint would remove the manual step.
+8. **Stable machine identity** — would allow true cross-host hostname
+   collision handling; v1 accepts `(kind, hostname)` as authoritative (§5.2).
 
 ---
 
@@ -773,6 +867,7 @@ envelope. Provisional (finalized with the syslog spec):
 | Date | Version | Notes |
 |---|---|---|
 | 2024-08-07 | v1 (draft) | Initial: registration, two ingest endpoints, health, idempotency+epoch, command reservation |
+| 2026-08-09 | v1 (rev) | Clarity-only revision (no wire changes): `commands: []` in §5.3/§8.2 examples; version-mismatch response + validation precedence (§3); `(kind, hostname)` identity rule and `boot_id` semantics (§5); response-loss recovery procedure (§5.4); telemetry latest-wins ordering rule + facts empty/stale semantics (§7.4); size-limit semantics for gzip/chunked/encoding (§12); stable codes for 408/502/503/504 and proxy-error note (§13.3); machine-readable schema reference (§13.5); per-stream retry limits + split special case (§14); new open items (§19) |
 
 ---
 

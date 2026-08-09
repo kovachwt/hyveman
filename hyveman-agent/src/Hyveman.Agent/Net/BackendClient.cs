@@ -79,7 +79,12 @@ public sealed class BackendClient : IDisposable
     private void ApplyAuthAndProtocol(HttpRequestMessage req, string? token, string? sourceId)
     {
         req.Headers.TryAddWithoutValidation(ProtocolHeader, ProtocolVersion.ToString());
-        req.Headers.TryAddWithoutValidation(SourceHeader, sourceId ?? _snapshot.Active.SourceId ?? "");
+        // X-Hyveman-Source is corroborating-only (PROTOCOL §4.2) and only sent
+        // where a source is actually known — never with an empty value (e.g. on
+        // /register, before the exchange, the header is omitted entirely).
+        var source = sourceId ?? _snapshot.Active.SourceId ?? "";
+        if (!string.IsNullOrEmpty(source))
+            req.Headers.TryAddWithoutValidation(SourceHeader, source);
         req.Headers.TryAddWithoutValidation("User-Agent",
             $"hyveman-agent/{typeof(BackendClient).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"} (+windows-agent; os={Environment.OSVersion.Version.Build})");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token ?? _snapshot.Active.Backend.Token ?? "");
@@ -121,7 +126,17 @@ public sealed class BackendClient : IDisposable
             return null;
         }
 
-        return JsonSerializer.Deserialize<RegisterResponse>(body);
+        var parsed = JsonSerializer.Deserialize<RegisterResponse>(body);
+        // The response must mint an ingest-scope token (PROTOCOL §5.3); anything
+        // else is a server-side contract violation — fail closed rather than
+        // store a token we could never use.
+        if (parsed?.Scopes is not { Count: > 0 } scopes || !scopes.Contains("ingest"))
+        {
+            _log.LogWarning("POST /register response missing ingest scope (scopes={scopes}); treating registration as failed",
+                parsed?.Scopes is null ? "none" : string.Join(",", parsed.Scopes));
+            return null;
+        }
+        return parsed;
     }
 
     /// <summary>
