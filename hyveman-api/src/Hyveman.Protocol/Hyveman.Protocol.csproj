@@ -6,7 +6,7 @@
     <RootNamespace>Hyveman.Protocol</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="..\..\docs\schemas\protocol-v1.json" Link="schemas\protocol-v1.json" />
+    <EmbeddedResource Include="..\..\..\docs\schemas\protocol-v1.json" Link="schemas\protocol-v1.json" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Hyveman.Domain\Hyveman.Domain.csproj" />
