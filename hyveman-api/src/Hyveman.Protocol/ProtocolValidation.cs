@@ -290,7 +290,11 @@ public static class ProtocolValidation
                 if (state is null || !VmStates.Known.Contains(state))
                     return Fail<FactsPayload>($"facts vm '{nameProp.GetString()}' has invalid state", out error);
                 bool? hb = null;
-                if (vm.TryGetProperty("heartbeat_ok", out var hbProp) && hbProp.ValueKind == JsonValueKind.True)
+                // PROTOCOL §7.1: heartbeat_ok ∈ true|false|null. An explicit
+                // false (running VM, Integration Services heartbeat lost) must
+                // survive parsing — only JSON null means "never reported"
+                // (DEFECTS.md D7).
+                if (vm.TryGetProperty("heartbeat_ok", out var hbProp) && hbProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
                     hb = hbProp.GetBoolean();
                 double? cpu = null;
                 if (vm.TryGetProperty("cpu_pct", out var cpuProp) && cpuProp.ValueKind is JsonValueKind.Number)

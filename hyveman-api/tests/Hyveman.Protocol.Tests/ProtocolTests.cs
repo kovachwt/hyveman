@@ -364,4 +364,27 @@ public class ProtocolValidationTests
         Assert.True(f.Stale);
         Assert.Empty(f.Vms);
     }
+
+    [Fact]
+    public void ParseTelemetryItem_Facts_HeartbeatOkFalse_SurvivesParsing()
+    {
+        // PROTOCOL §7.1: heartbeat_ok ∈ true|false|null. An explicit false
+        // (running VM whose Integration Services heartbeat is lost) must not
+        // be coerced to null — the UI distinguishes the three states
+        // (DEFECTS.md D7).
+        var json = """
+            {"kind":"facts","collected_at":"2024-08-07T15:02:10Z","stale":false,"vms":[
+              {"name":"VM-OK","state":"on","heartbeat_ok":true},
+              {"name":"VM-DEGRADED","state":"on","heartbeat_ok":false},
+              {"name":"VM-UNREPORTED","state":"off","heartbeat_ok":null}]}
+            """;
+        var el = JsonSerializer.Deserialize<JsonElement>(json);
+        var parsed = ProtocolValidation.ParseTelemetryItem(el, out var error);
+        Assert.Null(error);
+        var f = Assert.IsType<FactsPayload>(parsed);
+        Assert.Equal(3, f.Vms.Count);
+        Assert.True(f.Vms[0].HeartbeatOk);
+        Assert.False(f.Vms[1].HeartbeatOk); // the D7 regression
+        Assert.Null(f.Vms[2].HeartbeatOk);
+    }
 }

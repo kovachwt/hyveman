@@ -286,6 +286,40 @@ public class AgentContractTests
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
     }
 
+    [Fact]
+    public async Task Telemetry_HeartbeatOkFalse_RoundTripsToVmDto()
+    {
+        // D7: an explicit heartbeat_ok:false (running VM, Integration Services
+        // heartbeat lost) must survive parse → vms table → /api/v1/hosts/{id}/vms
+        // as false, not be coerced to null (indistinguishable from never-reported).
+        var (token, sourceId) = await _fx.RegisterAgentWithSourceAsync("D7-HOST");
+
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+        using var create = new HttpRequestMessage(HttpMethod.Post, "/api/v1/hosts");
+        create.Headers.Add("X-CSRF-Token", csrf);
+        create.Headers.Add("Origin", "http://localhost:5173");
+        create.Content = new StringContent("{\"name\":\"D7-HOST\",\"sourceId\":\"" + sourceId + "\"}", Encoding.UTF8, "application/json");
+        var created = await client.SendAsync(create);
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var hostId = (await ReadJson(created)).GetProperty("id").GetString();
+
+        var ingest = await PostAsync("/ingest/telemetry", token, """
+            {"v":1,"items":[{"kind":"facts","collected_at":"2024-08-07T10:30:00Z","stale":false,
+              "vms":[{"name":"VM1","state":"on","heartbeat_ok":false}]}]}
+            """);
+        Assert.Equal(HttpStatusCode.OK, ingest.StatusCode);
+
+        var vms = await client.GetAsync($"/api/v1/hosts/{hostId}/vms");
+        Assert.Equal(HttpStatusCode.OK, vms.StatusCode);
+        var body = await ReadJson(vms);
+        Assert.Equal(1, body.GetArrayLength());
+        Assert.Equal("VM1", body[0].GetProperty("name").GetString());
+        Assert.Equal(JsonValueKind.False, body[0].GetProperty("heartbeatOk").ValueKind);
+        Assert.False(body[0].GetProperty("heartbeatOk").GetBoolean());
+    }
+
     // ── health ─────────────────────────────────────────────────────────────
 
     [Fact]
@@ -633,6 +667,11 @@ public sealed class ApiFixture : IDisposable
         Environment.SetEnvironmentVariable("HYVEMAN_DATA_DIR", _dataDir);
         Environment.SetEnvironmentVariable("HYVEMAN_AllowInsecureHttp", "true");
         Environment.SetEnvironmentVariable("HYVEMAN_RateLimits__PerSourcePerMinute", "30");
+        // The whole collection shares one loopback network key, so the
+        // default 20/min registration budget is exhausted by the suite itself
+        // (each test registers its own agent). Raise it so the limiter stays
+        // a defense under test, not a false positive.
+        Environment.SetEnvironmentVariable("HYVEMAN_RateLimits__RegistrationPerMinute", "200");
         _factory = new WebApplicationFactory<Program>();
         Client = _factory.CreateClient();
     }

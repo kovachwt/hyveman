@@ -27,7 +27,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | ~~inspection~~ **fixed** |
 | [D5](#d5) | P1 | api | Event search skips a row at every page boundary | ~~verified~~ **fixed** |
 | [D6](#d6) | P1 | api | Web session lifetime compounds without bound | ~~inspection~~ **fixed** |
-| [D7](#d7) | P2 | api | `heartbeat_ok: false` coerced to `null` | verified |
+| [D7](#d7) | P2 | api | `heartbeat_ok: false` coerced to `null` | ~~verified~~ **fixed** |
 | [D8](#d8) | P2 | api | Duplicate, never-resolving agent-silent alerts from the reconcile path | inspection |
 | [D9](#d9) | P2 | api | Reconcile pass ignores maintenance windows | inspection |
 | [D10](#d10) | P2 | api | Outbox rows stuck in `sending` are never recovered | inspection |
@@ -412,6 +412,25 @@ field exists to surface.
 
 **Fix.** `hbProp.ValueKind is JsonValueKind.True or JsonValueKind.False`.
 Everything downstream already handles all three states.
+
+**Status: FIXED (2026-08-09).** `ProtocolValidation.ParseFacts` now accepts an
+explicit `false` — `hbProp.ValueKind is JsonValueKind.True or JsonValueKind.False`
+— so a running VM whose Integration Services heartbeat is lost round-trips as
+`false` through parse → `vms` table → `GET /api/v1/hosts/{id}/vms` instead of
+being conflated with `null` ("never reported"). Downstream (`HealthStore`, the
+`VmDto` mapper, the UI's three-state rendering) already handled all three
+states and needed no change. Regression coverage:
+`ParseTelemetryItem_Facts_HeartbeatOkFalse_SurvivesParsing` (protocol-level:
+parses `true`/`false`/`null` in one facts item and asserts each survives
+distinctly) and `Telemetry_HeartbeatOkFalse_RoundTripsToVmDto` (API-level:
+registers an agent, ingests facts with `heartbeat_ok:false`, and asserts the
+host's `/vms` endpoint returns `heartbeatOk: false` — not null). Both were
+verified to fail against the pre-fix code. Note: the API test suite's shared
+fixture now raises `HYVEMAN_RateLimits__RegistrationPerMinute` to 200 — the
+whole collection shares one loopback network key and the default 20/min
+budget was exhausted by the suite itself, surfacing as a spurious
+`too_many_requests` on the last registering test once the D7 test added one
+more register call.
 
 ---
 
