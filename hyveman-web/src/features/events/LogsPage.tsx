@@ -347,7 +347,7 @@ export default function LogsPage() {
               <InputLabel>Sort</InputLabel>
               <Select
                 label="Sort"
-                value={filters.sort ?? 'time_desc'}
+                value={filters.sort ?? 'desc'}
                 onChange={(e) => commitFilters({ sort: e.target.value as EventFilters['sort'] })}
               >
                 {EVENT_SORTS.map((s) => (

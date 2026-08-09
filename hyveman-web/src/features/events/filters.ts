@@ -8,6 +8,12 @@ import type { GetApiV1EventsParams } from '@/api/generated/endpoints';
 export const EVENT_PAGE_SIZE = 50;
 export const EVENT_MAX_PAGE_SIZE = 200;
 
+/** API sort contract (API.md §7.2): the service orders by event time and
+ *  honors exactly `desc` (newest first, default) or `asc` (oldest first) —
+ *  `EventStore` treats any other value as descending. There is no server-side
+ *  severity sort. */
+export type EventSort = 'desc' | 'asc';
+
 export interface EventFilters {
   from?: string;
   to?: string;
@@ -17,18 +23,17 @@ export interface EventFilters {
   severityMin?: number;
   eventId?: number;
   q?: string;
-  sort?: 'time_desc' | 'time_asc' | 'severity_desc';
+  sort?: EventSort;
   limit?: number;
 }
 
 export const EVENT_SORTS = [
-  { value: 'time_desc', label: 'Newest first' },
-  { value: 'time_asc', label: 'Oldest first' },
-  { value: 'severity_desc', label: 'Severity, then newest' },
+  { value: 'desc', label: 'Newest first' },
+  { value: 'asc', label: 'Oldest first' },
 ] as const;
 
 export function emptyEventFilters(): EventFilters {
-  return { sort: 'time_desc', limit: EVENT_PAGE_SIZE };
+  return { sort: 'desc', limit: EVENT_PAGE_SIZE };
 }
 
 /** Deserializes URL search params into normalized filters (unknown params are
@@ -52,8 +57,7 @@ export function eventFiltersFromSearchParams(params: URLSearchParams): EventFilt
   const q = params.get('q');
   if (q) filters.q = q;
   const sort = params.get('sort');
-  if (sort === 'time_asc' || sort === 'severity_desc') filters.sort = sort;
-  else filters.sort = 'time_desc';
+  filters.sort = sort === 'asc' ? 'asc' : 'desc';
   const limit = parsePositiveInt(params.get('limit'));
   if (limit !== undefined) filters.limit = clampLimit(limit);
   return filters;
@@ -71,7 +75,7 @@ export function eventFiltersToSearchParams(filters: EventFilters): URLSearchPara
   if (filters.severityMin !== undefined) params.set('severityMin', String(filters.severityMin));
   if (filters.eventId !== undefined) params.set('eventId', String(filters.eventId));
   if (filters.q) params.set('q', filters.q);
-  if (filters.sort) params.set('sort', filters.sort);
+  if (filters.sort && filters.sort !== 'desc') params.set('sort', filters.sort);
   if (filters.limit !== undefined && filters.limit !== EVENT_PAGE_SIZE) {
     params.set('limit', String(filters.limit));
   }
@@ -81,7 +85,7 @@ export function eventFiltersToSearchParams(filters: EventFilters): URLSearchPara
 /** Normalizes a filter set: valid range, clamped limit, defaults. Returns a
  *  new object; never mutates the input. */
 export function normalizeEventFilters(filters: EventFilters): EventFilters {
-  const out: EventFilters = { sort: filters.sort ?? 'time_desc', limit: clampLimit(filters.limit ?? EVENT_PAGE_SIZE) };
+  const out: EventFilters = { sort: filters.sort === 'asc' ? 'asc' : 'desc', limit: clampLimit(filters.limit ?? EVENT_PAGE_SIZE) };
   if (isIsoLike(filters.from) && isIsoLike(filters.to) && filters.to! < filters.from!) {
     out.from = filters.to;
     out.to = filters.from;

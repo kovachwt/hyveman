@@ -28,7 +28,7 @@ describe('LogonStatsPage', () => {
         respond: (url) => {
           expect(url).toContain('from=2025-08-01');
           expect(url).toContain('to=2025-08-10');
-          return { body: { data: statsPayload } };
+          return { body: statsPayload };
         },
       },
     ]);
@@ -52,7 +52,7 @@ describe('LogonStatsPage', () => {
   });
 
   it('shows an empty state when there are no rows', async () => {
-    mockApi([{ path: '/api/v1/logon-stats', respond: { body: { data: { items: [], hasMore: false } } } }]);
+    mockApi([{ path: '/api/v1/logon-stats', respond: { body: { items: [], hasMore: false } } }]);
     renderWithProviders(<LogonStatsPage />, { route });
     expect(await screen.findByText(/No logon rows in range/)).toBeInTheDocument();
   });
@@ -73,9 +73,7 @@ describe('LogonStatsPage', () => {
       {
         path: '/api/v1/hosts/hst_1',
         respond: {
-          body: {
-            data: { id: 'hst_1', name: 'bare-metal', kind: 'windows-server', sourceId: null, enabled: true },
-          },
+          body: { id: 'hst_1', name: 'bare-metal', kind: 'windows-server', sourceId: null, enabled: true },
         },
       },
     ]);

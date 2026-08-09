@@ -43,7 +43,7 @@ function renderPage(route = '/') {
 
 describe('OverviewPage', () => {
   it('renders summary counts and host tiles with health badges', async () => {
-    mockApi([{ path: '/api/v1/overview', respond: { body: { data: overviewPayload } } }]);
+    mockApi([{ path: '/api/v1/overview', respond: { body: overviewPayload } }]);
     renderPage();
 
     expect(await screen.findByText('dc01')).toBeInTheDocument();
@@ -60,7 +60,7 @@ describe('OverviewPage', () => {
   });
 
   it('shows an empty state when no hosts are registered', async () => {
-    mockApi([{ path: '/api/v1/overview', respond: { body: { data: { ...overviewPayload, hosts: [] } } } }]);
+    mockApi([{ path: '/api/v1/overview', respond: { body: { ...overviewPayload, hosts: [] } } }]);
     renderPage();
     expect(await screen.findByText('No hosts registered')).toBeInTheDocument();
   });
@@ -85,7 +85,7 @@ describe('OverviewPage', () => {
         respond: () =>
           fail
             ? { status: 500, body: { title: 'boom', status: 500, code: 'internal' } }
-            : { body: { data: overviewPayload } },
+            : { body: overviewPayload },
       },
     ]);
     const { queryClient } = renderPage();
@@ -111,10 +111,8 @@ describe('OverviewPage', () => {
         path: '/api/v1/overview',
         respond: {
           body: {
-            data: {
-              ...overviewPayload,
-              generatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
-            },
+            ...overviewPayload,
+            generatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
           },
         },
       },

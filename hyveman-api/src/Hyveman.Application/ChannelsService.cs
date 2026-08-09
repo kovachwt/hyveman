@@ -171,6 +171,7 @@ public sealed class ChannelsService(
         Rotated = c.Rotated,
         LastTestAt = c.LastTestAt,
         LastTestOk = c.LastTestOk,
+        UpdatedAt = c.UpdatedAt,
         ConfigSummary = c.Kind switch
         {
             ChannelKinds.Telegram => new() { ["chatId"] = "••••••" },

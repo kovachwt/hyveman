@@ -2,7 +2,9 @@
  * Playwright mock API (FRONTEND.md §14 browser tests): a controlled test
  * environment standing in for hyveman-api. It implements the web API surface
  * the e2e flows touch, issues the same session/CSRF cookies, and never
- * contains production credentials.
+ * contains production credentials. Responses are raw DTO bodies — the real
+ * API serializes the DTO directly with no outer `data` envelope (see
+ * docs/FRONTEND-CONFORMANCE.md B1).
  *
  * Run: node scripts/mock-api.mjs [port]   (default 5099)
  */
@@ -148,8 +150,6 @@ const events = {
   hasMore: false,
 };
 
-const dto = (data) => JSON.stringify({ data });
-
 function json(res, body, status = 200) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
   // Preserve headers set earlier (e.g. Set-Cookie from setHeader) while
@@ -239,11 +239,9 @@ const server = createServer(async (req, res) => {
   // ── Auth ────────────────────────────────────────────────────────────────
   if (path === '/api/v1/auth/session') {
     return json(res, {
-      data: {
-        authenticated: authenticated(req),
-        setupRequired: state.setupRequired && !authenticated(req),
-        adminName: authenticated(req) ? 'admin' : null,
-      },
+      authenticated: authenticated(req),
+      setupRequired: state.setupRequired && !authenticated(req),
+      adminName: authenticated(req) ? 'admin' : null,
     });
   }
   if (path === '/api/v1/auth/passkeys/login/options') {
@@ -288,56 +286,52 @@ const server = createServer(async (req, res) => {
     return json(res, null, 204);
   }
   if (path === '/api/v1/auth/passkeys' && method === 'GET') {
-    return json(res, { data: state.passkeys });
+    return json(res, state.passkeys);
   }
 
   // ── Auth gate for everything else ───────────────────────────────────────
   if (!authenticated(req)) return problem(res, 401, 'unauthorized', 'Sign in required.');
 
   // ── Resources ───────────────────────────────────────────────────────────
-  if (path === '/api/v1/overview') return json(res, { data: overview });
-  if (path === '/api/v1/hosts' && method === 'GET') return json(res, { data: hosts });
+  if (path === '/api/v1/overview') return json(res, overview);
+  if (path === '/api/v1/hosts' && method === 'GET') return json(res, hosts);
   if (path === '/api/v1/hosts' && method === 'POST') {
     const body = await readBody(req);
-    return json(res, { data: { id: 'hst_new', createdAt: now(), updatedAt: now(), ...body } });
+    return json(res, { id: 'hst_new', createdAt: now(), updatedAt: now(), ...body });
   }
   const hostMatch = path.match(/^\/api\/v1\/hosts\/([^/]+)$/);
   if (hostMatch && method === 'GET') {
     const host = hosts.find((h) => h.id === hostMatch[1]);
     if (!host) return problem(res, 404, 'not_found', 'Host not found.');
     return json(res, {
-      data: {
-        ...host,
-        rollupState: 'ok',
-        rollupAt: minutesAgo(2),
-        components: [
-          { type: 'cpu', name: 'CPU 1', state: 'ok', detail: 'Xeon', lastSeen: minutesAgo(1) },
-          { type: 'memory', name: 'DIMM A1', state: 'ok', lastSeen: minutesAgo(1) },
-          { type: 'disk', name: 'Virtual Disk 0', state: 'ok', lastSeen: minutesAgo(1) },
-        ],
-        latestMetrics: [
-          { name: 'temperature_max_c', value: 41.2, unit: 'C', time: minutesAgo(1) },
-          { name: 'power_watts', value: 210, unit: 'W', time: minutesAgo(1) },
-        ],
-        recentAlerts: [],
-        recentEvents: events.items.slice(0, 1),
-        agent: { status: 'online', lastReceived: minutesAgo(1), agentVersion: '1.0.0', osBuild: '10.0.20348', vmCount: 3 },
-      },
+      ...host,
+      rollupState: 'ok',
+      rollupAt: minutesAgo(2),
+      components: [
+        { type: 'cpu', name: 'CPU 1', state: 'ok', detail: 'Xeon', lastSeen: minutesAgo(1) },
+        { type: 'memory', name: 'DIMM A1', state: 'ok', lastSeen: minutesAgo(1) },
+        { type: 'disk', name: 'Virtual Disk 0', state: 'ok', lastSeen: minutesAgo(1) },
+      ],
+      latestMetrics: [
+        { name: 'temperature_max_c', value: 41.2, unit: 'C', time: minutesAgo(1) },
+        { name: 'power_watts', value: 210, unit: 'W', time: minutesAgo(1) },
+      ],
+      recentAlerts: [],
+      recentEvents: events.items.slice(0, 1),
+      agent: { status: 'online', lastReceived: minutesAgo(1), agentVersion: '1.0.0', osBuild: '10.0.20348', vmCount: 3 },
     });
   }
   if (path.startsWith('/api/v1/hosts/') && path.endsWith('/health')) {
     return json(res, {
-      data: {
-        hostId: 'hst_1',
-        rollupState: 'ok',
-        rollupAt: minutesAgo(2),
-        components: [
-          { type: 'cpu', name: 'CPU 1', state: 'ok', detail: 'Xeon', lastSeen: minutesAgo(1) },
-          { type: 'memory', name: 'DIMM A1', state: 'ok', lastSeen: minutesAgo(1) },
-        ],
-        latestMetrics: [],
-        recentSnapshots: [],
-      },
+      hostId: 'hst_1',
+      rollupState: 'ok',
+      rollupAt: minutesAgo(2),
+      components: [
+        { type: 'cpu', name: 'CPU 1', state: 'ok', detail: 'Xeon', lastSeen: minutesAgo(1) },
+        { type: 'memory', name: 'DIMM A1', state: 'ok', lastSeen: minutesAgo(1) },
+      ],
+      latestMetrics: [],
+      recentSnapshots: [],
     });
   }
   if (path.startsWith('/api/v1/hosts/') && path.endsWith('/health-history')) {
@@ -347,71 +341,63 @@ const server = createServer(async (req, res) => {
       temperatureMaxC: 40 + (i % 5),
       powerWatts: 200 + (i % 4) * 10,
     }));
-    return json(res, { data: { hostId: 'hst_1', from: points[0].time, to: points[23].time, resolution: '1h', points } });
+    return json(res, { hostId: 'hst_1', from: points[0].time, to: points[23].time, resolution: '1h', points });
   }
   if (path.startsWith('/api/v1/hosts/') && path.endsWith('/vms')) {
-    return json(res, {
-      data: [
-        { name: 'sql01', state: 'on', heartbeatOk: true, cpuPct: 12, memMb: 8192, lastSeen: minutesAgo(1), stale: false },
-        { name: 'app01', state: 'on', heartbeatOk: true, cpuPct: 34, memMb: 4096, lastSeen: minutesAgo(1), stale: false },
-      ],
-    });
+    return json(res, [
+      { name: 'sql01', state: 'on', heartbeatOk: true, cpuPct: 12, memMb: 8192, lastSeen: minutesAgo(1), stale: false },
+      { name: 'app01', state: 'on', heartbeatOk: true, cpuPct: 34, memMb: 4096, lastSeen: minutesAgo(1), stale: false },
+    ]);
   }
-  if (path === '/api/v1/events') return json(res, { data: events });
+  if (path === '/api/v1/events') return json(res, events);
   if (path.startsWith('/api/v1/events/')) {
     const id = Number(path.split('/').pop());
     const item = events.items.find((e) => e.id === id);
-    return item ? json(res, { data: item }) : problem(res, 404, 'not_found', 'Event not found.');
+    return item ? json(res, item) : problem(res, 404, 'not_found', 'Event not found.');
   }
-  if (path === '/api/v1/saved-searches') return json(res, { data: [] });
-  if (path === '/api/v1/sources') return json(res, { data: sources });
+  if (path === '/api/v1/saved-searches') return json(res, []);
+  if (path === '/api/v1/sources') return json(res, sources);
   if (path === '/api/v1/registration-tokens') {
     return method === 'POST'
-      ? json(res, { data: { id: 'rt_1', kind: 'windows-agent', token: 'reg_mocktoken123456', created: now(), expiresAt: null, showOnce: true } })
-      : json(res, { data: [] });
+      ? json(res, { id: 'rt_1', kind: 'windows-agent', token: 'reg_mocktoken123456', created: now(), expiresAt: null, showOnce: true })
+      : json(res, []);
   }
   if (path === '/api/v1/alerts') {
     return json(res, {
-      data: {
-        items: [
-          { id: 'a1', ruleId: 'r1', ruleName: 'Heartbeat silence', hostId: 'hst_2', hostName: 'web01', severity: 'warning', status: 'active', title: 'Agent silent: web01', detail: 'No heartbeat for 40 minutes', firstSeen: minutesAgo(30), lastSeen: minutesAgo(10), count: 4 },
-        ],
-        nextCursor: null,
-        hasMore: false,
-      },
+      items: [
+        { id: 'a1', ruleId: 'r1', ruleName: 'Heartbeat silence', hostId: 'hst_2', hostName: 'web01', severity: 'warning', status: 'active', title: 'Agent silent: web01', detail: 'No heartbeat for 40 minutes', firstSeen: minutesAgo(30), lastSeen: minutesAgo(10), count: 4 },
+      ],
+      nextCursor: null,
+      hasMore: false,
     });
   }
   if (path === '/api/v1/rules') {
-    return json(res, {
-      data: [
-        { id: 'r1', name: 'Agent silent', type: 'heartbeat', match: { silenceAfterS: 300 }, severity: 'warning', cooldownS: 300, enabled: true, channelIds: [], createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
-      ],
-    });
+    return json(res, [
+      { id: 'r1', name: 'Agent silent', type: 'heartbeat', match: { silenceAfterS: 300 }, severity: 'warning', cooldownS: 300, enabled: true, channelIds: [], createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
+    ]);
   }
-  if (path === '/api/v1/notification-channels') return json(res, { data: [] });
-  if (path === '/api/v1/maintenance-windows') return json(res, { data: [] });
+  if (path === '/api/v1/notification-channels') {
+    return json(res, [
+      { id: 'c1', name: 'Ops telegram', kind: 'telegram', enabled: true, created: '2025-01-01T00:00:00Z', updatedAt: '2025-06-01T00:00:00Z', configSummary: { chatId: '••••••' } },
+    ]);
+  }
+  if (path === '/api/v1/maintenance-windows') return json(res, []);
   if (path === '/api/v1/settings/retention') {
-    return method === 'GET'
-      ? json(res, { data: { eventDays: 365, metricDays: 180, snapshotDays: 180 } })
-      : json(res, { data: { eventDays: 365, metricDays: 180, snapshotDays: 180 } });
+    return json(res, { eventDays: 365, metricDays: 180, snapshotDays: 180 });
   }
   if (path === '/api/v1/audit-log') {
     return json(res, {
-      data: {
-        items: [{ id: 1, time: minutesAgo(60), actor: 'admin', action: 'rule.updated', targetKind: 'rule', targetId: 'r1', detailJson: null }],
-        nextCursor: null,
-        hasMore: false,
-      },
+      items: [{ id: 1, time: minutesAgo(60), actor: 'admin', action: 'rule.updated', targetKind: 'rule', targetId: 'r1', detailJson: null }],
+      nextCursor: null,
+      hasMore: false,
     });
   }
   if (path === '/api/v1/logon-stats') {
     return json(res, {
-      data: {
-        items: [
-          { day: '2025-08-09', sourceId: 'src_1', sourceName: 'dc01', user: 'alice', logonType: 2, successCount: 5, failureCount: 1 },
-        ],
-        hasMore: false,
-      },
+      items: [
+        { day: '2025-08-09', sourceId: 'src_1', sourceName: 'dc01', user: 'alice', logonType: 2, successCount: 5, failureCount: 1 },
+      ],
+      hasMore: false,
     });
   }
 

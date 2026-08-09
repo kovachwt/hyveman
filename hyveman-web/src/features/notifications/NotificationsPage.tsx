@@ -81,7 +81,7 @@ export default function NotificationsPage() {
     setBusy(true);
     setError(null);
     try {
-      const input = buildChannelInput(values, editing !== null);
+      const input = buildChannelInput(values, editing !== null, editing?.updatedAt ?? undefined);
       if (editing) await patchApiV1NotificationChannelsId(editing.id ?? '', input);
       else await postApiV1NotificationChannels(input);
       invalidate();

@@ -363,6 +363,9 @@ public sealed class ChannelDto
     public DateTimeOffset? Rotated { get; set; }
     public DateTimeOffset? LastTestAt { get; set; }
     public bool? LastTestOk { get; set; }
+    /// <summary>Version marker for the PATCH conflict check (API.md §5.2);
+    /// the client echoes it back as input.UpdatedAt.</summary>
+    public DateTimeOffset? UpdatedAt { get; set; }
     /// <summary>Redacted configuration summary; never contains secret values.</summary>
     public Dictionary<string, string> ConfigSummary { get; set; } = [];
 }

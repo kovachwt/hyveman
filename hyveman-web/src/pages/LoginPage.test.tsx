@@ -30,7 +30,7 @@ function renderLogin() {
 describe('LoginPage', () => {
   it('reports unsupported browsers/security contexts clearly (no silent fallback)', async () => {
     mockApi([
-      { path: '/api/v1/auth/session', respond: { body: { data: { authenticated: false, setupRequired: false, adminName: null } } } },
+      { path: '/api/v1/auth/session', respond: { body: { authenticated: false, setupRequired: false, adminName: null } } },
     ]);
     // jsdom defaults isSecureContext=false, so the page must say so.
     renderLogin();
@@ -42,7 +42,7 @@ describe('LoginPage', () => {
     Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true });
     Object.defineProperty(window, 'PublicKeyCredential', { value: class {}, configurable: true });
     mockApi([
-      { path: '/api/v1/auth/session', respond: { body: { data: { authenticated: false, setupRequired: false, adminName: null } } } },
+      { path: '/api/v1/auth/session', respond: { body: { authenticated: false, setupRequired: false, adminName: null } } },
       {
         path: '/api/v1/auth/passkeys/login/options',
         method: 'POST',

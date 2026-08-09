@@ -10,7 +10,12 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
   RegistrationResponseJSON,
 } from '@simplewebauthn/types';
-import { API_BASE, httpFetch } from '@/api/client';
+import {
+  postApiV1AuthPasskeysLoginOptions,
+  postApiV1AuthPasskeysLoginVerify,
+  postApiV1AuthPasskeysRegisterOptions,
+  postApiV1AuthPasskeysRegisterVerify,
+} from '@/api/generated/endpoints';
 
 export class PasskeyError extends Error {
   constructor(message: string, readonly causeError?: unknown) {
@@ -46,23 +51,18 @@ function ceremonyError(err: unknown): PasskeyError {
 
 export async function beginLogin(): Promise<PublicKeyCredentialRequestOptionsJSON> {
   try {
-    return await httpFetch<PublicKeyCredentialRequestOptionsJSON>(
-      `${API_BASE}/auth/passkeys/login/options`,
-      { method: 'POST' },
-    );
+    const res = await postApiV1AuthPasskeysLoginOptions();
+    // The OpenAPI document declares no 200 schema for the ceremony endpoints,
+    // so the generated data type is void; the runtime body is the options.
+    return res.data as unknown as PublicKeyCredentialRequestOptionsJSON;
   } catch (err) {
     throw ceremonyError(err);
   }
 }
 
-export async function completeLogin(
-  credential: AuthenticationResponseJSON,
-): Promise<void> {
+export async function completeLogin(credential: AuthenticationResponseJSON): Promise<void> {
   try {
-    await httpFetch<{ ok: boolean }>(`${API_BASE}/auth/passkeys/login/verify`, {
-      method: 'POST',
-      body: JSON.stringify(credential),
-    });
+    await postApiV1AuthPasskeysLoginVerify(credential);
   } catch (err) {
     throw ceremonyError(err);
   }
@@ -72,13 +72,9 @@ export async function beginRegistration(
   name?: string,
 ): Promise<PublicKeyCredentialCreationOptionsJSON> {
   try {
-    return await httpFetch<PublicKeyCredentialCreationOptionsJSON>(
-      `${API_BASE}/auth/passkeys/register/options`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ name: name || null }),
-      },
-    );
+    const res = await postApiV1AuthPasskeysRegisterOptions({ name: name || null });
+    // Same loose 200 schema as login/options: the body is the options.
+    return res.data as unknown as PublicKeyCredentialCreationOptionsJSON;
   } catch (err) {
     throw ceremonyError(err);
   }
@@ -88,10 +84,9 @@ export async function completeRegistration(
   credential: RegistrationResponseJSON,
 ): Promise<{ id: string }> {
   try {
-    return await httpFetch<{ id: string }>(`${API_BASE}/auth/passkeys/register/verify`, {
-      method: 'POST',
-      body: JSON.stringify(credential),
-    });
+    const res = await postApiV1AuthPasskeysRegisterVerify(credential);
+    // Same loose 200 schema: the runtime body is { id }.
+    return res.data as unknown as { id: string };
   } catch (err) {
     throw ceremonyError(err);
   }

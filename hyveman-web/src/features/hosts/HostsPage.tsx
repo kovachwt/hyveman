@@ -1,13 +1,19 @@
-/** Host list (FRONTEND.md §8.2): table, create/edit/delete, navigation to
- *  host details and logon stats. */
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+/** Host list (FRONTEND.md §5/§8.2): client-side filters persisted in the
+ *  URL, create/edit/delete, navigation to host details and logon stats. */
+import { useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Box,
   Button,
+  FormControl,
   IconButton,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -31,7 +37,7 @@ import { PageHeader } from '@/components/PageHeader/PageHeader';
 import { ConfirmDialog } from '@/components/ConfirmDialog/ConfirmDialog';
 import { TimeDisplay } from '@/components/TimeDisplay/TimeDisplay';
 import { HostFormDialog } from './HostFormDialog';
-import { buildHostInput, type HostFormValues } from './hostForm';
+import { buildHostInput, HOST_KINDS, type HostFormValues } from './hostForm';
 import type { HostDto } from '@/api/generated/endpoints';
 
 export default function HostsPage() {
@@ -40,6 +46,42 @@ export default function HostsPage() {
 
   const hosts = useGetApiV1Hosts({ query: { select: (r) => r.data } });
   const sources = useGetApiV1Sources({ query: { select: (r) => r.data } });
+
+  // Client-side filters (the hosts endpoint has no server-side filters),
+  // persisted in the URL like the other list pages (§5: "Host list and
+  // filters"). The fleet is small; the API stays authoritative for CRUD.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const q = (searchParams.get('q') ?? '').trim().toLowerCase();
+  const kind = searchParams.get('kind') ?? '';
+  const enabled = searchParams.get('enabled') ?? '';
+
+  const commitFilters = (patch: { q?: string; kind?: string; enabled?: string }) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    setSearchParams(next, { replace: true });
+  };
+
+  const filtersActive = q !== '' || kind !== '' || enabled !== '';
+
+  const filtered = useMemo(() => {
+    const rows = hosts.data ?? [];
+    if (!filtersActive) return rows;
+    return rows.filter((h) => {
+      if (q) {
+        const haystack = [h.name, h.sourceId, h.notes, h.idracUrl]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+      if (kind && h.kind !== kind) return false;
+      if (enabled !== '' && String(h.enabled) !== enabled) return false;
+      return true;
+    });
+  }, [hosts.data, q, kind, enabled, filtersActive]);
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<HostDto | null>(null);
@@ -181,6 +223,41 @@ export default function HostsPage() {
         }
       />
 
+      <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} flexWrap="wrap" alignItems="center">
+          <TextField
+            label="Search hosts"
+            size="small"
+            value={searchParams.get('q') ?? ''}
+            onChange={(e) => commitFilters({ q: e.target.value })}
+            placeholder="Name, source, notes, iDRAC URL"
+            sx={{ minWidth: 260, flexGrow: 1 }}
+          />
+          <FormControl size="small" sx={{ minWidth: 170 }}>
+            <InputLabel id="hosts-kind-label">Kind</InputLabel>
+            <Select labelId="hosts-kind-label" id="hosts-kind" label="Kind" value={kind} onChange={(e) => commitFilters({ kind: e.target.value })}>
+              <MenuItem value="">All kinds</MenuItem>
+              {HOST_KINDS.map((k) => (
+                <MenuItem key={k} value={k}>{k}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel id="hosts-enabled-label">Enabled</InputLabel>
+            <Select labelId="hosts-enabled-label" id="hosts-enabled" label="Enabled" value={enabled} onChange={(e) => commitFilters({ enabled: e.target.value })}>
+              <MenuItem value="">All</MenuItem>
+              <MenuItem value="true">Enabled</MenuItem>
+              <MenuItem value="false">Disabled</MenuItem>
+            </Select>
+          </FormControl>
+          {filtersActive ? (
+            <Button size="small" color="inherit" onClick={() => commitFilters({ q: '', kind: '', enabled: '' })}>
+              Clear filters
+            </Button>
+          ) : null}
+        </Stack>
+      </Paper>
+
       {hosts.isPending ? <LoadingState label="Loading hosts…" /> : null}
 
       {hosts.isError && !hosts.data ? (
@@ -199,17 +276,36 @@ export default function HostsPage() {
         />
       ) : null}
 
-      {hosts.data && hosts.data.length > 0 ? (
-        <DataTable
-          columns={columns}
-          rows={hosts.data}
-          rowKey={(h) => h.id ?? ''}
-          aria-label="Hosts"
-          getRowProps={(h) => ({
-            onClick: () => navigate(`/hosts/${h.id}`),
-            style: { cursor: 'pointer' },
-          })}
+      {hosts.data && hosts.data.length > 0 && filtered.length === 0 ? (
+        <EmptyState
+          title="No hosts match your filters"
+          description="Adjust the search text, kind, or enabled state."
+          action={
+            <Button variant="outlined" onClick={() => commitFilters({ q: '', kind: '', enabled: '' })}>
+              Clear filters
+            </Button>
+          }
         />
+      ) : null}
+
+      {hosts.data && hosts.data.length > 0 && filtered.length > 0 ? (
+        <>
+          {filtersActive ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              Showing {filtered.length} of {hosts.data.length} hosts
+            </Typography>
+          ) : null}
+          <DataTable
+            columns={columns}
+            rows={filtered}
+            rowKey={(h) => h.id ?? ''}
+            aria-label="Hosts"
+            getRowProps={(h) => ({
+              onClick: () => navigate(`/hosts/${h.id}`),
+              style: { cursor: 'pointer' },
+            })}
+          />
+        </>
       ) : null}
 
       <HostFormDialog

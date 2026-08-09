@@ -5,18 +5,17 @@ import { mockApi, type CapturedRequest } from '@/test/setup';
 import { renderWithProviders } from '@/test/renderWithProviders';
 import NotificationsPage from './NotificationsPage';
 
-const channelsPayload = {
-  data: [
-    {
-      id: 'c1',
-      name: 'Ops telegram',
-      kind: 'telegram',
-      enabled: true,
-      created: '2025-01-01T00:00:00Z',
-      configSummary: { botToken: 'redacted', chatId: 'redacted' },
-    },
-  ],
-};
+const channelsPayload = [
+  {
+    id: 'c1',
+    name: 'Ops telegram',
+    kind: 'telegram',
+    enabled: true,
+    created: '2025-01-01T00:00:00Z',
+    updatedAt: '2025-06-01T00:00:00Z',
+    configSummary: { botToken: 'redacted', chatId: 'redacted' },
+  },
+];
 
 function requestsByMethod(requests: CapturedRequest[], method: string, pathPart: string) {
   return requests.filter((r) => r.method === method && r.url.includes(pathPart));
@@ -27,7 +26,7 @@ describe('NotificationsPage', () => {
     const user = userEvent.setup();
     const api = mockApi([
       { path: '/api/v1/notification-channels', method: 'GET', respond: { body: channelsPayload } },
-      { path: '/api/v1/notification-channels', method: 'POST', respond: { body: { data: { ...channelsPayload.data[0], id: 'c2' } } } },
+      { path: '/api/v1/notification-channels', method: 'POST', respond: { body: { ...channelsPayload[0], id: 'c2' } } },
     ]);
     renderWithProviders(<NotificationsPage />);
 
@@ -54,7 +53,7 @@ describe('NotificationsPage', () => {
     const user = userEvent.setup();
     const api = mockApi([
       { path: '/api/v1/notification-channels', method: 'GET', respond: { body: channelsPayload } },
-      { path: '/api/v1/notification-channels/c1', method: 'PATCH', respond: { body: { data: channelsPayload.data[0] } } },
+      { path: '/api/v1/notification-channels/c1', method: 'PATCH', respond: { body: channelsPayload[0] } },
     ]);
     renderWithProviders(<NotificationsPage />);
 
@@ -69,8 +68,11 @@ describe('NotificationsPage', () => {
     });
     const body = requestsByMethod(api.requests(), 'PATCH', '/api/v1/notification-channels/c1')[0]!.body as {
       config?: unknown;
+      updatedAt?: string;
     };
     expect(body.config).toBeUndefined();
+    // The version marker is echoed back so the API can 409 on stale edits.
+    expect(body.updatedAt).toBe('2025-06-01T00:00:00Z');
   });
 
   it('shows the test result without exposing provider response bodies', async () => {
@@ -80,7 +82,7 @@ describe('NotificationsPage', () => {
       {
         path: '/api/v1/notification-channels/c1/test',
         method: 'POST',
-        respond: { body: { data: { channelId: 'c1', ok: true, testedAt: '2025-08-09T14:00:00Z' } } },
+        respond: { body: { channelId: 'c1', ok: true, testedAt: '2025-08-09T14:00:00Z' } },
       },
     ]);
     renderWithProviders(<NotificationsPage />);
@@ -99,7 +101,7 @@ describe('NotificationsPage', () => {
         path: '/api/v1/notification-channels/c1/test',
         method: 'POST',
         respond: {
-          body: { data: { channelId: 'c1', ok: false, testedAt: '2025-08-09T14:00:00Z', error: 'HTTP 401 from provider' } },
+          body: { channelId: 'c1', ok: false, testedAt: '2025-08-09T14:00:00Z', error: 'HTTP 401 from provider' },
         },
       },
     ]);

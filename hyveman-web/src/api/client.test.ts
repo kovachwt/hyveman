@@ -12,21 +12,26 @@ describe('httpFetch', () => {
 
   it('sends credentials and JSON accept headers on every request', async () => {
     vi.mocked(fetch).mockResolvedValue(
-      new Response(JSON.stringify({ data: { ok: true } }), {
+      new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
-    await httpFetch('/api/v1/test', { method: 'GET' });
+    const result = await httpFetch<{ data: { ok: boolean }; status: number; headers: Headers }>('/api/v1/test', { method: 'GET' });
     const [url, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(url).toBe('/api/v1/test');
     expect(new Headers(init?.headers).get('Accept')).toBe('application/json');
     expect(init?.credentials).toBe('include');
+    // Orval mutator contract: the envelope carries the raw DTO body (the API
+    // does not wrap responses in an outer `data` object).
+    expect(result.data).toEqual({ ok: true });
+    expect(result.status).toBe(200);
+    expect(result.headers.get('Content-Type')).toBe('application/json');
   });
 
   it('adds the API-issued CSRF header pair for unsafe methods only', async () => {
     vi.mocked(fetch).mockResolvedValue(
-      new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     );
     await httpFetch('/api/v1/hosts', { method: 'POST', body: JSON.stringify({ name: 'x' }) });
     const [, init] = vi.mocked(fetch).mock.calls[0]!;
@@ -35,7 +40,7 @@ describe('httpFetch', () => {
 
     vi.mocked(fetch).mockClear();
     vi.mocked(fetch).mockResolvedValue(
-      new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     );
     await httpFetch('/api/v1/overview', { method: 'GET' });
     const [, getInit] = vi.mocked(fetch).mock.calls[0]!;
@@ -87,16 +92,18 @@ describe('httpFetch', () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
-  it('returns undefined for 204 No Content', async () => {
+  it('returns the envelope with undefined data for 204 No Content', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 204 }));
-    const result = await httpFetch<void>('/api/v1/x', { method: 'DELETE' });
-    expect(result).toBeUndefined();
+    const result = await httpFetch<{ data: undefined; status: 204; headers: Headers }>('/api/v1/x', { method: 'DELETE' });
+    expect(result.data).toBeUndefined();
+    expect(result.status).toBe(204);
+    expect(typeof result.headers?.get).toBe('function');
   });
 
   it('never sends body or secret content to the console', async () => {
     const spy = vi.spyOn(console, 'log');
     vi.mocked(fetch).mockResolvedValue(
-      new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     );
     await httpFetch('/api/v1/hosts', {
       method: 'POST',

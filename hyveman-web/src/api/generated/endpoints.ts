@@ -176,6 +176,8 @@ export type ChannelDtoLastTestAt = null | string;
 
 export type ChannelDtoLastTestOk = null | boolean;
 
+export type ChannelDtoUpdatedAt = null | string;
+
 export type ChannelDtoConfigSummary = {[key: string]: string};
 
 export interface ChannelDto {
@@ -187,6 +189,7 @@ export interface ChannelDto {
   rotated?: ChannelDtoRotated;
   lastTestAt?: ChannelDtoLastTestAt;
   lastTestOk?: ChannelDtoLastTestOk;
+  updatedAt?: ChannelDtoUpdatedAt;
   configSummary?: ChannelDtoConfigSummary;
 }
 

@@ -2719,6 +2719,13 @@
               "boolean"
             ]
           },
+          "updatedAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
           "configSummary": {
             "type": "object",
             "additionalProperties": {

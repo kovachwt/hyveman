@@ -73,9 +73,16 @@ export default function HostDetailPage() {
   const [tab, setTab] = useState<TabId>('summary');
   const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES[0]);
 
-  const host = useGetApiV1HostsId(hostId, { query: { select: (r) => r.data } });
-  const health = useGetApiV1HostsIdHealth(hostId, { query: { select: (r) => r.data } });
-  const vms = useGetApiV1HostsIdVms(hostId, { query: { select: (r) => r.data } });
+  // Current-state queries poll every 30 s while visible (FRONTEND.md §6.3).
+  const host = useGetApiV1HostsId(hostId, {
+    query: { select: (r) => r.data, refetchInterval: 30_000 },
+  });
+  const health = useGetApiV1HostsIdHealth(hostId, {
+    query: { select: (r) => r.data, refetchInterval: 30_000 },
+  });
+  const vms = useGetApiV1HostsIdVms(hostId, {
+    query: { select: (r) => r.data, refetchInterval: 30_000 },
+  });
 
   const historyParams = useMemo(() => {
     const to = new Date();

@@ -26,7 +26,7 @@ describe('URL serialization/deserialization', () => {
       severityMin: 3,
       eventId: 6008,
       q: 'disk failure',
-      sort: 'time_asc' as const,
+      sort: 'asc' as const,
       limit: 100,
     };
     const params = eventFiltersToSearchParams(filters);
@@ -35,7 +35,9 @@ describe('URL serialization/deserialization', () => {
 
   it('omits empty filters so URLs stay clean and shareable', () => {
     const params = eventFiltersToSearchParams(normalizeEventFilters(emptyEventFilters()));
-    expect([...params.entries()]).toEqual([['sort', 'time_desc']]);
+    // The default sort (desc) and page size are omitted; only non-defaults
+    // appear in the URL.
+    expect([...params.entries()]).toEqual([]);
   });
 
   it('ignores unknown and invalid params, never trusting them', () => {
@@ -45,7 +47,7 @@ describe('URL serialization/deserialization', () => {
     expect(filters.severityMin).toBeUndefined();
     expect(filters.eventId).toBeUndefined();
     expect(filters.q).toBeUndefined();
-    expect(filters.sort).toBe('time_desc');
+    expect(filters.sort).toBe('desc');
     expect('evil' in filters).toBe(false);
   });
 });
@@ -86,11 +88,11 @@ describe('normalization', () => {
 
 describe('API params', () => {
   it('passes through the normalized contract', () => {
-    expect(eventFiltersToApiParams({})).toEqual({ limit: 50, sort: 'time_desc' });
+    expect(eventFiltersToApiParams({})).toEqual({ limit: 50, sort: 'desc' });
     expect(eventFiltersToApiParams({ severityMin: 2, limit: 300 })).toEqual({
       severityMin: 2,
       limit: EVENT_MAX_PAGE_SIZE,
-      sort: 'time_desc',
+      sort: 'desc',
     });
   });
 });
@@ -113,8 +115,9 @@ describe('saved searches', () => {
       eventId: 4624,
       severityMin: 2,
       q: 'logon',
-      sort: 'time_desc',
     });
+    // Non-default sorts are preserved.
+    expect(eventFiltersToSavedSearch({ sort: 'asc' })).toEqual({ sort: 'asc' });
   });
 
   it('restores filters from a saved search (numbers and strings)', () => {
@@ -135,13 +138,13 @@ describe('saved searches', () => {
       eventId: 6008,
       q: 'disk',
       limit: 100,
-      sort: 'time_desc',
+      sort: 'desc',
     });
   });
 
   it('tolerates junk in a saved-search filter', () => {
     const filters = savedSearchToEventFilters({ severityMin: 'x', weird: { nested: true } });
     expect(filters.severityMin).toBeUndefined();
-    expect(filters.sort).toBe('time_desc');
+    expect(filters.sort).toBe('desc');
   });
 });

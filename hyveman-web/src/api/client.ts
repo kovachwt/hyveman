@@ -11,6 +11,12 @@
  *  - cancellation signal passthrough for TanStack Query; and
  *  - a global 401 hook so the auth context can react to session expiry.
  *
+ * The mutator returns the Orval response envelope `{ data, status, headers }`
+ * (the generated types declare it), where `data` is the parsed JSON body of
+ * the raw DTO the API serializes — the API does not wrap responses in an
+ * outer `data` object (API.md §5.2, ApiContractTests.cs). The mock API and
+ * the Vitest fetch stub must therefore serve raw DTO bodies too.
+ *
  * This module never logs request bodies: they may contain secret fields.
  */
 
@@ -142,6 +148,9 @@ export async function httpFetch<T>(url: string, options?: RequestInit): Promise<
     throw new ApiError(problem, res.status);
   }
 
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  if (res.status === 204) {
+    return { data: undefined, status: 204, headers: res.headers } as T;
+  }
+  const body = (await res.json()) as unknown;
+  return { data: body, status: res.status, headers: res.headers } as T;
 }
