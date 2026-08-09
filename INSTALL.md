@@ -79,7 +79,8 @@ Pick **one** topology:
 
 ### Option A — reverse proxy (recommended for production)
 
-TLS terminates at Caddy / nginx / IIS; the API listens on loopback HTTP.
+TLS terminates at a reverse proxy — nginx in this repo's deployment (Caddy
+and IIS are equivalents); the API listens on loopback HTTP.
 
 ```text
 https://hyveman.example.com/register, /ingest/*, /health   → proxy → http://127.0.0.1:5080
@@ -87,14 +88,13 @@ https://hyveman.example.com/api/*                          → proxy → http://
 https://hyveman.example.com/                                → hyveman-web static files
 ```
 
-Caddy example (`Caddyfile`):
-
-```
-hyveman.example.com {
-    reverse_proxy /register* /ingest/* /health /api/* 127.0.0.1:5080
-    reverse_proxy /* hyveman-web:80        # frontend static files
-}
-```
+The concrete configuration for the API VM is the nginx site shipped in this
+repo: `deploy/nginx/hyveman.conf` (+ `deploy/nginx/hyveman-security-headers.conf`,
+its security-header snippet). It serves the SPA, proxies `/api/`,
+`/register`, `/ingest/`, `/health` to the loopback API, and applies the
+cache policy and security headers (install and certbot steps: §5.4). Any
+other proxy (Caddy, IIS) must preserve the same path routing,
+`X-Forwarded-*` headers, and header rules.
 
 - Use a public CA (Let's Encrypt) or your own corporate CA.
 - The agent validates against the **system trust store** by default, so a
@@ -200,11 +200,18 @@ Invoke-RestMethod http://127.0.0.1:5080/health/ready  # {"ok":true}
 
 ### 4.5 First-run bootstrap: passkey + registration tokens
 
+> **UI note:** these steps use the web UI, which is **not implemented yet**
+> (§5). Until then the same endpoints can be driven through the API's
+> OpenAPI page — but only in a **dev build**, where `/openapi/v1.json` is
+> anonymous; in production it requires an authenticated session, so
+> first-run setup must wait for hyveman-web. The console covers only passkey
+> list/remove/reset, not first-time setup or token issuance.
+
 1. **Passkey setup** (one time, from a network in `TrustedSetupNetworks`):
-   open the web UI (or the API's dev OpenAPI at `/openapi/v1.json`) and
-   register a passkey. With an empty `passkeys` table, setup is open only to
-   trusted networks; after the first passkey it is closed. There is
-   **deliberately no remote recovery** — keep at least two passkeys.
+   open the web UI and register a passkey. With an empty `passkeys` table,
+   setup is open only to trusted networks; after the first passkey it is
+   closed. There is **deliberately no remote recovery** — keep at least two
+   passkeys.
 2. **Issue a registration token** for each host you will install:
    web UI → Sources → New registration token → kind `windows-agent`,
    lifetime (minutes). The UI shows the raw `reg_…` token **once** — copy it
@@ -220,9 +227,92 @@ hyveman-api auth reset --data-dir C:\hyveman\data
 
 ---
 
-## 5. Install the agent (hyveman-agent)
+## 5. Install the frontend (hyveman-web)
 
-### 5.1 One-liner install
+> **Status: not implemented yet.** `hyveman-web` is designed
+> ([`docs/FRONTEND.md`](docs/FRONTEND.md)) but has **not been built** —
+> there is no `hyveman-web` repository and nothing in this section can be
+> run today. The steps below are the intended deployment for when the first
+> build exists. Until then the API runs headless and the agent installs
+> without a UI, **but the first passkey and registration tokens have no
+> supported path without it** — first-run setup needs the web UI or the
+> OpenAPI page of a dev build (§4.5).
+
+### 5.1 What it is
+
+`hyveman-web` is a React + TypeScript SPA built by Vite into static files
+(`dist/`). It is **not** served by the .NET process: nginx on the API VM
+serves the files and reverse-proxies `/api/` to `hyveman-api`, so the
+browser sees one HTTPS origin (`https://<fqdn>/`). The single origin is
+what keeps the session cookie, CSRF origin checks, and WebAuthn passkey
+ceremonies simple (FRONTEND.md §3, API.md §8.2).
+
+### 5.2 Build (once the frontend repo exists)
+
+On any machine with a current Node.js LTS:
+
+```bash
+git clone <hyveman-web-repo-url> hyveman-web
+cd hyveman-web
+npm ci
+npm run lint && npm run typecheck && npm run test -- --run
+npm run build          # → dist/
+```
+
+The build regenerates the API client from the pinned OpenAPI document; CI
+must fail if the generated diff is stale (FRONTEND.md §13).
+
+### 5.3 Deploy the static files
+
+Copy `dist/` onto the API VM. Keep versioned release directories and swap
+a symlink so a rollback is a one-line change:
+
+```bash
+sudo mkdir -p /var/www/hyveman/releases
+sudo rsync -a --delete dist/ /var/www/hyveman/releases/<build-id>/
+sudo ln -sfn /var/www/hyveman/releases/<build-id> /var/www/hyveman/current
+```
+
+Rollback: point `current` at the previous release directory.
+
+### 5.4 nginx site config + TLS
+
+This repo ships the site config used on the API VM:
+
+| File | Install to |
+|---|---|
+| `deploy/nginx/hyveman.conf` | `/etc/nginx/sites-available/hyveman` + symlink into `sites-enabled/` |
+| `deploy/nginx/hyveman-security-headers.conf` | `/etc/nginx/snippets/` |
+
+It serves the SPA from `/var/www/hyveman/current`, proxies `/api/`,
+`/register`, `/ingest/`, `/health` to `http://127.0.0.1:5080`, and applies
+the cache policy and security headers from FRONTEND.md §3/§13 and API.md
+§12. Replace the `server_name` placeholder with the real FQDN, then:
+
+```bash
+sudo nginx -t && sudo systemctl enable --now nginx
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx --redirect --hsts -d <fqdn>   # needs public port 80 for the HTTP-01 challenge
+```
+
+The API's `PublicOrigin` / `WebAuthnRpId` / `WebAuthnExpectedOrigin` must
+match the resulting origin (§4.3), and `TrustedSetupNetworks` must include
+the network the first passkey registration comes from.
+
+### 5.5 Verify
+
+| Check | How |
+|---|---|
+| Frontend serves | `curl -I https://<fqdn>/` → 200, `Cache-Control: no-cache` |
+| API proxied | `curl https://<fqdn>/health/live` → `{"ok":true,…}` |
+| SPA fallback | `curl -I https://<fqdn>/hosts` → 200 index.html, not 404 |
+| First passkey | Browser → `https://<fqdn>/setup` from a trusted network; then `/login` |
+
+---
+
+## 6. Install the agent (hyveman-agent)
+
+### 6.1 One-liner install
 
 Copy `hyveman-agent.exe` (from `hyveman-agent\out\`) to the target host, then:
 
@@ -249,7 +339,7 @@ On first start the agent exchanges the `reg_` token for a long-lived
 `agt_` ingest token via `POST /register`, stores it in `agent.json`
 (ACL'd), and **discards the reg token** (PROTOCOL §5.2).
 
-### 5.2 Default channel set
+### 6.2 Default channel set
 
 | Config entry | Channel | Filter |
 |---|---|---|
@@ -262,7 +352,7 @@ The Security channel subscription requires an account that can read it —
 the default service account (LocalSystem) can. If you run the service under
 a different account, grant it read on the Security log.
 
-### 5.3 Verify an install
+### 6.3 Verify an install
 
 ```powershell
 Get-Service hyveman-agent                 # Running
@@ -277,11 +367,11 @@ Subscribed to channel System (query: *[System[Level<=3]])
 APPLICATION STARTED — all hosted services up
 ```
 
-Then confirm on the server: the host appears in the web UI (Sources/Hosts)
-with heartbeats (every 30 s by default) and green health; event log records
-arrive as they occur.
+Then confirm on the server: the host appears in the web UI (Sources/Hosts
+— once hyveman-web exists, §5) with heartbeats (every 30 s by default) and
+green health; event log records arrive as they occur.
 
-### 5.4 Reinstall / move / forget a token
+### 6.4 Reinstall / move / forget a token
 
 - **Reinstall, same host:** `install.ps1` preserves an existing valid
   `agent.json` (it holds the ingest token). To start fresh, delete
@@ -298,7 +388,7 @@ arrive as they occur.
 
 ---
 
-## 6. End-to-end verification checklist
+## 7. End-to-end verification checklist
 
 | # | Check | Command / where |
 |---|---|---|
@@ -309,12 +399,12 @@ arrive as they occur.
 | 5 | Heartbeats fresh | `agent_status.last_received` within the last interval; `degraded` empty |
 | 6 | Logs ingesting | `events` row count grows after a real event occurs on the host |
 | 7 | Idempotency | Replay a batch → response `"deduped"` counts, never duplicates |
-| 8 | Web UI | Host visible, green health, alerts page empty |
+| 8 | Web UI *(once hyveman-web exists; §5)* | Host visible, green health, alerts page empty |
 | 9 | Cert validation | Agent log has **no** `TLS VALIDATION DISABLED` warning |
 
 ---
 
-## 7. Day-2 operations
+## 8. Day-2 operations
 
 - **Backups:** back up the whole API data directory **including `vault.key`**
   — they are a unit (lost key = unrecoverable credentials). The API also
@@ -332,7 +422,7 @@ arrive as they occur.
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
@@ -350,7 +440,7 @@ arrive as they occur.
 
 ---
 
-## 9. References
+## 10. References
 
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the wire contract (transport,
   auth, endpoints, error codes, retries). **Read before changing anything.**
