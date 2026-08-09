@@ -14,7 +14,8 @@ namespace Hyveman.Tests.Api;
 /// test-hosted API — headers, body v, status/error codes, response commands,
 /// gzip, limits, idempotency, latest-wins, and the web API session/CSRF gate.
 /// </summary>
-public class AgentContractTests : IClassFixture<ApiFixture>
+[Collection("api")]
+public class AgentContractTests
 {
     private readonly ApiFixture _fx;
 
@@ -416,7 +417,15 @@ public class AgentContractTests : IClassFixture<ApiFixture>
     }
 }
 
-/// <summary>One test-hosted API per fixture with a throwaway data directory.</summary>
+/// <summary>One test-hosted API per collection with a throwaway data directory.
+/// The fixture is collection-scoped (not per-class) because it mutates
+/// process-global environment variables; two concurrent fixture constructions
+/// would race on HYVEMAN_DATA_DIR and intermittently fail host startup.</summary>
+[CollectionDefinition("api", DisableParallelization = true)]
+public sealed class ApiCollection : ICollectionFixture<ApiFixture>
+{
+}
+
 public sealed class ApiFixture : IDisposable
 {
     private readonly string _dataDir;

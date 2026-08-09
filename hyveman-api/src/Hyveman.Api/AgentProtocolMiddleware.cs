@@ -70,12 +70,23 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
                 $"unsupported Content-Encoding '{encoding}'");
             return;
         }
-        if (!string.IsNullOrEmpty(ctx.Request.ContentType) &&
-            !ctx.Request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+        // Content-Type is required when a body is present (PROTOCOL §9.1);
+        // GET /health has no body and is exempt. Missing → 400 invalid_request;
+        // present-but-wrong → 415 unsupported_media_type.
+        if (isRegister || isLogs || isTelemetry)
         {
-            await WriteErrorAsync(ctx, 415, ErrorCodes.UnsupportedMediaType,
-                "Content-Type must be application/json");
-            return;
+            if (string.IsNullOrEmpty(ctx.Request.ContentType))
+            {
+                await WriteErrorAsync(ctx, 400, ErrorCodes.InvalidRequest,
+                    "Content-Type: application/json is required when a body is present");
+                return;
+            }
+            if (!ctx.Request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+            {
+                await WriteErrorAsync(ctx, 415, ErrorCodes.UnsupportedMediaType,
+                    "Content-Type must be application/json");
+                return;
+            }
         }
 
         // Global request budget (PROTOCOL §15).
@@ -127,9 +138,12 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
 
                 // Body v: a present value different from the supported header is
                 // invalid; a body v never substitutes for the header (PROTOCOL §3).
+                // TryGetInt32 (not GetInt32) so a non-integer number like 1.5 or
+                // 1e0 is a 400 invalid_request, never a 500 (PROTOCOL §13.3).
                 if (doc.RootElement.TryGetProperty("v", out var vProp))
                 {
-                    if (vProp.ValueKind != JsonValueKind.Number || vProp.GetInt32() != ProtocolVersion.Current)
+                    if (vProp.ValueKind != JsonValueKind.Number ||
+                        !vProp.TryGetInt32(out var bodyV) || bodyV != ProtocolVersion.Current)
                     {
                         await WriteErrorAsync(ctx, 400, ErrorCodes.InvalidRequest,
                             $"body v does not match protocol version {ProtocolVersion.Current}");
