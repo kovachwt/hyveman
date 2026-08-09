@@ -125,25 +125,15 @@ Config (`devdata/agent/agent.json`) — full template with the documented limits
 ```
 
 **Get an ingest token.** The proper way: after passkey setup (§6), the Sources
-page can issue a single-use `reg_` token. Dev shortcut — insert one directly
-into the API DB (mirrors `RegistrationTokenStore`):
+page can issue a single-use `reg_` token. Dev shortcut — the committed
+`tools/mint-reg-token.ps1` inserts one directly into the API DB (mirrors
+`RegistrationTokenStore.CreateAsync`; prints the raw `reg_` token **once** —
+put it in `agent.json` `registration.token` and delete the output):
 
 ```powershell
-# Windows PowerShell; adjust $bin/$dbPath
-$bin = 'hyveman-api\src\Hyveman.Api\bin\Debug\net10.0'
-$dbPath = 'devdata\api\hyveman.db'
-Add-Type -Path "$bin\SQLitePCLRaw.core.dll"; Add-Type -Path "$bin\SQLitePCLRaw.provider.e_sqlite3.dll"
-Add-Type -Path "$bin\SQLitePCLRaw.batteries_v2.dll"; Add-Type -Path "$bin\Microsoft.Data.Sqlite.dll"
-[SQLitePCL.Batteries]::Init()
-$raw = 'reg_' + ([guid]::NewGuid().ToString('N').Substring(0, 24))
-$hash = ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($raw)))).Replace('-','').ToLowerInvariant()
-$conn = [Microsoft.Data.Sqlite.SqliteConnection]::new("Data Source=$dbPath"); $conn.Open()
-$cmd = $conn.CreateCommand()
-$cmd.CommandText = "INSERT INTO registration_tokens(id, token_hash, kind, created, created_by) VALUES ('rt_devtest', @h, 'windows-agent', @t, 'dev-mint')"
-$cmd.Parameters.AddWithValue('@h', $hash) | Out-Null
-$cmd.Parameters.AddWithValue('@t', (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'")) | Out-Null
-$null = $cmd.ExecuteNonQuery(); $conn.Close()
-Write-Output "reg token: $raw"   # put this in agent.json registration.token
+.\tools\mint-reg-token.ps1                     # dev fallback: devdata\api\hyveman.db
+# or point at any server data dir:
+# .\tools\mint-reg-token.ps1 -DataDir C:\hyveman\data
 ```
 
 Then run the agent as a console process (it exchanges the `reg_` token for a
@@ -191,6 +181,7 @@ npm run dev
 ```bash
 curl -sk https://127.0.0.1:8443/health/live          # {"ok":true,...}
 curl -s  http://localhost:5173/api/v1/auth/session    # via proxy: {"authenticated":false,"setupRequired":...}
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/query-db.ps1   # dev DB: sources, tokens, vms, alerts, events, audit, …
 # agent→API flow: the API log shows POST /ingest/telemetry 200 every ~30 s,
 # POST /ingest/logs on channel activity, plus a 200 on /register right after
 # the agent's first start (registration exchange).

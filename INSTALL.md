@@ -405,6 +405,15 @@ green health; event log records arrive as they occur.
   — they are a unit (lost key = unrecoverable credentials). The API also
   writes daily `VACUUM INTO` snapshots into `{data}\backup\` (7 daily /
   4 weekly / 12 monthly) — copy that folder off-box.
+- **Diagnostics:** the repo's `tools/` (see `tools/README.md`) ships two
+  .NET 10 helpers that work against any server data dir:
+  `tools/query-db.ps1 -DataDir {data-dir}` peeks at the SQLite DB (tables,
+  sources, hosts, vms, alerts, events, audit, … or arbitrary SQL), and
+  `tools/mint-reg-token.ps1 -DataDir {data-dir}` seeds a `reg_` token
+  directly (test/staging only — production enrollment uses the web UI,
+  §4.5). Build them with `dotnet build tools\dbquery` and
+  `dotnet build tools\mint-reg-token` on a .NET 10 machine and copy the
+  published folders, or run from a clone.
 - **Retention:** `LogRetentionDays` (default 365) purges events/metrics/
   snapshots; maintenance runs daily.
 - **Agent updates:** replace the exe (`Stop-Service`, copy, `Start-Service`);

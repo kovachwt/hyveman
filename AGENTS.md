@@ -34,6 +34,10 @@ dotnet test  Hyveman.Agent.sln
 (cd hyveman-web && npm ci)
 (cd hyveman-web && npm run lint && npm run typecheck && npm run test -- --run)
 (cd hyveman-web && npm run build)
+
+# Ops tools (see tools/README.md)
+./tools/query-db.ps1                        # peek at a server DB (dev fallback, or -DataDir)
+./tools/mint-reg-token.ps1 -DataDir <dir>   # seed a reg_ token (dev/test only)
 ```
 
 ## Conventions
