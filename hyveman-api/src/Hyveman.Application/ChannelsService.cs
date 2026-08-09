@@ -37,8 +37,11 @@ public sealed class ChannelsService(
         var errors = Validate(input, requireConfig: true);
         if (errors.Count > 0) throw new ValidationProblemException(errors);
         var now = clock.UtcNow;
+        // Store the same normalized config shape MergeConfig produces on
+        // patch; serializing the raw DTO here stored telegramBotToken/...
+        // keys that the notifiers never read (KeyNotFoundException on test).
         var configRef = await vault.StoreAsync(input.Kind!, $"{input.Name} {input.Kind}",
-            JsonSerializer.Serialize(input.Config), ct);
+            MergeConfig(input.Kind!, input.Config!, null), ct);
         var channel = new ChannelRecord("ch_" + HostsService.RandomId(18), input.Name!.Trim(), input.Kind!,
             configRef, input.Enabled ?? true, now, now, null, null, now);
         await store.CreateAsync(channel, ct);

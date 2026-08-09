@@ -91,6 +91,63 @@ ASPNETCORE_ENVIRONMENT=Development dotnet run --project hyveman-api/src/Hyveman.
 - Sessions are DB-backed and survive API restarts; the agent self-heals
   (backoff + disk spool).
 
+## Linux server variant: API under user systemd (no sudo)
+
+The Linux box runs the same clone as an always-on server, but the API is a
+**user** systemd unit — start/stop/restart/rebuild/logs need **no sudo**
+(unlike nginx, which is system-level). The unit executes the
+framework-dependent build synced into `run/api/`; data lives in `data/api/`.
+This is the dev-server setup; the full production layout (system unit, /opt,
+Windows service) is `INSTALL.md`.
+
+One-time setup: create a user unit at
+`~/.config/systemd/user/hyveman-api.service` that runs
+`dotnet <repo>/run/api/hyveman-api.dll --data-dir <repo>/data/api` with
+`WorkingDirectory` set to the repo, `Type=simple`, and `Restart=on-failure`
+(`RestartSec=3`), then:
+
+```bash
+systemctl --user enable hyveman-api.service   # one time (linger on → survives reboots)
+```
+
+Rebuild + restart cycle (no sudo anywhere):
+
+```bash
+dotnet build Hyveman.Api.sln
+# sync the build output into the run dir the unit executes:
+cp -a hyveman-api/src/Hyveman.Api/bin/Debug/net10.0/. run/api/
+systemctl --user restart hyveman-api
+systemctl --user status hyveman-api           # or: journalctl --user -u hyveman-api -f
+curl -s http://127.0.0.1:5080/health/live     # {"ok":true,...}
+```
+
+Layout:
+
+| Path | What lives there |
+|---|---|
+| `run/api/` | build output the unit executes (plain copy of `bin/Debug/net10.0`; stray leftovers like `web.config` are harmless) |
+| `data/api/` | `config.json`, `hyveman.db` (+WAL), `vault.key`, `logs/`, `backup/` |
+| `deploy/nginx/hyveman-linux-vm.conf` | nginx site: TLS termination + proxy to 5080 (system-level — edits need sudo, `nginx -t`, reload) |
+| `~/www/hyveman/current` | SPA release deployed by `tools/deploy-web.sh` (run `npm run build` first) |
+
+Gotchas learned the hard way:
+
+- **Always restart via `systemctl --user restart`.** The unit has
+  `Restart=on-failure`, so killing the process by hand just makes systemd
+  launch a fresh instance ~3 s later — a manual relaunch then races it for
+  the 5080 port and dies with "address already in use".
+- **Sync `run/api/` before restarting.** Overwriting DLLs under a live
+  process makes its shutdown crash with `BadImageFormatException` (noisy,
+  harmless).
+- The API binds `http://127.0.0.1:5080` (loopback HTTP only); nginx
+  terminates TLS for the public FQDN and proxies `/api`, `/register`,
+  `/ingest/`, `/health`. Agent and browser traffic never touch the API
+  directly.
+- `ASPNETCORE_ENVIRONMENT` defaults to Production here, so the OpenAPI
+  document (`/openapi/v1.json`) is disabled on the server.
+- Restarting while the agent is offline fires the seeded "Agent silent"
+  heartbeat alert — expected, self-resolves on the next heartbeat.
+
 ## 4. Start the agent
 
 Config (`devdata/agent/agent.json`) — full template with the documented limits
@@ -244,3 +301,7 @@ host tile on **Overview**.
 Ctrl+C each console process (agent: kill `hyveman-agent`; API: kill
 `hyveman-api`; web: kill the vite `node`). Restart order: API → agent → web.
 Data persists in the data dir; nothing to clean up between sessions.
+
+Linux server variant: don't kill the API by hand — use
+`systemctl --user restart hyveman-api` (see the Linux server variant section
+above; the unit auto-restarts on failure anyway).

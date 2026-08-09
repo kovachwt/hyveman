@@ -20,8 +20,8 @@ public sealed class TelegramNotifier(IHttpClientFactory http, ILogger<TelegramNo
         try
         {
             using var doc = JsonDocument.Parse(configJson);
-            botToken = doc.RootElement.GetProperty("botToken").GetString() ?? "";
-            chatId = doc.RootElement.GetProperty("chatId").GetString() ?? "";
+            botToken = Config.Str(doc, "botToken") ?? Config.Str(doc, "telegramBotToken") ?? "";
+            chatId = Config.Str(doc, "chatId") ?? Config.Str(doc, "telegramChatId") ?? "";
         }
         catch (JsonException)
         {
@@ -71,6 +71,29 @@ public sealed class TelegramNotifier(IHttpClientFactory http, ILogger<TelegramNo
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max];
 }
 
+/// <summary>Defensive config reads for notifiers. Accepts both the normalized
+/// vault keys (botToken, chatId, ...) written by MergeConfig and the raw
+/// ChannelSecretInput spellings (telegramBotToken, ...) written by early
+/// channel creation code, so a mismatched config yields a clean "config
+/// missing" error instead of an unhandled KeyNotFoundException.</summary>
+internal static class Config
+{
+    public static string? Str(JsonDocument doc, string key)
+        => doc.RootElement.TryGetProperty(key, out var p) ? p.GetString() : null;
+
+    public static int? Int(JsonDocument doc, string key)
+    {
+        if (!doc.RootElement.TryGetProperty(key, out var p)) return null;
+        return p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var v) ? v : null;
+    }
+
+    public static bool? Bool(JsonDocument doc, string key)
+    {
+        if (!doc.RootElement.TryGetProperty(key, out var p)) return null;
+        return p.ValueKind is JsonValueKind.True or JsonValueKind.False ? p.GetBoolean() : null;
+    }
+}
+
 public sealed class WebhookNotifier(IHttpClientFactory http, ILogger<WebhookNotifier> log) : INotifier
 {
     public string Kind => "webhook";
@@ -81,7 +104,7 @@ public sealed class WebhookNotifier(IHttpClientFactory http, ILogger<WebhookNoti
         try
         {
             using var doc = JsonDocument.Parse(configJson);
-            url = doc.RootElement.GetProperty("url").GetString() ?? "";
+            url = Config.Str(doc, "url") ?? Config.Str(doc, "webhookUrl") ?? "";
         }
         catch (JsonException)
         {
@@ -131,11 +154,11 @@ public sealed class SmtpNotifier : INotifier
         try
         {
             using var doc = JsonDocument.Parse(configJson);
-            host = doc.RootElement.GetProperty("host").GetString() ?? "";
-            from = doc.RootElement.GetProperty("from").GetString() ?? "hyveman@localhost";
-            to = doc.RootElement.GetProperty("to").GetString() ?? "";
-            port = doc.RootElement.TryGetProperty("port", out var p) ? p.GetInt32() : 587;
-            useTls = doc.RootElement.TryGetProperty("useTls", out var t) && t.GetBoolean();
+            host = Config.Str(doc, "host") ?? Config.Str(doc, "smtpHost") ?? "";
+            from = Config.Str(doc, "from") ?? Config.Str(doc, "smtpFrom") ?? "hyveman@localhost";
+            to = Config.Str(doc, "to") ?? Config.Str(doc, "smtpTo") ?? "";
+            port = Config.Int(doc, "port") ?? Config.Int(doc, "smtpPort") ?? 587;
+            useTls = Config.Bool(doc, "useTls") ?? Config.Bool(doc, "smtpUseTls") ?? false;
         }
         catch (JsonException)
         {

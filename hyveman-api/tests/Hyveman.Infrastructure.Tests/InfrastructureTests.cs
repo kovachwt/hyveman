@@ -1,7 +1,10 @@
 using Dapper;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Hyveman.Application;
+using Hyveman.Contracts;
 using Hyveman.Domain;
+using Hyveman.Infrastructure.Notify;
 using Hyveman.Infrastructure.Redfish;
 using Hyveman.Infrastructure.Security;
 using Hyveman.Infrastructure.Sqlite;
@@ -338,6 +341,67 @@ public class SqliteIntegrationTests : IDisposable
         var otherVault = new CredentialVault(blobStore, Path.Combine(_dir, "other.key"), new SystemClock());
         await Assert.ThrowsAnyAsync<System.Security.Cryptography.CryptographicException>(
             () => otherVault.LoadAsync(id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ChannelCreate_StoresNormalizedConfig_NotRawDtoShape()
+    {
+        // D-regression: channel creation used to serialize the raw
+        // ChannelSecretInput DTO (telegramBotToken/... keys) into the vault,
+        // while notifiers read the normalized MergeConfig keys (botToken/...).
+        // Test notifications then failed with KeyNotFoundException
+        // ("The given key was not present in the dictionary.").
+        var keyPath = Path.Combine(_dir, "vault.key");
+        var vault = new CredentialVault(new CredentialBlobStore(_db), keyPath, new SystemClock());
+        var channels = new ChannelStore(_db);
+        var service = new ChannelsService(channels, vault, new NoopSender(), new SystemClock(), new AuditStore(_db));
+
+        var dto = await service.CreateAsync(new ChannelInput
+        {
+            Name = "Ops Telegram",
+            Kind = ChannelKinds.Telegram,
+            Enabled = true,
+            Config = new ChannelSecretInput { TelegramBotToken = "123:abc", TelegramChatId = "-100123" },
+        }, "admin", CancellationToken.None);
+
+        var stored = await vault.LoadAsync((await channels.GetAsync(dto.Id, CancellationToken.None))!.ConfigRef!, CancellationToken.None);
+        Assert.NotNull(stored);
+        using var doc = JsonDocument.Parse(stored!);
+        Assert.Equal("123:abc", doc.RootElement.GetProperty("botToken").GetString());
+        Assert.Equal("-100123", doc.RootElement.GetProperty("chatId").GetString());
+        Assert.False(doc.RootElement.TryGetProperty("telegramBotToken", out _));
+        Assert.False(doc.RootElement.TryGetProperty("telegramChatId", out _));
+    }
+
+    [Fact]
+    public async Task TelegramNotifier_AcceptsBothConfigKeySpellings()
+    {
+        // Configs written before the normalization fix carry the raw DTO keys;
+        // the notifier must accept both spellings instead of throwing
+        // KeyNotFoundException.
+        var handler = new OkHandler();
+        var notifier = new TelegramNotifier(new FakeHttpClientFactory(handler), NullLogger<TelegramNotifier>.Instance);
+        var msg = new NotificationMessage("Hyveman test notification", "body", "info", "tg");
+
+        var legacy = await notifier.SendAsync(msg,
+            """{"telegramBotToken":"123:abc","telegramChatId":"-100123"}""", CancellationToken.None);
+        Assert.True(legacy.Ok);
+
+        var normalized = await notifier.SendAsync(msg,
+            """{"botToken":"123:abc","chatId":"-100123"}""", CancellationToken.None);
+        Assert.True(normalized.Ok);
+
+        Assert.All(handler.Requests, r => Assert.EndsWith("/bot123:abc/sendMessage", r));
+    }
+
+    [Fact]
+    public async Task TelegramNotifier_MissingKeys_ReturnsCleanError()
+    {
+        var notifier = new TelegramNotifier(new FakeHttpClientFactory(new FailHandler()), NullLogger<TelegramNotifier>.Instance);
+        var result = await notifier.SendAsync(new NotificationMessage("t", "b", "info", "tg"),
+            "{}", CancellationToken.None);
+        Assert.False(result.Ok);
+        Assert.Equal("telegram config missing botToken/chatId", result.Error);
     }
 
     [Fact]
@@ -756,18 +820,6 @@ public class RedfishNormalizationTests
         Assert.Empty(result.Components);
     }
 
-    private sealed class FailHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
-    }
-
-
-    private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name) => new(handler);
-    }
-
     private sealed class NoopCertStore : IIdracCertStore
     {
         public Task<IdracCertPin?> GetPinAsync(string hostId, CancellationToken ct) => Task.FromResult<IdracCertPin?>(null);
@@ -775,4 +827,35 @@ public class RedfishNormalizationTests
         public Task SetAsync(string hostId, byte[] certDer, string fingerprint, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
         public Task DeleteAsync(string hostId, CancellationToken ct) => Task.CompletedTask;
     }
+}
+
+internal sealed class OkHandler : HttpMessageHandler
+{
+    public readonly List<string> Requests = [];
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Requests.Add(request.RequestUri!.ToString());
+        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"ok":true,"result":{"message_id":1}}""",
+                System.Text.Encoding.UTF8, "application/json"),
+        });
+    }
+}
+
+internal sealed class FailHandler : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+}
+
+internal sealed class NoopSender : INotificationSender
+{
+    public Task<NotificationResult> SendToChannelAsync(string channelId, NotificationMessage message, CancellationToken ct)
+        => Task.FromResult(new NotificationResult(true, null, "noop"));
+}
+
+internal sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name) => new(handler);
 }
