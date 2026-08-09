@@ -1,7 +1,7 @@
 # Hyveman Wire Protocol Specification (v1)
 
 This is the **contract for the network boundary** between `hyveman-agent`
-and `hyveman-server` (DESIGN §14 #1). Both sides are built against this
+and `hyveman-api` (DESIGN §14 #1). Both sides are built against this
 document. It is authoritative for: transport, authentication, versioning,
 endpoints, request/response envelopes, the idempotency key, error semantics,
 and the forward-compatible reservation for the command channel (DESIGN §12).
@@ -37,7 +37,7 @@ Out of scope (separate specs, later):
   Phase 3. The *envelope* in this doc already accommodates syslog-originated
   events (§10, §11, App. C); only the wire transport differs.
 - **Command channel** payload/signing — DESIGN §12. Reserved here (§16).
-- **Web UI / admin API** (Blazor, passkey auth) — DESIGN §8, separate.
+- **Web frontend / admin API** (React frontend, passkey auth) — DESIGN §8, separate.
 
 ---
 

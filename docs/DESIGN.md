@@ -96,16 +96,22 @@ can swap SQLite → ClickHouse if the fleet grows.
                                                               └────────────┘
 ```
 
-Two deployables (per decision — the Blazor Server UI is hosted inside the
-server process):
+Three independently built and deployed components:
 
 1. **`hyveman-agent`** — small Windows service installed on each host (and
    optionally inside guest VMs).
-2. **`hyveman-server`** — the always-running backend: ingest API, hardware
-   poller, alert engine, storage, notification dispatch, and the Blazor web
-   UI. Runs on a server of your choice; **cross-platform by design** —
-   Windows Server 2019+ (Windows service, the default) or Linux
-   (systemd/Docker, console mode). Only the agent is Windows-bound.
+2. **`hyveman-api`** — the always-running .NET backend API: ingest API,
+   hardware poller, alert engine, storage, and notification dispatch. Runs
+   on a server of your choice; **cross-platform by design** — Windows Server
+   2019+ (Windows service, the default) or Linux (systemd/Docker, console
+   mode). Only the agent is Windows-bound.
+3. **`hyveman-web`** — a React + TypeScript single-page application (SPA),
+   built by Vite into static assets. It is served independently by IIS,
+   nginx, Caddy, or equivalent and communicates with `hyveman-api` over
+   HTTPS. The preferred deployment puts the SPA and the `/api` reverse proxy
+   behind one public HTTPS origin, avoiding CORS and authentication-cookie
+   complications. The frontend contains no backend secrets and is not hosted
+   inside the .NET process.
 
 ## 4. Component design
 
@@ -210,23 +216,38 @@ server process):
 
 ### 4.5 Web frontend
 
+- **Technology:** standalone React + TypeScript SPA built with Vite. No
+  server-side rendering is needed because this is an authenticated operations
+  console with no SEO requirement.
+- **API integration:** consumes a versioned REST/JSON API exposed by
+  `hyveman-api`. The API publishes an OpenAPI contract, and the frontend uses
+  a generated TypeScript client rather than handwritten DTOs or fetch calls.
+- **Frontend support stack:** React Router for navigation, TanStack Query for
+  server-state caching and polling, MUI for accessible tables/forms/dialogs,
+  Apache ECharts for health-history charts and sparklines, and
+  `@simplewebauthn/browser` for passkey ceremonies.
 - **Overview dashboard:** fleet grid — each server a tile with rolled-up
   health (green/amber/red), split into Hardware / OS / Hyper-V. Click-through
   to per-server page: component table (disks, DIMMs, PSUs, fans, temps with
   sparklines), recent critical events, VM list with heartbeats.
 - **Log search:** filter by time, host, channel, level, event ID, free-text
-  (FTS); saved searches.
+  (FTS); saved searches. Filtering, pagination, and full-text search happen
+  server-side; the frontend renders the result pages and can virtualize large
+  result tables.
 - **Alerting UI:** rules CRUD, alert history, acknowledge/silence,
   notification channel config, maintenance windows.
 - **Admin:** host registration (agent install token + one-liner), iDRAC
   credentials vault (encrypted at rest), retention settings (single-admin —
   no user management).
-- Auth: **passkey-only** (see §8). HTTPS everywhere.
-- **Deployment (per decision):** manual install for now — self-contained
-  single-file exe + `install.ps1` one-liner (registers Windows service, reads
-  config with backend URL + agent token). Designed to stay compatible with
-  later automated rollout (silent/unattended flags, idempotent install,
-  token-based registration so GPO/script deployment needs no interaction).
+- Auth: **passkey-only** (see §8). HTTPS everywhere. The browser receives
+  only API data and never receives iDRAC, Telegram, webhook, or other stored
+  secret values.
+- **Deployment:** the frontend is a separate release artifact consisting of
+  static files. Serve the Vite build through IIS, nginx, Caddy, or equivalent;
+  preferably route `/api` through the same reverse proxy to `hyveman-api` so
+  the browser sees one public origin. The API and frontend may be deployed
+  independently, with compatibility governed by the versioned OpenAPI
+  contract.
 
 ## 5. Data model (core)
 
@@ -276,13 +297,15 @@ audit_log(id, time, actor, action, target_kind, target_id, detail_json)
 
 | Piece | Recommendation | Why |
 |---|---|---|
-| Agent + server | **C# / .NET 8** (LTS), self-contained single-file exes | Native Win32 Event Log APIs (`EvtSubscribe`), WMI via `System.Management`/CimSession, excellent HTTP/Kestrel, trivial Windows-service hosting; runs fine on Server 2019+. The server side is cross-platform — .NET 8 runs the same binary on Linux (systemd/Docker) as on Windows; only the agent is Windows-only |
-| Web frontend | **Blazor Server** (all-C#, decided) | Single toolchain, no separate build/deploy pipeline; ideal for an internal tool on a small fleet |
+| Agent + API | **C# / .NET 8** (LTS), self-contained single-file exes | Native Win32 Event Log APIs (`EvtSubscribe`), WMI via `System.Management`/CimSession`, excellent HTTP/Kestrel, trivial Windows-service hosting; runs fine on Server 2019+. The API is cross-platform — .NET 8 runs the same binary on Linux (systemd/Docker) as on Windows; only the agent is Windows-only |
+| Web frontend | **React + TypeScript SPA (Vite)** | Independent static build and deployment, mature ecosystem for data-heavy dashboards, tables, charts, testing, and browser WebAuthn support |
+| API contract | **ASP.NET Core REST/JSON + OpenAPI**, with a generated TypeScript client | Keeps frontend/backend DTOs synchronized while allowing independent releases |
+| Frontend libraries | React Router, TanStack Query, MUI, Apache ECharts, `@simplewebauthn/browser` | Covers navigation, server-state caching/polling, accessible operations UI, health visualization, and passkey ceremonies |
 | Storage | SQLite (Microsoft.Data.Sqlite) + FTS5 | Zero-ops; interface allows swapping to ClickHouse later |
 | iDRAC access | HTTPS + Redfish (System.Text.Json), optional SNMP trap listener (Lextm.SharpSnmpLib) | Agentless hardware visibility |
-| Packaging | Self-contained single-file exe + `install.ps1` one-liner; **manual install for now** (decided), kept GPO/MSI-deployable later | |
+| Packaging | Agent/API: self-contained single-file exes + `install.ps1` one-liner; frontend: Vite static build served by IIS/nginx/Caddy. **Manual install for now** (decided), kept GPO/MSI-deployable later for Windows services | |
 
-Alternative stack if you'd rather not use .NET: Go agent + Go server + Vue
+Alternative stack if you'd rather not use .NET: Go agent + Go API + React
 frontend works too (go-winio/winevt bindings are weaker though — the Windows
 Event Log API story is best from C#).
 
@@ -312,11 +335,17 @@ Single admin, internet-exposed UI, minimal friction. Final design:
   CA) — WebAuthn only runs in a secure context; confirmed available.
 - **Session:** persistent auth cookie, `HttpOnly; Secure; SameSite=Strict`,
   **14-day sliding expiry** — effectively never re-login while in regular use.
+- **Public origin:** preferably expose the frontend and the `/api` reverse
+  proxy under one HTTPS origin. If separate subdomains are used instead,
+  configure exact-origin credentialed CORS and keep the explicit WebAuthn RP
+  ID and expected origin aligned with the frontend origin; do not move session
+  credentials into browser storage.
 - **First-run setup wizard:** whenever the `passkeys` table is empty (new
-  install *or* after a restore that cleared passkeys), the UI serves a setup
-  page **only on localhost/trusted network**: click "Register passkey", touch
-  sensor, done. Once ≥1 passkey exists, setup is never served again. (No
-  codes, no clock sync — the registration ceremony is self-validating.)
+  install *or* after a restore that cleared passkeys), the frontend shows a
+  setup page **only when the API permits setup from localhost/trusted
+  network**: click "Register passkey", touch sensor, done. Once ≥1 passkey
+  exists, setup is never permitted again. (No codes, no clock sync — the
+  registration ceremony is self-validating.)
 - **RP-ID invariant:** the WebAuthn Relying Party ID is stored explicitly in
   config in the data directory and taken from there — not derived from the
   runtime server hostname. A restore onto the same registered hostname keeps
@@ -326,16 +355,18 @@ Single admin, internet-exposed UI, minimal friction. Final design:
   them, which re-triggers the empty-`passkeys` wizard, then registers fresh
   passkeys. Cross-hostname reuse of passkeys is cryptographically impossible
   and not attempted.
-- **Only fallback = console reset:** `hyveman-server auth reset` requires
+- **Only fallback = console reset:** `hyveman-api auth reset` requires
   local admin on the server and restarts the setup flow (also
   `auth list-passkeys` / `auth remove-passkey`). Appropriate trust anchor:
   local admin already owns the box. There is deliberately **no** remote
   recovery path.
 - Rate limiting on auth endpoints as cheap insurance (passkey auth is
   challenge-response; there is no guessable code space).
-- Implementation: .NET `Fido2` library (passwordless.dev) + small JS interop
-  in Blazor; single-admin model, extendable to multiple users/credentials
-  later without redesign.
+- **Implementation:** the API uses the .NET `Fido2` library (passwordless.dev)
+  to create and validate ceremonies. The React frontend uses
+  `@simplewebauthn/browser` to call the browser WebAuthn APIs and sends the
+  ceremony responses to the API. The single-admin model is extendable to
+  multiple users/credentials later without redesign.
 
 ## 9. Backup & restore — decided
 
@@ -367,15 +398,16 @@ Single admin, internet-exposed UI, minimal friction. Final design:
 ## 10. Roadmap
 
 **Phase 1 — MVP (see hardware health fast)**
-1. Server: ingest API + SQLite store + retention job.
+1. API (`hyveman-api`): ingest API + SQLite store + retention job.
 2. Agent: event log tail (System/Application, Warning+; curated Security
    logon IDs), heartbeat, bookmarks; `install.ps1` one-liner.
 3. Hardware poller: Dell Redfish health rollup + thermal + power + disks.
-4. Web (Blazor Server): fleet overview + per-host component view + log search.
+4. Web (`hyveman-web`, React + TypeScript SPA): fleet overview + per-host
+   component view + log search, using the generated OpenAPI client.
 5. Alerts: health-state-change + heartbeat-lost → **Telegram** (webhook as
    second channel).
 6. Web auth: passkey-only login + first-run setup wizard + console reset (§8).
-7. Daily encrypted `VACUUM INTO` backup job + retention ladder (§9).
+7. Daily `VACUUM INTO` backup job + retention ladder (§9).
 
 **Phase 2 — depth**
 - Hyper-V channels + VM inventory/heartbeat via WMI; VM tiles on dashboard.
@@ -463,7 +495,7 @@ capability can be added without rework:
 | 4 | Notifications | **Telegram** (Bot API) primary + generic webhook. Teams deferred: personal Teams accounts cannot receive incoming webhooks (requires M365 work tenant + Workflows webhook) |
 | 5 | Security log | Curated subset only: 4624 (logon types 2 & 10), 4625, 4740; aggregated into per-user/per-day logon stats |
 | 6 | Retention | 5-year goal, deferred — configurable retention now, archive strategy later |
-| 7 | Frontend | Blazor Server |
+| 7 | Frontend | React + TypeScript SPA built with Vite, independently deployed as static assets; `hyveman-api` provides the REST/JSON OpenAPI API |
 | 8 | Web UI auth | **Passkey-only** (WebAuthn), multiple passkeys registered, 14-day sliding cookie, first-run localhost setup wizard, console-only reset fallback. No passwords, no TOTP, no backup codes. Requires real hostname + valid cert (available) |
 | 9 | Backend backup | Daily `VACUUM INTO` hot snapshots (live DB files not copy-safe), **not separately encrypted** (secrets already ciphertext via §7; restore needs snapshot + server key K), 7/4/12 ladder, swept up by the existing VM/file backup schedule; single-data-directory rule; early restore drill. Passphrase-KMK re-added later only if offsite target becomes untrusted (e.g. S3) |
 | 10 | Logs storage | Single `events` table (not monthly partitions) + global UNIQUE(source_id, dedup_scope, record_id); `DELETE`-based retention + `incremental_vacuum`. Partitioning deferred behind `ILogStore` (deferred) |
