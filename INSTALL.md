@@ -1,0 +1,361 @@
+# Hyveman — Installation & Operations Guide
+
+Setup guide for the two deployable components:
+
+| Component | What it is | Docs |
+|---|---|---|
+| `hyveman-api` | Backend: agent ingest, web API, alerts, Redfish, notifications, SQLite | [`docs/API.md`](docs/API.md), [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
+| `hyveman-agent` | Windows service: event-log collection + Hyper-V health facts → HTTPS ingest | [`docs/AGENT.md`](docs/AGENT.md), [`docs/PROTOCOL.md`](docs/PROTOCOL.md) |
+| `hyveman-web` *(separate repo)* | Browser frontend consuming `/api/v1` | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
+
+```text
+                outbound HTTPS only, no inbound listener
+ ┌──────────┐   POST /register, /ingest/logs, /ingest/telemetry, GET /health   ┌──────────────┐
+ │  Agent   │ ───────────────────────────────────────────────────────────────► │  hyveman-api │
+ │ (per VM) │          bearer token (agt_…), X-Hyveman-Protocol: 1             │  (SQLite)    │
+ └──────────┘                                                                    └──────────────┘
+                                                                                  ▲
+                                                     hyveman-web (browser) ──────┘  /api/v1, session+passkey
+```
+
+- The **agent never listens**; the server never initiates connections. Only the
+  API's listen port must be reachable from agent hosts.
+- The agent protocol paths (`/register`, `/ingest/logs`, `/ingest/telemetry`,
+  `/health`) are **fixed by PROTOCOL.md** and must not be renamed or mounted
+  under `/api`.
+- Everything is UTC. Heartbeat liveness is judged on the **server's receive
+  time**, so keep host clocks in sync (NTP) — a skewed agent clock does not
+  cause false alerts, but ingested event timestamps will be wrong.
+
+---
+
+## 1. Prerequisites
+
+**Build machine** (any Windows/Linux with internet for NuGet):
+- .NET SDK **10.0** (builds `hyveman-api`)
+- .NET SDK **8.0** (builds `hyveman-agent`)
+
+**Target servers**:
+- Windows Server 2019 or 2022 (agent requires the Windows Event Log API;
+  the API runs on Windows Server, Linux, or Docker as a console process)
+- No runtime install needed if you publish self-contained (recommended below)
+- NTFS with ~2 GB free per agent host (spool caps default to 100 MiB but the
+  min-free guard is 5 GiB) and ~1 GB for the API data dir
+
+---
+
+## 2. Build the binaries
+
+```powershell
+# From the repository root
+git clone <your-repo-url> hyveman
+cd hyveman
+
+# API — self-contained win-x64 (no runtime needed on the server)
+dotnet publish hyveman-api/src/Hyveman.Api -c Release -r win-x64 --self-contained -o C:\deploy\hyveman-api
+# Linux target instead: -r linux-x64 (same binary runs as console/systemd)
+
+# Agent — single-file exe (AGENT §11.1)
+cd hyveman-agent
+./build.ps1            # → hyveman-agent\out\hyveman-agent.exe (~68 MB)
+```
+
+Optionally run the test suites first (both must be green):
+
+```powershell
+dotnet test hyveman-api/Hyveman.Api.sln
+dotnet test hyveman-agent/Hyveman.Agent.sln
+```
+
+---
+
+## 3. TLS design — read before installing
+
+The wire protocol **mandates HTTPS** (PROTOCOL §2). Plain HTTP is rejected by
+the server except in the explicit dev-only `AllowInsecureHttp` escape hatch
+(loopback only, never in production).
+
+Pick **one** topology:
+
+### Option A — reverse proxy (recommended for production)
+
+TLS terminates at Caddy / nginx / IIS; the API listens on loopback HTTP.
+
+```text
+https://hyveman.example.com/register, /ingest/*, /health   → proxy → http://127.0.0.1:5080
+https://hyveman.example.com/api/*                          → proxy → http://127.0.0.1:5080
+https://hyveman.example.com/                                → hyveman-web static files
+```
+
+Caddy example (`Caddyfile`):
+
+```
+hyveman.example.com {
+    reverse_proxy /register* /ingest/* /health /api/* 127.0.0.1:5080
+    reverse_proxy /* hyveman-web:80        # frontend static files
+}
+```
+
+- Use a public CA (Let's Encrypt) or your own corporate CA.
+- The agent validates against the **system trust store** by default, so a
+  publicly-trusted or AD-published cert needs **no agent-side config**.
+- Preserve `X-Forwarded-Proto`/`X-Forwarded-For`; the API trusts loopback
+  proxies by default (add remote proxies to `KnownProxies` — see API.md).
+
+### Option B — direct Kestrel HTTPS (lab / small deployments)
+
+Put a certificate (public CA, private CA, or self-signed) and its key in a
+PFX, then configure the API's `config.json` (see §4.3):
+
+```jsonc
+{
+  "ApiListenUrls": "https://0.0.0.0:8443",
+  "Kestrel": {
+    "Certificates": {
+      "Default": { "Path": "C:\\hyveman\\tls\\hyveman.pfx", "Password": "…" }
+    }
+  }
+}
+```
+
+**Agent side — certificate trust:**
+
+| Trust model | Agent config | Use when |
+|---|---|---|
+| System trust store | *(nothing)* | Public CA or AD-issued cert |
+| Pin a private/self-signed CA | `backend.ca_path = "C:\\…\\ca.pem"` (PEM or DER) | Your own CA; the agent then builds the chain with `CustomRootTrust` against exactly that file |
+| ⚠️ **Never** | `validate_cert = false` | Lab only; the agent logs a loud warning on every start. Never ship this |
+
+The dev loopback setup on this repo uses Option B with a self-signed cert +
+`ca_path` pinning — see `devdata/tls/` on the dev machine for the pattern.
+
+---
+
+## 4. Install the API (hyveman-api)
+
+### 4.1 Deploy the binary
+
+```powershell
+# Copy the publish folder from the build machine
+Copy-Item -Recurse C:\deploy\hyveman-api C:\hyveman\api
+```
+
+### 4.2 Create the data directory
+
+The API keeps **all state in one directory** (DESIGN §9): `hyveman.db`
+(SQLite, WAL), `vault.key` (AES-GCM server key), `config.json`, `logs/`,
+`backup/`. First start creates everything; just create the dir:
+
+```powershell
+New-Item -ItemType Directory -Path C:\hyveman\data
+```
+
+### 4.3 Configure (`{data-dir}\config.json`)
+
+Loaded after built-in defaults; environment variables (`HYVEMAN_*`) and
+command line override it. Full surface: `HyvemanOptions` in
+`src/Hyveman.Api/Options.cs`. Minimal production file:
+
+```jsonc
+{
+  "ApiListenUrls": "http://127.0.0.1:5080",      // behind a proxy
+  "PublicOrigin": "https://hyveman.example.com", // browser origin (CSRF/WebAuthn)
+  "WebAuthnRpId": "hyveman.example.com",         // passkey relying party id
+  "WebAuthnExpectedOrigin": "https://hyveman.example.com",
+  "TrustedSetupNetworks": ["10.0.0.0/8"],        // who may run first-run passkey setup
+  "HeartbeatSilenceThresholdS": 300,             // agent-silent alert threshold
+  "LogRetentionDays": 365
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ApiListenUrls` | `http://127.0.0.1:5080` | `;`-separated listeners |
+| `PublicOrigin` / `WebAuthnExpectedOrigin` | `http://localhost:5080` | Set to the real frontend origin in production |
+| `WebAuthnRpId` | `localhost` | Passkey RP ID (must match the origin's domain) |
+| `TrustedSetupNetworks` | loopback | CIDRs allowed to register the **first** passkey; closed after |
+| `HeartbeatSilenceThresholdS` | 300 | Seeded agent-silent rule threshold |
+| `RateLimits__GlobalPerMinute` / `PerSourcePerMinute` / `RegistrationPerMinute` / `AuthPerMinute` | 1200 / 300 / 20 / 30 | Protocol rate budgets |
+| `AllowInsecureHttp` | false | **Dev only.** Never true in production |
+| `VaultKeyPath` | `{data}/vault.key` | Override if the key must live elsewhere |
+| `SQLiteBusyTimeoutMs` | 5000 | Busy timeout |
+
+### 4.4 Run as a Windows service
+
+```powershell
+New-Service -Name hyveman-api `
+  -BinaryPathName "C:\hyveman\api\hyveman-api.exe --data-dir C:\hyveman\data" `
+  -StartupType Automatic -Description "Hyveman backend"
+Start-Service hyveman-api
+# or: sc.exe create hyveman-api binPath= "…" start= delayed-auto
+```
+
+The service account needs **read/write on the data directory only**. Verify:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:5080/health/live   # {"ok":true,…}
+Invoke-RestMethod http://127.0.0.1:5080/health/ready  # {"ok":true}
+# On Linux: run the same binary as a console process / systemd unit; --data-dir is the only required arg
+```
+
+### 4.5 First-run bootstrap: passkey + registration tokens
+
+1. **Passkey setup** (one time, from a network in `TrustedSetupNetworks`):
+   open the web UI (or the API's dev OpenAPI at `/openapi/v1.json`) and
+   register a passkey. With an empty `passkeys` table, setup is open only to
+   trusted networks; after the first passkey it is closed. There is
+   **deliberately no remote recovery** — keep at least two passkeys.
+2. **Issue a registration token** for each host you will install:
+   web UI → Sources → New registration token → kind `windows-agent`,
+   lifetime (minutes). The UI shows the raw `reg_…` token **once** — copy it
+   to the target host. Tokens are single-use (PROTOCOL §5).
+
+Console fallbacks for passkey management:
+
+```powershell
+hyveman-api auth list-passkeys --data-dir C:\hyveman\data
+hyveman-api auth remove-passkey <id> --data-dir C:\hyveman\data
+hyveman-api auth reset --data-dir C:\hyveman\data
+```
+
+---
+
+## 5. Install the agent (hyveman-agent)
+
+### 5.1 One-liner install
+
+Copy `hyveman-agent.exe` (from `hyveman-agent\out\`) to the target host, then:
+
+```powershell
+.\install.ps1 -BackendUrl https://hyveman.example.com -InstallToken reg_<from-UI> [-EnableHyperV]
+```
+
+What it does (idempotent — re-running is safe):
+1. Creates `C:\Program Files\hyveman-agent\` and `C:\ProgramData\hyveman-agent\`
+   (config, spool, state, logs) with ACLs: **SYSTEM + Administrators only**.
+2. Copies the exe and writes `agent.json` (snake_case, AGENT §10) with the
+   backend URL and the one-time `reg_` token.
+3. `-EnableHyperV`: enables the Hyper-V operational channels
+   (`wevtutil set-log`) and adds the Hyper-V channel set to the config.
+4. Registers the `HyvemanAgent` EventLog source (lifecycle events, IDs 1–5,
+   which the agent self-collects with an allowlist to prevent recursion).
+5. Creates the `hyveman-agent` service
+   (`delayed-auto`, recovery: 3 restarts/5 s then **STOP** for 4 h).
+6. Runs a **preflight** (TCP reachability to the backend + `--validate-config`)
+   and fails closed if anything is wrong.
+7. Starts the service.
+
+On first start the agent exchanges the `reg_` token for a long-lived
+`agt_` ingest token via `POST /register`, stores it in `agent.json`
+(ACL'd), and **discards the reg token** (PROTOCOL §5.2).
+
+### 5.2 Default channel set
+
+| Config entry | Channel | Filter |
+|---|---|---|
+| `System` | System | Warning+ |
+| `Application` | Application | Warning+ |
+| `Security` | Security | curated IDs (4624 LT 2/10, 4625, 4740) via `security_log` |
+| `HyvemanAgent` | Application | provider `HyvemanAgent`, IDs 1–5 (self-collect lifecycle) |
+
+The Security channel subscription requires an account that can read it —
+the default service account (LocalSystem) can. If you run the service under
+a different account, grant it read on the Security log.
+
+### 5.3 Verify an install
+
+```powershell
+Get-Service hyveman-agent                 # Running
+Get-Content C:\ProgramData\hyveman-agent\logs\hyveman-agent-.log -Tail 20
+```
+
+Expect in the log, in order:
+```
+Registered as source src_… (scopes: ingest); ingest token stored in agent.json, reg token discarded
+Backend health: ok=true (server 0.1.0); source_id=src_… scopes=[ingest]
+Subscribed to channel System (query: *[System[Level<=3]])
+APPLICATION STARTED — all hosted services up
+```
+
+Then confirm on the server: the host appears in the web UI (Sources/Hosts)
+with heartbeats (every 30 s by default) and green health; event log records
+arrive as they occur.
+
+### 5.4 Reinstall / move / forget a token
+
+- **Reinstall, same host:** `install.ps1` preserves an existing valid
+  `agent.json` (it holds the ingest token). To start fresh, delete
+  `C:\ProgramData\hyveman-agent\agent.json` and re-run install with a new
+  `reg_` token — the server **reuses the same `source_id`** because
+  `(kind, hostname)` is authoritative (PROTOCOL §5.2).
+- **`410 token_consumed`:** the reg token was already used (e.g. response
+  lost mid-registration). Reissue a fresh reg token in the UI and restart.
+- **Rotate a token:** revoke the `agt_` token in the web UI, delete
+  `agent.json`, re-register with a fresh reg token. The agent keeps the
+  spool file and retries slowly with `degraded="auth_rejected"` until then.
+- **Uninstall:** `.\uninstall.ps1` (removes service, files, and any
+  Hyper-V channels it enabled).
+
+---
+
+## 6. End-to-end verification checklist
+
+| # | Check | Command / where |
+|---|---|---|
+| 1 | API alive | `GET /health/live`, `GET /health/ready` on the API |
+| 2 | Agent protocol reachable | `GET /health` with `X-Hyveman-Protocol: 1` (no token) → `{"ok":true,…}` |
+| 3 | Token resolves | `GET /health` with `Authorization: Bearer agt_…` → body contains `source_id` + `scopes` |
+| 4 | Host registered | `sources` table: `SELECT * FROM sources;` |
+| 5 | Heartbeats fresh | `agent_status.last_received` within the last interval; `degraded` empty |
+| 6 | Logs ingesting | `events` row count grows after a real event occurs on the host |
+| 7 | Idempotency | Replay a batch → response `"deduped"` counts, never duplicates |
+| 8 | Web UI | Host visible, green health, alerts page empty |
+| 9 | Cert validation | Agent log has **no** `TLS VALIDATION DISABLED` warning |
+
+---
+
+## 7. Day-2 operations
+
+- **Backups:** back up the whole API data directory **including `vault.key`**
+  — they are a unit (lost key = unrecoverable credentials). The API also
+  writes daily `VACUUM INTO` snapshots into `{data}\backup\` (7 daily /
+  4 weekly / 12 monthly) — copy that folder off-box.
+- **Retention:** `LogRetentionDays` (default 365) purges events/metrics/
+  snapshots; maintenance runs daily.
+- **Agent updates:** replace the exe (`Stop-Service`, copy, `Start-Service`);
+  config is untouched.
+- **Alerting:** notification channels (Telegram/webhook/SMTP) are configured
+  in the web UI; alerts are evaluated server-side (health transitions, event
+  matches, heartbeat silence, thresholds) with cooldown + dedup.
+- **Hardware polling:** iDRAC/Redfish credentials enter via the admin API
+  (vault-encrypted, never in config files).
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| Agent exits at start: `Registration with backend failed` | Bad/expired `reg_` token, wrong `kind`, or unreachable backend. Check URL + firewall; reissue token if `410` |
+| `410 token_consumed` on reinstall | Reuse of a spent reg token — issue a new one (server keeps the same source) |
+| Agent log: `BACKEND TLS VALIDATION DISABLED` | `validate_cert=false` is set — remove it; pin `ca_path` instead |
+| Agent log: cert/chain errors with `ca_path` | CA file is DER/PEM of the **issuer** (or the self-signed cert itself); agent does not use the system store when `ca_path` is set |
+| Agent: `Backend health check failed` but API is up | Wrong `backend.url` (check scheme/host/port), proxy path mangling (agent paths must be exact), or cert hostname mismatch |
+| Host visible but `degraded=spool_full` | Agent can't drain — disk free below `min_free_bytes` or backend down too long; check spool dir |
+| Heartbeats stop, `agent-silent` alert | Agent service stopped/crashed (check recovery policy), network path broken, or token revoked |
+| `429 too_many_requests` | Rate budget exceeded (per-source default 300/min); the agent honors `Retry-After` |
+| Host shows wrong/duplicate name | v1 identifies by `(kind, hostname)`; rename the source in the UI |
+| Event timestamps wrong | Host clock skew — fix NTP (server receive time drives alerting, not ingestion time) |
+| API won't start: `readiness check failed` | SQLite locked/busy — check another process holding `hyveman.db`, or disk full |
+
+---
+
+## 9. References
+
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the wire contract (transport,
+  auth, endpoints, error codes, retries). **Read before changing anything.**
+- [`docs/AGENT.md`](docs/AGENT.md) — agent build contract, config reference
+  (agent.json §10), spool/send semantics.
+- [`docs/API.md`](docs/API.md) — backend design, options (§11), deployment.
+- [`docs/DESIGN.md`](docs/DESIGN.md) — the overall system contract.
+- Agent/API `README.md` files — build & test commands, repo layout.

@@ -40,7 +40,7 @@ public static class Program
             if (result.Failed)
                 throw new InvalidDataException("agent.json validation failed:\n" + string.Join("\n", result.Failures ?? Array.Empty<string>()));
             if (cli.DataDir is not null)
-                options.DataDir = cli.DataDir;
+                options.DataDir = Path.GetFullPath(cli.DataDir); // normalize: the rewrite below persists this form
         }
         catch (Exception ex)
         {

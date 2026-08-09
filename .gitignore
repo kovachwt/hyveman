@@ -46,3 +46,6 @@ Desktop.ini
 # backup/ and logs/ land here. Keep dev data out of the repo:
 # .data/
 # hyveman-dev-data/
+
+# ── Dev-machine scratch (tokens, certs, DBs — never commit) ───────────────
+devdata/

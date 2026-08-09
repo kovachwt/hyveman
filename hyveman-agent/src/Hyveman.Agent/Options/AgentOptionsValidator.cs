@@ -30,8 +30,6 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
 
         if (string.IsNullOrWhiteSpace(o.Spool.Dir))
             errors.Add("spool.dir: must not be empty");
-        else if (!o.Spool.Dir.StartsWith(o.DataDir, StringComparison.OrdinalIgnoreCase))
-            errors.Add("spool.dir: must live under data_dir (single-data-dir rule, DESIGN §9)");
 
         if (o.Spool.MaxBytes <= 0)
             errors.Add("spool.max_bytes: must be > 0");
@@ -75,6 +73,24 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
             errors.Add("security_log.logon_types_for_4624: must not be empty");
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Normalize before comparison: the CLI override may carry forward
+        // slashes ("C:/dev/...") while the config file holds backslashes, and
+        // the registration rewrite persists the CLI form verbatim — a raw
+        // StartsWith would then fail on the next start after a perfectly
+        // valid registration. GetFullPath canonicalizes both sides.
+        if (TryGetFullPath(o.DataDir, out var dataDir) && TryGetFullPath(o.Spool.Dir, out var spoolDir))
+        {
+            var under = spoolDir.Equals(dataDir, StringComparison.OrdinalIgnoreCase)
+                        || spoolDir.StartsWith(dataDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            if (!under)
+                errors.Add("spool.dir: must live under data_dir (single-data-dir rule, DESIGN §9)");
+        }
+        else if (o.Spool.Dir.Length > 0)
+        {
+            errors.Add("spool.dir: invalid path");
+        }
+
         foreach (var ch in o.Channels)
         {
             if (string.IsNullOrWhiteSpace(ch.Name))
@@ -109,5 +125,19 @@ public sealed class AgentOptionsValidator : IValidateOptions<AgentOptions>
             errors.Add("source_id: must start with 'src_'");
 
         return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
+    }
+
+    private static bool TryGetFullPath(string path, out string full)
+    {
+        try
+        {
+            full = Path.GetFullPath(path);
+            return true;
+        }
+        catch (Exception)
+        {
+            full = "";
+            return false;
+        }
     }
 }

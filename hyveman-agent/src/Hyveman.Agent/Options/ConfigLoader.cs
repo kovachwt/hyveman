@@ -67,9 +67,14 @@ public sealed class ConfigLoader
     /// <summary>
     /// Atomic rewrite of agent.json (temp + rename). Used by the registration
     /// exchange to store the long-lived ingest token and drop the reg token.
+    /// Paths are canonicalized so the persisted file stays valid on the next
+    /// start regardless of the separator style used in the CLI override or
+    /// the original file (e.g. "C:/dev/..." vs "C:\dev\...").
     /// </summary>
     public void Rewrite(AgentOptions opts)
     {
+        opts.DataDir = Path.GetFullPath(opts.DataDir);
+        opts.Spool.Dir = Path.GetFullPath(opts.Spool.Dir);
         var dir = Path.GetDirectoryName(ConfigPath)!;
         Directory.CreateDirectory(dir);
         var json = JsonSerializer.Serialize(opts, JsonOpts);

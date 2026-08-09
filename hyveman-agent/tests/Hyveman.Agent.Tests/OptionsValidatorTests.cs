@@ -61,6 +61,27 @@ public class OptionsValidatorTests
     }
 
     [Fact]
+    public void Spool_Under_DataDir_With_Mixed_Separators_Passes()
+    {
+        // Regression: CLI override "C:/dev/..." (forward slashes) persisted by
+        // the registration rewrite must not invalidate a backslash spool.dir
+        // on the next start (previously failed the raw StartsWith check).
+        var o = Valid();
+        o.DataDir = "C:/Dev/hyveman/devdata/agent";
+        o.Spool.Dir = @"C:\Dev\hyveman\devdata\agent\spool";
+        Assert.Empty(Errors(o));
+    }
+
+    [Fact]
+    public void Spool_With_Similar_Prefix_Dir_Rejected()
+    {
+        // "hyveman-agentX" is not "under" "hyveman-agent" — path-boundary check.
+        var o = Valid();
+        o.Spool.Dir = @"C:\ProgramData\hyveman-agentX\spool";
+        Assert.Contains(Errors(o), e => e.Contains("spool.dir"));
+    }
+
+    [Fact]
     public void Spool_Caps_Rejected_When_Inverted()
     {
         var o = Valid();
