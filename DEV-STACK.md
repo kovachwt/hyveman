@@ -140,12 +140,22 @@ Then run the agent as a console process (it exchanges the `reg_` token for a
 long-lived `agt_` token on first contact and persists it):
 
 ```bash
-dotnet run --project hyveman-agent/src/Hyveman.Agent -- --config C:/path/to/devdata/agent/agent.json
+dotnet run --project hyveman-agent/src/Hyveman.Agent -- \
+  --config C:/path/to/devdata/agent/agent.json \
+  --data-dir C:/path/to/devdata/agent
 ```
 
 Notes: the console-mode Event Log source warning is harmless (only
 `install.ps1` registers the event source); the PID lock in `state/` rejects a
 second instance; `min_free_bytes` assumes ≥5 GiB free on the data drive.
+
+`--data-dir` is **required in practice**: the PID lock (double-instance guard)
+lives under `--data-dir` and defaults to `C:\ProgramData\hyveman-agent` — the
+config's `data_dir` field does **not** steer it. If that default path isn't
+writable by your user (e.g. an installed service owns it), the agent crashes at
+startup with `UnauthorizedAccessException` on the `state` dir. Keep it pointing
+at the same folder as the config's `data_dir` (a provided `--data-dir` overrides
+it).
 
 ## 5. Start the web
 
@@ -223,6 +233,8 @@ host tile on **Overview**.
 | Agent: `Backend health check failed` | wrong `backend.url`/`ca_path`/hostname in cert SANs; or `validate_cert` mismatch |
 | Agent: `auth_rejected` after registration | `reg_` token already consumed (response lost) — reissue |
 | Agent: Event Log error at startup | console mode, event source unregistered — harmless |
+| Agent: startup crash `UnauthorizedAccessException` on `...\state` | PID lock path defaulted to `C:\ProgramData\hyveman-agent` (service-owned) — start with `--data-dir` (§4) |
+| Page fails with `[plugin:vite:esbuild] The service is no longer running` | stale Vite dev server — esbuild's service child died (long uptime / laptop sleep); the 5173 listener still answers so it looks healthy. Restart web: kill the `npm run dev` + vite `node` processes and rerun §5 |
 | Git Bash: `C:\...` args produce junk `C:Dev...` files | bash ate the backslashes — use forward slashes or run from PowerShell |
 | Git Bash: inline PowerShell fails with `/usr/bin/bash.ProcessName`-style junk | bash expanded `$_` inside double quotes — never use `powershell -Command "..."` from bash; use the `.ps1` launchers / `-File`, or single-quote the whole command |
 | API listens on 5080 instead of your URL | `--data-dir` didn't reach the app (see previous row) and no `config.json` was found |
