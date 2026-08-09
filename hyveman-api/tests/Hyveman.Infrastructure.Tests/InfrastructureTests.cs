@@ -89,6 +89,49 @@ public class SqliteIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task HostStore_Delete_RemovesHostAndAllReferencingRows()
+    {
+        using var conn = _db.Open();
+        const string t = "2024-01-01T00:00:00.0000000Z";
+        await conn.ExecuteAsync("""
+            INSERT INTO hosts(id, name, kind, enabled, updated_at, created_at)
+            VALUES ('hst_1','HOST01','windows-server',1,'2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z');
+            INSERT INTO vms(host_id, name, state, collected_at, updated_at) VALUES ('hst_1','vm1','running','2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z');
+            INSERT INTO components(host_id, type, name, state, last_seen) VALUES ('hst_1','cpu','CPU 1','ok','2024-01-01T00:00:00.0000000Z');
+            INSERT INTO health_snapshots(host_id, time, rollup_state) VALUES ('hst_1','2024-01-01T00:00:00.0000000Z','ok');
+            INSERT INTO metrics(host_id, time, name, value) VALUES ('hst_1','2024-01-01T00:00:00.0000000Z','temperature0',35.0);
+            INSERT INTO maintenance_windows(id, host_id, start, end, reason, created_at)
+            VALUES ('mwin_1','hst_1','2024-01-02T00:00:00.0000000Z','2024-01-03T00:00:00.0000000Z','patches','2024-01-01T00:00:00.0000000Z');
+            INSERT INTO poll_status(host_id, last_poll) VALUES ('hst_1','2024-01-01T00:00:00.0000000Z');
+            INSERT INTO idrac_trusted_certs(host_id, fingerprint, cert_der, accepted_at)
+            VALUES ('hst_1','AA:BB',X'3001','2024-01-01T00:00:00.0000000Z');
+            INSERT INTO alerts(id, host_id, key, fingerprint, severity, status, title, first_seen, last_seen, updated_at)
+            VALUES ('alt_1','hst_1','hst_1:disk','f1','critical','active','Disk failed','2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z'),
+                   ('alt_2','hst_1','hst_1:disk-old','f2','critical','resolved','Disk failed','2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z');
+            """);
+
+        // Regression: every row referencing hosts(id) must be cleaned up in the
+        // same transaction, or DELETE FROM hosts violates the FK constraints
+        // (alerts, maintenance_windows, poll_status, idrac_trusted_certs) and
+        // host deletion 500s.
+        var store = new HostStore(_db);
+        await store.DeleteAsync("hst_1", CancellationToken.None);
+
+        Assert.Null(await conn.QuerySingleOrDefaultAsync("SELECT id FROM hosts WHERE id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM vms WHERE host_id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM components WHERE host_id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM health_snapshots WHERE host_id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM metrics WHERE host_id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM maintenance_windows WHERE host_id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM poll_status WHERE host_id = 'hst_1'"));
+        Assert.Equal(0, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM idrac_trusted_certs WHERE host_id = 'hst_1'"));
+        // Alert history survives the host deletion, unlinked and resolvable.
+        var alerts = (await conn.QueryAsync<string>("SELECT id FROM alerts WHERE host_id = 'hst_1'")).ToList();
+        Assert.Empty(alerts);
+        Assert.Equal(2, await conn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM alerts"));
+    }
+
+    [Fact]
     public async Task Events_IdempotentInsert_DedupesAndSearches()
     {
         using var conn = _db.Open();

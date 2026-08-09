@@ -6,6 +6,7 @@ using Hyveman.Api;
 using Hyveman.Application;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
@@ -565,6 +566,83 @@ public class AgentContractTests
 
         var missing = await client.GetAsync("/api/v1/hosts/nope/health");
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+    }
+
+    [Fact]
+    public async Task WebApi_HostDelete_SucceedsWithReferencingRows()
+    {
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+
+        using var create = new HttpRequestMessage(HttpMethod.Post, "/api/v1/hosts");
+        create.Headers.Add("X-CSRF-Token", csrf);
+        create.Headers.Add("Origin", "http://localhost:5173");
+        create.Content = new StringContent("""{"name":"DELETE-ME-01"}""", Encoding.UTF8, "application/json");
+        var created = await client.SendAsync(create);
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        var hostId = (await ReadJson(created)).GetProperty("id").GetString();
+
+        // A real host accumulates rows that FK-reference hosts(id): alerts,
+        // maintenance windows, poll_status, and the iDRAC cert pin. Deleting it
+        // used to 500 with FOREIGN KEY constraint failed (DEFECTS.md D25) —
+        // HostStore.DeleteAsync now clears/unlinks them in the same transaction.
+        using (var scope = _fx.Factory.Services.CreateScope())
+        using (var conn = scope.ServiceProvider.GetRequiredService<Hyveman.Infrastructure.Sqlite.SqliteDb>().Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO alerts(id, host_id, key, fingerprint, severity, status, title, first_seen, last_seen, updated_at)
+                VALUES ($a, $h, $k, 'f1', 'critical', 'active', 'Disk failed',
+                        '2024-01-01T00:00:00.0000000Z', '2024-01-01T00:00:00.0000000Z', '2024-01-01T00:00:00.0000000Z');
+                INSERT INTO maintenance_windows(id, host_id, start, end, reason, created_at)
+                VALUES ('mwin_1', $h, '2024-01-02T00:00:00.0000000Z', '2024-01-03T00:00:00.0000000Z', 'patches',
+                        '2024-01-01T00:00:00.0000000Z');
+                INSERT INTO poll_status(host_id, last_poll) VALUES ($h, '2024-01-01T00:00:00.0000000Z');
+                INSERT INTO idrac_trusted_certs(host_id, fingerprint, cert_der, accepted_at)
+                VALUES ($h, 'AA:BB', X'3001', '2024-01-01T00:00:00.0000000Z');
+                """;
+            cmd.Parameters.AddWithValue("$a", "alt_del_" + hostId);
+            cmd.Parameters.AddWithValue("$h", hostId);
+            cmd.Parameters.AddWithValue("$k", hostId + ":disk");
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        // Missing confirm flag → 400 (destructive ops need explicit confirmation).
+        using var noConfirm = new HttpRequestMessage(HttpMethod.Delete, $"/api/v1/hosts/{hostId}");
+        noConfirm.Headers.Add("X-CSRF-Token", csrf);
+        noConfirm.Headers.Add("Origin", "http://localhost:5173");
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.SendAsync(noConfirm)).StatusCode);
+
+        using var del = new HttpRequestMessage(HttpMethod.Delete, $"/api/v1/hosts/{hostId}?confirm=true");
+        del.Headers.Add("X-CSRF-Token", csrf);
+        del.Headers.Add("Origin", "http://localhost:5173");
+        var deleted = await client.SendAsync(del);
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+
+        using (var scope = _fx.Factory.Services.CreateScope())
+        using (var conn = scope.ServiceProvider.GetRequiredService<Hyveman.Infrastructure.Sqlite.SqliteDb>().Open())
+        {
+            static async Task<long> Count(SqliteConnection c, string sql, string hostId)
+            {
+                using var q = c.CreateCommand();
+                q.CommandText = sql;
+                q.Parameters.AddWithValue("$h", hostId);
+                return (long)(await q.ExecuteScalarAsync())!;
+            }
+            Assert.Equal(0, await Count(conn, "SELECT COUNT(*) FROM hosts WHERE id = $h", hostId));
+            Assert.Equal(0, await Count(conn, "SELECT COUNT(*) FROM maintenance_windows WHERE host_id = $h", hostId));
+            Assert.Equal(0, await Count(conn, "SELECT COUNT(*) FROM poll_status WHERE host_id = $h", hostId));
+            Assert.Equal(0, await Count(conn, "SELECT COUNT(*) FROM idrac_trusted_certs WHERE host_id = $h", hostId));
+            // Alert history survives, resolved and unlinked from the deleted host.
+            using var q = conn.CreateCommand();
+            q.CommandText = "SELECT status, host_id FROM alerts WHERE id = $a";
+            q.Parameters.AddWithValue("$a", "alt_del_" + hostId);
+            using var r = await q.ExecuteReaderAsync();
+            Assert.True(await r.ReadAsync());
+            Assert.Equal("resolved", r.GetString(0));
+            Assert.True(r.IsDBNull(1));
+        }
     }
 
     [Fact]

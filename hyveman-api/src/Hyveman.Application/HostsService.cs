@@ -167,11 +167,14 @@ public sealed class HostsService(
     public async Task DeleteAsync(string id, string actor, CancellationToken ct)
     {
         var existing = await store.GetAsync(id, ct) ?? throw new NotFoundException($"host '{id}' not found");
+        // Resolve while alerts still link to the host: store.DeleteAsync unlinks
+        // (host_id → NULL) rather than purges, so history survives the delete.
+        await alerts.ResolveForHostAsync(id, clock.UtcNow, ct);
+        // store.DeleteAsync also clears idrac_trusted_certs, maintenance_windows
+        // and poll_status in the same transaction (FK children of hosts).
         await store.DeleteAsync(id, ct);
         if (existing.IdracCredRef is not null)
             await vault.DeleteAsync(existing.IdracCredRef, ct);
-        await idracCerts.DeleteAsync(id, ct);
-        await alerts.ResolveForHostAsync(id, clock.UtcNow, ct);
         await audit.RecordAsync(actor, "host.deleted", "host", id, null, clock.UtcNow, ct);
     }
 

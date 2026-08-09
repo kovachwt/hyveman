@@ -45,6 +45,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | [D22](#d22) | P2 | agent | First post-clear event is dropped | inspection |
 | [D23](#d23) | P2 | agent | Channel reset detection dies after a retried subscribe | inspection |
 | [D24](#d24) | P3 | — | Ten smaller items | inspection |
+| [D25](#d25) | P1 | api | Host deletion 500s with `FOREIGN KEY constraint failed` | ~~verified~~ **fixed** |
 
 ---
 
@@ -884,6 +885,50 @@ returning; the retry helper should signal success rather than own the lifetime.
     `auth/useSession.ts`; saved searches live in `features/events/` and session
     state in `AuthProvider.tsx`. §4 is labelled "recommended" — no code change
     needed, listed so it is not mistaken for a missing feature.
+
+---
+
+<a id="d25"></a>
+## D25 — Host deletion 500s with `FOREIGN KEY constraint failed` (P1, verified)
+
+**Location:** `hyveman-api/src/Hyveman.Infrastructure.Sqlite/TelemetryStores.cs`
+(`HostStore.DeleteAsync`).
+**Contract:** API.md §7.1 — `DELETE /api/v1/hosts/{id}?confirm=true` is the
+host removal path; every FK-enforced connection (`SqliteDb` opens with
+`PRAGMA foreign_keys = ON`) means a delete that leaves referencing rows is a
+500, not a partial delete.
+
+`HostStore.DeleteAsync` deletes `vms`, `components`, `health_snapshots` and
+`metrics`, then `DELETE FROM hosts`. Four more tables reference `hosts(id)`
+and were never cleaned up:
+
+- `alerts.host_id` — `ResolveForHostAsync` only flips `status`; rows (active
+  **and** resolved) keep the FK.
+- `maintenance_windows.host_id` — untouched on host delete.
+- `poll_status.host_id` — untouched on host delete.
+- `idrac_trusted_certs.host_id` — deleted by `HostsService` only *after*
+  `store.DeleteAsync` threw, and on a separate connection anyway.
+
+**Failure scenario.** Any host that was ever iDRAC-polled (a `poll_status`
+row) or has an alert or maintenance window fails `DELETE FROM hosts` with
+`FOREIGN KEY constraint failed`; the transaction rolls back and the API
+returns the 500 envelope (`internal`/`An internal error occurred.`) the
+operator sees in the network log. Effectively every real host.
+
+**Fix.** `HostStore.DeleteAsync` now clears `idrac_trusted_certs`,
+`maintenance_windows`, `poll_status` and unlinks `alerts` (`host_id → NULL`,
+preserving history) in the same transaction, before the `hosts` row.
+`HostsService.DeleteAsync` resolves alerts *before* the store call (the store
+unlinks, so a resolve after would match nothing) and drops its now-redundant
+`idracCerts.DeleteAsync`. Unlinked alerts render as hostless (`'—'` in the
+alerts table) and are the same shape as rule-scoped alerts with no host.
+
+**Status: FIXED (verified).** Regression coverage: API-level
+`WebApi_HostDelete_SucceedsWithReferencingRows` (seeds alerts + maintenance
+window + poll status + cert pin, asserts `204`, host and FK children gone,
+alert survives resolved with `host_id` NULL) and store-level
+`HostStore_Delete_RemovesHostAndAllReferencingRows`. Both failed against the
+old code with the FK violation.
 
 ---
 

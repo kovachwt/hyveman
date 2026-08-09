@@ -182,6 +182,11 @@ public sealed class HostStore(SqliteDb db) : IHostStore
         return affected > 0;
     }
 
+    /// <summary>Atomically deletes a host and every row that references it.
+    /// FK enforcement (SqliteDb opens connections with foreign_keys=ON) means
+    /// the four host-scoped tables below must be cleared before the hosts row:
+    /// alerts (unlinked, not purged — the service resolves them beforehand),
+    /// maintenance_windows, poll_status, idrac_trusted_certs.</summary>
     public async Task DeleteAsync(string id, CancellationToken ct)
     {
         using var conn = StoreHelpers.Open(db);
@@ -190,6 +195,10 @@ public sealed class HostStore(SqliteDb db) : IHostStore
         await conn.ExecuteAsync(new CommandDefinition("DELETE FROM components WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
         await conn.ExecuteAsync(new CommandDefinition("DELETE FROM health_snapshots WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
         await conn.ExecuteAsync(new CommandDefinition("DELETE FROM metrics WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition("DELETE FROM idrac_trusted_certs WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition("DELETE FROM maintenance_windows WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition("DELETE FROM poll_status WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
+        await conn.ExecuteAsync(new CommandDefinition("UPDATE alerts SET host_id = NULL WHERE host_id = @id", new { id }, tx, cancellationToken: ct));
         await conn.ExecuteAsync(new CommandDefinition("DELETE FROM hosts WHERE id = @id", new { id }, tx, cancellationToken: ct));
         tx.Commit();
     }
