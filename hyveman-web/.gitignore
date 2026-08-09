@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Build output (production artifact; regenerate with `npm run build`)
+dist/
+
+# Playwright
+test-results/
+playwright-report/
+
+# Local dev
+.vite/
+*.local

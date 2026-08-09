@@ -229,14 +229,10 @@ hyveman-api auth reset --data-dir C:\hyveman\data
 
 ## 5. Install the frontend (hyveman-web)
 
-> **Status: not implemented yet.** `hyveman-web` is designed
-> ([`docs/FRONTEND.md`](docs/FRONTEND.md)) but has **not been built** —
-> there is no `hyveman-web` repository and nothing in this section can be
-> run today. The steps below are the intended deployment for when the first
-> build exists. Until then the API runs headless and the agent installs
-> without a UI, **but the first passkey and registration tokens have no
-> supported path without it** — first-run setup needs the web UI or the
-> OpenAPI page of a dev build (§4.5).
+> `hyveman-web` lives in this repository under `hyveman-web/` (React +
+> TypeScript + Vite, per [`docs/FRONTEND.md`](docs/FRONTEND.md)). It is built
+> into static files and deployed alongside the API; first-run passkey setup
+> and registration-token creation go through it.
 
 ### 5.1 What it is
 
@@ -247,20 +243,20 @@ browser sees one HTTPS origin (`https://<fqdn>/`). The single origin is
 what keeps the session cookie, CSRF origin checks, and WebAuthn passkey
 ceremonies simple (FRONTEND.md §3, API.md §8.2).
 
-### 5.2 Build (once the frontend repo exists)
+### 5.2 Build
 
 On any machine with a current Node.js LTS:
 
 ```bash
-git clone <hyveman-web-repo-url> hyveman-web
 cd hyveman-web
 npm ci
 npm run lint && npm run typecheck && npm run test -- --run
 npm run build          # → dist/
 ```
 
-The build regenerates the API client from the pinned OpenAPI document; CI
-must fail if the generated diff is stale (FRONTEND.md §13).
+The build input is the pinned OpenAPI document in `hyveman-web/openapi/`;
+CI must fail if the generated client diff is stale (`npm run api:check`,
+FRONTEND.md §13).
 
 ### 5.3 Deploy the static files
 
