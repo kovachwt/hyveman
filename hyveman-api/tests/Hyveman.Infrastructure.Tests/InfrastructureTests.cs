@@ -43,6 +43,7 @@ public class SqliteIntegrationTests : IDisposable
             "rules", "rule_channels", "notification_channels", "notification_outbox",
             "passkeys", "credentials", "maintenance_windows", "audit_log", "web_sessions",
             "webauthn_challenges", "saved_searches", "settings", "logon_stats", "poll_status",
+            "idrac_trusted_certs",
         })
         {
             Assert.Contains(expected, tables);
@@ -50,6 +51,38 @@ public class SqliteIntegrationTests : IDisposable
         // WAL mode + FK enforcement.
         Assert.Equal("wal", (await conn.QuerySingleAsync<string>("PRAGMA journal_mode")).ToLowerInvariant());
         Assert.Equal(1, await conn.ExecuteScalarAsync<int>("PRAGMA foreign_keys"));
+    }
+
+    [Fact]
+    public async Task IdracCertStore_RoundTripsPinsPerHost()
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync("INSERT INTO hosts(id, name, kind, enabled, updated_at, created_at) " +
+            "VALUES ('hst_1','HOST01','windows-server',1,'2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z')");
+
+        var store = new IdracCertStore(_db);
+        var der = new byte[] { 0x30, 0x82, 0x01, 0x2a, 0x01, 0x02 };
+        var fp = IdracCertPolicies.FingerprintOf(der);
+        var at = DateTimeOffset.Parse("2024-08-07T15:02:11Z");
+
+        Assert.Null(await store.GetFingerprintAsync("hst_1", CancellationToken.None));
+        await store.SetAsync("hst_1", der, fp, at, CancellationToken.None);
+
+        Assert.Equal(fp, await store.GetFingerprintAsync("hst_1", CancellationToken.None));
+        var pin = await store.GetPinAsync("hst_1", CancellationToken.None);
+        Assert.NotNull(pin);
+        Assert.Equal(fp, pin!.Fingerprint);
+        Assert.Equal(der, pin.CertDer);
+        Assert.Equal(at, pin.AcceptedAt);
+
+        // Update replaces the pin (certificate rotation handled by clearing).
+        var der2 = new byte[] { 0x30, 0x82, 0x01, 0x2a, 0x07, 0x07 };
+        var fp2 = IdracCertPolicies.FingerprintOf(der2);
+        await store.SetAsync("hst_1", der2, fp2, at.AddDays(1), CancellationToken.None);
+        Assert.Equal(fp2, await store.GetFingerprintAsync("hst_1", CancellationToken.None));
+
+        await store.DeleteAsync("hst_1", CancellationToken.None);
+        Assert.Null(await store.GetFingerprintAsync("hst_1", CancellationToken.None));
     }
 
     [Fact]
@@ -449,7 +482,8 @@ public class RedfishNormalizationTests
     {
         var handler = new FakeHandler(SystemJson, ProcessorsJson, MemoryJson, ThermalJson, PowerJson, ChassisJson);
         var factory = new FakeHttpClientFactory(handler);
-        var provider = new DellRedfishProvider(factory, NullLogger<DellRedfishProvider>.Instance);
+        var provider = new DellRedfishProvider(factory, IdracCertPolicies.Strict, new NoopCertStore(),
+            NullLogger<DellRedfishProvider>.Instance);
         var result = await provider.PollAsync(new HardwarePollTarget("h1", "HOST01",
             "https://idrac.example", "root", "calvin"), CancellationToken.None);
         Assert.Contains("/redfish/v1/Chassis/System.Embedded.1", handler.Requests);
@@ -474,7 +508,8 @@ public class RedfishNormalizationTests
     public async Task Poll_Failure_ReportsError_WithoutComponents()
     {
         var factory = new FakeHttpClientFactory(new FailHandler());
-        var provider = new DellRedfishProvider(factory, NullLogger<DellRedfishProvider>.Instance);
+        var provider = new DellRedfishProvider(factory, IdracCertPolicies.Strict, new NoopCertStore(),
+            NullLogger<DellRedfishProvider>.Instance);
         var result = await provider.PollAsync(new HardwarePollTarget("h1", "HOST01",
             "https://idrac.example", "root", "calvin"), CancellationToken.None);
         Assert.False(result.Success);
@@ -491,5 +526,13 @@ public class RedfishNormalizationTests
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler);
+    }
+
+    private sealed class NoopCertStore : IIdracCertStore
+    {
+        public Task<IdracCertPin?> GetPinAsync(string hostId, CancellationToken ct) => Task.FromResult<IdracCertPin?>(null);
+        public Task<string?> GetFingerprintAsync(string hostId, CancellationToken ct) => Task.FromResult<string?>(null);
+        public Task SetAsync(string hostId, byte[] certDer, string fingerprint, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
+        public Task DeleteAsync(string hostId, CancellationToken ct) => Task.CompletedTask;
     }
 }

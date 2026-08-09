@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Hyveman.Application;
@@ -15,13 +17,38 @@ namespace Hyveman.Infrastructure.Redfish;
 /// client never follows redirects and validates the scheme; credentials are
 /// held only for the duration of the poll.
 /// </summary>
-public sealed class DellRedfishProvider(IHttpClientFactory http, ILogger<DellRedfishProvider> log) : IHardwareProvider
+/// <remarks>Certificate policy (API.md §9.1): "strict" validates against the
+/// OS trust store via the shared "redfish" named client; "trust-on-first-use"
+/// accepts and pins the first certificate a host presents, refusing that host
+/// if the certificate later changes (pins live in IIdracCertStore).</remarks>
+public sealed class DellRedfishProvider(
+    IHttpClientFactory http,
+    string idracCertPolicy,
+    IIdracCertStore certs,
+    ILogger<DellRedfishProvider> log) : IHardwareProvider
 {
     public async Task<HardwarePollResult> PollAsync(HardwarePollTarget target, CancellationToken ct)
     {
+        // Certificate pin state for this poll, populated by the TLS callback
+        // when trust-on-first-use accepts an untrusted certificate.
+        string? acceptedFingerprint = null;
+        byte[]? acceptedDer = null;
+        var pinnedFingerprint = idracCertPolicy == IdracCertPolicies.TrustOnFirstUse
+            ? await certs.GetFingerprintAsync(target.HostId, ct)
+            : null;
         try
         {
-            var client = http.CreateClient("redfish");
+            var client = BuildClient(pinnedFingerprint,
+                (cert, errors) =>
+                {
+                    if (errors == SslPolicyErrors.None) return true;
+                    if (cert is null) return false;
+                    var fp = IdracCertPolicies.FingerprintOf(cert.RawData);
+                    if (pinnedFingerprint is not null) return fp == pinnedFingerprint;
+                    acceptedFingerprint = fp;
+                    acceptedDer = cert.RawData;
+                    return true;
+                });
             var baseUri = new Uri(target.BaseUrl.TrimEnd('/'));
             if (baseUri.Scheme != "https")
                 return new HardwarePollResult(false, DateTimeOffset.UtcNow, "unknown", [], [],
@@ -137,6 +164,41 @@ public sealed class DellRedfishProvider(IHttpClientFactory http, ILogger<DellRed
             log.LogWarning("Redfish poll failed for {host}: {error}", target.Name, ex.Message);
             return new HardwarePollResult(false, DateTimeOffset.UtcNow, "unknown", [], [], ex.Message);
         }
+        finally
+        {
+            // Remember the certificate accepted on first use (API.md §9.1).
+            // Persisted even when the poll itself failed later, so the next
+            // poll uses the pin instead of re-accepting an unknown cert.
+            if (acceptedFingerprint is not null && acceptedDer is not null)
+            {
+                try
+                {
+                    await certs.SetAsync(target.HostId, acceptedDer, acceptedFingerprint,
+                        DateTimeOffset.UtcNow, CancellationToken.None);
+                    log.LogInformation("Pinned iDRAC certificate for {host} ({fingerprint})",
+                        target.Name, acceptedFingerprint);
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning("Failed to persist iDRAC certificate pin for {host}: {error}",
+                        target.Name, ex.Message);
+                }
+            }
+        }
+    }
+
+    private HttpClient BuildClient(string? pinnedFingerprint,
+        Func<X509Certificate2?, SslPolicyErrors, bool> validate)
+    {
+        if (idracCertPolicy != IdracCertPolicies.TrustOnFirstUse)
+            return http.CreateClient("redfish");
+
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false, // the Redfish client must not follow arbitrary redirects (API.md §12)
+            ServerCertificateCustomValidationCallback = (_, cert, _, errors) => validate(cert, errors),
+        };
+        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
     }
 
     private void CollectDellOem(HardwarePollTarget target, List<ComponentRecord> components,

@@ -358,7 +358,10 @@ Each host tile shows:
 - overall health with text, icon, and color;
 - separate Hardware, OS, and Hyper-V summaries;
 - agent status and age of the last heartbeat;
-- last successful iDRAC poll age/failure state; and
+- iDRAC poll state from `poll_status` (API.md §9.1): last attempt time,
+  OK/failed, and the failure reason in a tooltip — a host whose polls keep
+  failing shows "Failed · time" with the error, never a permanent
+  "never polled"; and
 - active alert count.
 
 The page includes summary counts for critical/warning hosts, silent agents, and
@@ -379,6 +382,12 @@ The host page is tabbed or sectioned into:
 - VM list with state, heartbeat, CPU, memory, and last-seen time;
 - recent critical events; and
 - host-scoped alerts and maintenance windows.
+
+The Hardware (iDRAC) panel shows the URL, credential state, the last poll
+outcome (OK/failed with time and the failure reason), and whether an
+accepted-on-first-use certificate pin is active, with a Clear action that
+calls `DELETE /api/v1/hosts/{id}/idrac-cert` so the next poll can re-accept
+a rotated certificate (API.md §9.1).
 
 Charts display the requested range and resolution returned by the API. The
 frontend does not request unbounded history and does not attempt to aggregate

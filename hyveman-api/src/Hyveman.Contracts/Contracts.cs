@@ -125,6 +125,20 @@ public sealed class HostDetailDto : HostDto
     public List<AlertDto> RecentAlerts { get; set; } = [];
     public List<EventDto> RecentEvents { get; set; } = [];
     public AgentStatusDto? Agent { get; set; }
+
+    /// <summary>Last iDRAC poll outcome (API.md §7.1/§9.1); null when no
+    /// iDRAC URL is configured.</summary>
+    public IdracStatusDto? IdracStatus { get; set; }
+
+    /// <summary>Accepted-on-first-use certificate pin (API.md §9.1); null
+    /// when no certificate was pinned.</summary>
+    public IdracCertPinDto? IdracCert { get; set; }
+}
+
+public sealed class IdracCertPinDto
+{
+    public string Fingerprint { get; set; } = "";
+    public DateTimeOffset AcceptedAt { get; set; }
 }
 
 public sealed class ComponentDto

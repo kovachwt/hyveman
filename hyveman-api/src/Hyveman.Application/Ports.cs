@@ -174,6 +174,39 @@ public sealed record PollStatusRecord(
     string? LastError,
     int Failures);
 
+/// <summary>iDRAC TLS certificate verification policy (API.md §9.1).
+/// "strict" validates against the OS trust store; "trust-on-first-use"
+/// accepts and pins the first certificate presented per host.</summary>
+public static class IdracCertPolicies
+{
+    public const string Strict = "strict";
+    public const string TrustOnFirstUse = "trust-on-first-use";
+
+    public static readonly string[] Known = [Strict, TrustOnFirstUse];
+
+    /// <summary>SHA-256 hex fingerprint of a DER-encoded certificate.</summary>
+    public static string FingerprintOf(byte[] certDer) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(certDer)).ToLowerInvariant();
+}
+
+/// <summary>Accepted-on-first-use iDRAC certificate pins (API.md §9.1):
+/// one pin per host; a host whose certificate changes is refused until the
+/// operator clears the pin. Pins are only recorded for certificates that
+/// failed normal validation — properly chained certificates are never pinned.</summary>
+public interface IIdracCertStore
+{
+    Task<IdracCertPin?> GetPinAsync(string hostId, CancellationToken ct);
+    Task<string?> GetFingerprintAsync(string hostId, CancellationToken ct);
+    Task SetAsync(string hostId, byte[] certDer, string fingerprint, DateTimeOffset at, CancellationToken ct);
+    Task DeleteAsync(string hostId, CancellationToken ct);
+}
+
+public sealed record IdracCertPin(
+    string HostId,
+    string Fingerprint,
+    byte[] CertDer,
+    DateTimeOffset AcceptedAt);
+
 /// <summary>Hardware metadata store (hosts table; separate from sources).</summary>
 public interface IHostStore
 {

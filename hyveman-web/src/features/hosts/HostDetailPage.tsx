@@ -19,11 +19,13 @@ import {
   Typography,
 } from '@mui/material';
 import {
+  useDeleteApiV1HostsIdIdracCert,
   useGetApiV1HostsId,
   useGetApiV1HostsIdHealth,
   useGetApiV1HostsIdHealthHistory,
   useGetApiV1HostsIdVms,
 } from '@/api';
+import { useQueryClient } from '@tanstack/react-query';
 import { HealthBadge } from '@/components/HealthBadge/HealthBadge';
 import { LoadingState } from '@/components/LoadingState/LoadingState';
 import { ErrorState } from '@/components/ErrorState/ErrorState';
@@ -72,6 +74,7 @@ export default function HostDetailPage() {
   const palette = healthPalette(theme.palette.mode);
   const [tab, setTab] = useState<TabId>('summary');
   const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES[0]);
+  const queryClient = useQueryClient();
 
   // Current-state queries poll every 30 s while visible (FRONTEND.md §6.3).
   const host = useGetApiV1HostsId(hostId, {
@@ -82,6 +85,17 @@ export default function HostDetailPage() {
   });
   const vms = useGetApiV1HostsIdVms(hostId, {
     query: { select: (r) => r.data, refetchInterval: 30_000 },
+  });
+
+  // Clearing the accepted-on-first-use pin lets the next poll re-accept the
+  // iDRAC certificate (e.g. after a Dell cert rotation).
+  const clearPin = useDeleteApiV1HostsIdIdracCert({
+    mutation: {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: ['/api/v1/hosts', hostId] });
+        void host.refetch();
+      },
+    },
   });
 
   const historyParams = useMemo(() => {
@@ -241,6 +255,54 @@ export default function HostDetailPage() {
                 <Row label="Configured" value={h.idracUrl ? 'Yes' : 'No'} />
                 <Row label="URL" value={h.idracUrl ?? '—'} />
                 <Row label="Credentials" value={h.idracCredentialSet ? 'Set' : 'Not set'} />
+                <Row
+                  label="Last poll"
+                  value={
+                    h.idracStatus?.lastPoll ? (
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Chip
+                          size="small"
+                          color={h.idracStatus.lastPollOk ? 'success' : 'error'}
+                          label={h.idracStatus.lastPollOk ? 'OK' : 'Failed'}
+                        />
+                        <TimeDisplay time={h.idracStatus.lastPoll} variant="full" typographyProps={{ variant: 'body2' }} />
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.disabled">never polled</Typography>
+                    )
+                  }
+                />
+                {h.idracStatus?.lastError ? (
+                  <Row
+                    label="Error"
+                    value={
+                      <Typography variant="body2" color="error.main" sx={{ wordBreak: 'break-word' }}>
+                        {h.idracStatus.lastError}
+                      </Typography>
+                    }
+                  />
+                ) : null}
+                <Row
+                  label="Cert pin"
+                  value={
+                    h.idracCert ? (
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Tooltip
+                          title={`SHA-256 ${h.idracCert.fingerprint} · accepted ${h.idracCert.acceptedAt ? new Date(h.idracCert.acceptedAt).toLocaleString() : 'unknown'}`}
+                        >
+                          <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                            {(h.idracCert.fingerprint ?? '').slice(0, 16)}…
+                          </Typography>
+                        </Tooltip>
+                        <Button size="small" onClick={() => clearPin.mutate({ id: hostId })} disabled={clearPin.isPending}>
+                          Clear
+                        </Button>
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.disabled">not pinned</Typography>
+                    )
+                  }
+                />
               </Stack>
             </Paper>
           </Grid>

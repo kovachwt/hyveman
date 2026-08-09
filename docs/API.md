@@ -548,6 +548,14 @@ Host create/update accepts `idracUrl` plus write-only `idracUsername`/
 omitted/blank leaves the stored credential unchanged. Read responses expose
 only `idracCredentialSet`, never the credential value.
 
+Host tiles and `GET /api/v1/hosts/{id}` include an `idrac` / `idracStatus`
+block reporting the real poll state from `poll_status` (§9.1): `lastPoll`
+(last attempt), `lastPollOk` (last attempt succeeded), and `lastError`. A host
+that is configured but never attempted reports no `lastPoll`; a host whose
+polls keep failing reports the failure time and error — never a misleading
+"never polled". Host detail additionally reports the accepted-on-first-use
+certificate pin (`idracCert`: fingerprint and acceptance time, §9.1).
+
 ### 7.2 Event search
 
 `GET /api/v1/events` accepts:
@@ -684,7 +692,31 @@ interval is 60 seconds. Each poll:
 
 A failed host poll records the failure and last-success time without erasing the
 last known component state. Timeouts and repeated failures use backoff so one
-unreachable iDRAC cannot consume all worker capacity.
+unreachable iDRAC cannot consume all worker capacity. Poll attempts and their
+outcome live in `poll_status` (per-host `last_poll`, `last_success`, `last_error`,
+consecutive `failures`); the overview and host detail endpoints surface these
+values so the dashboard shows "Failed · time" with the error instead of a
+permanent "never polled".
+
+#### Certificate verification
+
+The iDRAC TLS policy is set by the `IdracCertPolicy` configuration value
+(§11):
+
+- `strict` (default) — certificates must validate against the OS trust store;
+  a Dell self-signed iDRAC certificate fails the poll until the operator
+  replaces it or trusts it at the OS level.
+- `trust-on-first-use` — the first certificate a host presents that fails
+  normal validation is accepted and pinned per host in the
+  `idrac_trusted_certs` table (SHA-256 fingerprint of the DER certificate).
+  Later polls accept only that exact certificate; a changed certificate is
+  refused until the operator clears the pin via
+  `DELETE /api/v1/hosts/{id}/idrac-cert` (audited as
+  `host.idrac_cert_cleared`). Properly chained certificates are never pinned.
+
+TOFU is SSH-style host-key verification: it removes the self-signed-cert
+obstacle but cannot detect an active man-in-the-middle on first contact.
+Prefer installing a trusted certificate on the iDRAC where possible.
 
 `IHardwareProvider` is the boundary for future generic Redfish, HPE iLO, or
 SNMP providers. The API layer never depends on Dell-specific JSON types.
@@ -857,6 +889,7 @@ SQLiteBusyTimeoutMs
 LogRetention
 HardwarePollInterval
 HeartbeatSilenceThreshold
+IdracCertPolicy
 RateLimits
 VaultKeyPath
 ```

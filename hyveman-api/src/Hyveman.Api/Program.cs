@@ -89,6 +89,7 @@ public partial class Program
         builder.Services.AddScoped<IHostStore, HostStore>();
         builder.Services.AddScoped<IHealthStore, HealthStore>();
         builder.Services.AddScoped<IPollStatusStore, PollStatusStore>();
+        builder.Services.AddScoped<IIdracCertStore, IdracCertStore>();
         builder.Services.AddScoped<IAlertStore, AlertStore>();
         builder.Services.AddScoped<IRuleStore, RuleStore>();
         builder.Services.AddScoped<INotificationChannelStore, ChannelStore>();
@@ -132,7 +133,11 @@ public partial class Program
         builder.Services.AddScoped<IMaintenanceJob, MaintenanceJob>();
         builder.Services.AddSingleton<IReadinessCheck, ReadinessCheck>();
 
-        builder.Services.AddScoped<IHardwareProvider, DellRedfishProvider>();
+        builder.Services.AddScoped<IHardwareProvider>(sp => new DellRedfishProvider(
+            sp.GetRequiredService<IHttpClientFactory>(),
+            sp.GetRequiredService<HyvemanOptions>().IdracCertPolicy,
+            sp.GetRequiredService<IIdracCertStore>(),
+            sp.GetRequiredService<ILogger<DellRedfishProvider>>()));
         builder.Services.AddTransient<INotifier, TelegramNotifier>();
         builder.Services.AddTransient<INotifier, WebhookNotifier>();
         builder.Services.AddTransient<INotifier, SmtpNotifier>();
@@ -194,6 +199,8 @@ public partial class Program
             if (checkOpts.AgentProtocolCurrentVersion != ProtocolVersion.Current ||
                 !checkOpts.AgentProtocolSupportedVersions.SequenceEqual(ProtocolVersion.Supported))
                 throw new InvalidOperationException("agent protocol configuration does not match the compiled protocol version");
+            if (!IdracCertPolicies.Known.Contains(checkOpts.IdracCertPolicy))
+                throw new InvalidOperationException($"IdracCertPolicy must be one of: {string.Join(", ", IdracCertPolicies.Known)}");
             startupLog.LogInformation("hyveman-api {version} starting; data directory {dir}",
                 checkOpts.ServerVersion, checkOpts.DataDirectory);
         }

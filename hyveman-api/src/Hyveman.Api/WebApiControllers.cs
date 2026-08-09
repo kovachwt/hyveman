@@ -55,6 +55,14 @@ public sealed class HostsController(
         return NoContent();
     }
 
+    /// <summary>Clears the accepted-on-first-use iDRAC certificate pin so the
+    /// next poll can re-accept the certificate (API.md §9.1).</summary>
+    [HttpDelete("{id}/idrac-cert")]
+    public async Task<IActionResult> ClearIdracCert(string id, CancellationToken ct)
+    {
+        return await hosts.ClearIdracCertAsync(id, Actor(), ct) ? NoContent() : NotFound();
+    }
+
     [HttpGet("{id}/vms")]
     public async Task<ActionResult<List<VmDto>>> Vms(string id, CancellationToken ct)
     {

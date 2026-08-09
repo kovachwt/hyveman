@@ -478,6 +478,28 @@
         }
       }
     },
+    "/api/v1/hosts/{id}/idrac-cert": {
+      "delete": {
+        "tags": [
+          "Hosts"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/v1/hosts/{id}/vms": {
       "get": {
         "tags": [
@@ -3143,6 +3165,26 @@
               }
             ]
           },
+          "idracStatus": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IdracStatusDto"
+              }
+            ]
+          },
+          "idracCert": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IdracCertPinDto"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -3407,6 +3449,18 @@
               "string"
             ],
             "format": "int32"
+          }
+        }
+      },
+      "IdracCertPinDto": {
+        "type": "object",
+        "properties": {
+          "fingerprint": {
+            "type": "string"
+          },
+          "acceptedAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

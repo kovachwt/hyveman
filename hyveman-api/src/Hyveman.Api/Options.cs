@@ -1,3 +1,5 @@
+using Hyveman.Application;
+
 namespace Hyveman.Api;
 
 /// <summary>Server configuration (API.md §11). Loaded from built-in defaults,
@@ -16,6 +18,12 @@ public sealed class HyvemanOptions
     public int LogRetentionDays { get; set; } = 365;
     public int HardwarePollIntervalS { get; set; } = 60;
     public int HeartbeatSilenceThresholdS { get; set; } = 300;
+
+    /// <summary>iDRAC TLS certificate verification (API.md §9.1): "strict"
+    /// validates against the OS trust store; "trust-on-first-use" accepts and
+    /// pins the first certificate each host presents (TOFU, SSH-style).
+    /// Invalid values fail startup.</summary>
+    public string IdracCertPolicy { get; set; } = IdracCertPolicies.Strict;
     public string VaultKeyPath { get; set; } = "";
 
     /// <summary>Set true only in development/test: allows plain HTTP (the agent

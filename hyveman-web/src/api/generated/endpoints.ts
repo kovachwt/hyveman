@@ -383,6 +383,10 @@ export type HostDetailDtoRollupAt = null | string;
 
 export type HostDetailDtoAgent = null | AgentStatusDto;
 
+export type HostDetailDtoIdracStatus = null | IdracStatusDto;
+
+export type HostDetailDtoIdracCert = null | IdracCertPinDto;
+
 export type HostDetailDtoSourceId = null | string;
 
 export type HostDetailDtoIdracUrl = null | string;
@@ -397,6 +401,8 @@ export interface HostDetailDto {
   recentAlerts?: AlertDto[];
   recentEvents?: EventDto[];
   agent?: HostDetailDtoAgent;
+  idracStatus?: HostDetailDtoIdracStatus;
+  idracCert?: HostDetailDtoIdracCert;
   id?: string;
   name?: string;
   kind?: string;
@@ -505,6 +511,11 @@ export interface HostTileDto {
   idrac?: HostTileDtoIdrac;
   /** @pattern ^-?(?:0|[1-9]\d*)$ */
   activeAlertCount?: HostTileDtoActiveAlertCount;
+}
+
+export interface IdracCertPinDto {
+  fingerprint?: string;
+  acceptedAt?: string;
 }
 
 export type IdracStatusDtoLastPoll = null | string;
@@ -2256,6 +2267,83 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
       > => {
 
       const mutationOptions = getDeleteApiV1HostsIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type deleteApiV1HostsIdIdracCertResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type deleteApiV1HostsIdIdracCertResponseSuccess = (deleteApiV1HostsIdIdracCertResponse200) & {
+  headers: Headers;
+};
+;
+
+export type deleteApiV1HostsIdIdracCertResponse = (deleteApiV1HostsIdIdracCertResponseSuccess)
+
+export const getDeleteApiV1HostsIdIdracCertUrl = (id: string,) => {
+
+
+  
+
+  return `/api/v1/hosts/${id}/idrac-cert`
+}
+
+export const deleteApiV1HostsIdIdracCert = async (id: string, options?: RequestInit): Promise<deleteApiV1HostsIdIdracCertResponse> => {
+  
+  return httpFetch<deleteApiV1HostsIdIdracCertResponse>(getDeleteApiV1HostsIdIdracCertUrl(id),
+  {      
+    ...options,
+    method: 'DELETE'
+    
+    
+  }
+);}
+
+
+
+
+export const getDeleteApiV1HostsIdIdracCertMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1HostsIdIdracCert>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1HostsIdIdracCert>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['deleteApiV1HostsIdIdracCert'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiV1HostsIdIdracCert>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteApiV1HostsIdIdracCert(id,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiV1HostsIdIdracCertMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiV1HostsIdIdracCert>>>
+    
+    export type DeleteApiV1HostsIdIdracCertMutationError = unknown
+
+    export const useDeleteApiV1HostsIdIdracCert = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1HostsIdIdracCert>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiV1HostsIdIdracCert>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiV1HostsIdIdracCertMutationOptions(options);
 
       return useMutation(mutationOptions, queryClient);
     }

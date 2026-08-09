@@ -12,6 +12,7 @@ public sealed class OverviewService(
     IAgentStatusStore agentStatus,
     IAlertStore alerts,
     ISourceStore sources,
+    IPollStatusStore pollStatus,
     IClock clock,
     ILogger<OverviewService> log)
 {
@@ -57,6 +58,7 @@ public sealed class OverviewService(
             }
             summary.Total++;
 
+            var poll = host.IdracUrl is null ? null : await pollStatus.GetAsync(host.Id, ct);
             tiles.Add(new HostTileDto
             {
                 Id = host.Id,
@@ -72,8 +74,11 @@ public sealed class OverviewService(
                 Idrac = host.IdracUrl is null ? null : new IdracStatusDto
                 {
                     Configured = true,
-                    LastPoll = rollupAt,
-                    LastPollOk = components.Count > 0,
+                    // Real poll_status (API.md §9.1): the tile must show poll
+                    // failures, not "never polled" forever while polls fail.
+                    LastPoll = poll?.LastPoll,
+                    LastPollOk = poll is { } ps && ps.Failures == 0,
+                    LastError = poll?.LastError,
                 },
                 ActiveAlertCount = alertsByHost.GetValueOrDefault(host.Id)?.Count ?? 0,
             });

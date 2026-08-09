@@ -11,6 +11,7 @@ public static class Migrations
         (1, V1),
         (2, V2),
         (3, V3),
+        (4, V4),
     ];
 
     private const string V1 = """
@@ -307,5 +308,15 @@ public static class Migrations
             last_success TEXT NULL,
             last_error TEXT NULL,
             failures INTEGER NOT NULL DEFAULT 0);
+        """;
+
+    private const string V4 = """
+        -- Accepted-on-first-use iDRAC certificate pins (API.md §9.1): one pin
+        -- per host; a changed certificate is refused until the pin is cleared.
+        CREATE TABLE idrac_trusted_certs(
+            host_id TEXT PRIMARY KEY REFERENCES hosts(id),
+            fingerprint TEXT NOT NULL,
+            cert_der BLOB NOT NULL,
+            accepted_at TEXT NOT NULL);
         """;
 }

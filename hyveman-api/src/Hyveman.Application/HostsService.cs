@@ -22,7 +22,9 @@ public sealed class HostsService(
     IEventStore events,
     IClock clock,
     IAuditStore audit,
-    ICredentialVault vault)
+    ICredentialVault vault,
+    IPollStatusStore pollStatus,
+    IIdracCertStore idracCerts)
 {
     public async Task<List<HostDto>> ListAsync(CancellationToken ct)
     {
@@ -61,6 +63,10 @@ public sealed class HostsService(
             SourceId = host.SourceId,
             IdracUrl = host.IdracUrl,
             IdracCredentialSet = host.IdracCredRef is not null,
+            IdracStatus = host.IdracUrl is null ? null : await BuildIdracStatusAsync(host.Id, ct),
+            IdracCert = await idracCerts.GetPinAsync(host.Id, ct) is { } pin
+                ? new IdracCertPinDto { Fingerprint = pin.Fingerprint, AcceptedAt = pin.AcceptedAt }
+                : null,
             Enabled = host.Enabled,
             Notes = host.Notes,
             UpdatedAt = host.UpdatedAt,
@@ -164,6 +170,7 @@ public sealed class HostsService(
         await store.DeleteAsync(id, ct);
         if (existing.IdracCredRef is not null)
             await vault.DeleteAsync(existing.IdracCredRef, ct);
+        await idracCerts.DeleteAsync(id, ct);
         await alerts.ResolveForHostAsync(id, clock.UtcNow, ct);
         await audit.RecordAsync(actor, "host.deleted", "host", id, null, clock.UtcNow, ct);
     }
@@ -229,6 +236,29 @@ public sealed class HostsService(
             HostId = id, From = from2, To = to2,
             Resolution = resolution ?? "auto",
             Points = points.OrderBy(p => p.Time).ToList(),
+        };
+    }
+
+    /// <summary>Clears the accepted-on-first-use certificate pin so the next
+    /// poll can re-accept the iDRAC certificate (API.md §9.1).</summary>
+    public async Task<bool> ClearIdracCertAsync(string id, string actor, CancellationToken ct)
+    {
+        if (await store.GetAsync(id, ct) is null) return false;
+        await idracCerts.DeleteAsync(id, ct);
+        await audit.RecordAsync(actor, "host.idrac_cert_cleared", "host", id, null, clock.UtcNow, ct);
+        return true;
+    }
+
+    private async Task<IdracStatusDto?> BuildIdracStatusAsync(string id, CancellationToken ct)
+    {
+        var status = await pollStatus.GetAsync(id, ct);
+        if (status is null) return new IdracStatusDto { Configured = true };
+        return new IdracStatusDto
+        {
+            Configured = true,
+            LastPoll = status.LastPoll,
+            LastPollOk = status.Failures == 0,
+            LastError = status.LastError,
         };
     }
 
