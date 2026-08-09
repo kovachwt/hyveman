@@ -3,8 +3,11 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Hyveman.Api;
+using Hyveman.Application;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace Hyveman.Tests.Api;
@@ -554,7 +557,24 @@ public sealed class ApiFixture : IDisposable
 
     public HttpClient Client { get; }
 
+    /// <summary>The underlying factory, so tests can open real DI scopes and
+    /// derive override hosts.</summary>
+    public WebApplicationFactory<Program> Factory => _factory;
+
     public HttpClient NewClient() => _factory.CreateClient();
+
+    /// <summary>Derives a host whose DI container serves T as IAlertEvaluator
+    /// (used to prove a derived-alerting failure cannot fail an accepted
+    /// telemetry request — DEFECTS.md D2).</summary>
+    public HttpClient NewClientWithEvaluator<T>() where T : class, IAlertEvaluator
+    {
+        var factory = _factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.RemoveAll<IAlertEvaluator>();
+            s.AddScoped<IAlertEvaluator, T>();
+        }));
+        return factory.CreateClient();
+    }
 
     /// <summary>Creates a registration token via the token store (bypasses the
     /// web session, which needs a passkey ceremony).</summary>

@@ -116,6 +116,20 @@ public sealed class HardwarePollingService(
                     continue;
                 }
 
+                // Evaluate transitions BEFORE replacing stored component state:
+                // the evaluator reads the previous poll from the store (DEFECTS.md
+                // D3). A derived-alerting failure must not lose the accepted poll
+                // result, so it is contained here rather than in the poll catch.
+                try
+                {
+                    await evaluator.OnHealthStateChangedAsync(host.Id, result.RollupState, result.Components, now, ct);
+                    await evaluator.OnThresholdsAsync(host.Id, result.Metrics, now, ct);
+                }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "Alert evaluation failed for host {host}; poll result still stored", host.Name);
+                }
+
                 await health.ReplaceComponentsAsync(host.Id, result.Components, ct);
                 var componentsJson = JsonSerializer.Serialize(result.Components.Select(c => new
                 {
@@ -126,9 +140,6 @@ public sealed class HardwarePollingService(
                 await pollStatus.MarkSuccessAsync(host.Id, now, ct);
                 _failures[host.Id] = 0;
                 _nextDue[host.Id] = now.Add(opts.HardwarePollInterval);
-
-                await evaluator.OnHealthStateChangedAsync(host.Id, result.RollupState, result.Components, now, ct);
-                await evaluator.OnThresholdsAsync(host.Id, result.Metrics, now, ct);
             }
             catch (Exception ex)
             {

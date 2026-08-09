@@ -243,6 +243,11 @@ public interface IAlertStore
     /// <summary>Finds the live occurrence (active/acknowledged/silenced) for the
     /// stable key, if any.</summary>
     Task<AlertRecord?> FindLiveAsync(string key, CancellationToken ct);
+
+    /// <summary>Most recent occurrence (any status) for the stable key; used by
+    /// the cooldown check, which keys off the resolved occurrence's last_seen
+    /// (DEFECTS.md D3).</summary>
+    Task<AlertRecord?> GetLatestAsync(string key, CancellationToken ct);
     Task<AlertRecord?> GetAsync(string id, CancellationToken ct);
     Task CreateAsync(AlertRecord alert, CancellationToken ct);
     Task UpdateAsync(AlertRecord alert, CancellationToken ct);

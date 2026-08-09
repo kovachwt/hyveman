@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -13,6 +12,12 @@ namespace Hyveman.Application;
 /// cooldown, maintenance suppression and resolution. The uniqueness model is
 /// (rule_id, host_id, fingerprint, live state): a resolved occurrence is
 /// followed by a new occurrence without losing history.
+///
+/// The evaluator is stateless by design (DEFECTS.md D3): every transition
+/// input — previous component/rollup state, previous threshold crossing,
+/// last occurrence for cooldown — is read from the durable stores, never from
+/// instance fields. It is therefore safe to construct fresh per request/scope;
+/// a restart loses nothing that the 6-hourly reconciliation pass cannot repair.
 /// </summary>
 public sealed class AlertEvaluatorService(
     IRuleStore rules,
@@ -26,11 +31,6 @@ public sealed class AlertEvaluatorService(
     IClock clock,
     ILogger<AlertEvaluatorService> log) : IAlertEvaluator
 {
-    private readonly ConcurrentDictionary<string, string> _lastRollup = new();
-    private readonly ConcurrentDictionary<string, string> _lastComponentState = new();
-    private readonly ConcurrentDictionary<string, bool> _lastThreshold = new();
-    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastFired = new();
-
     public async Task OnEventsAcceptedAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct)
     {
         var source = await sources.GetByIdAsync(sourceId, ct);
@@ -63,24 +63,30 @@ public sealed class AlertEvaluatorService(
         var ruleList = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.Health).ToList();
         if (ruleList.Count == 0) return;
 
+        // D3: the previous poll's state is read from the store — the caller
+        // (HardwarePollingService) evaluates BEFORE ReplaceComponentsAsync — so
+        // transition detection is durable and scope/instance-independent.
+        var prevComponents = await health.GetComponentsAsync(hostId, ct);
+        var prevRollup = RollupOf(prevComponents);
+
         // Rollup-level evaluation.
-        if (_lastRollup.TryGetValue(hostId, out var prevRollup) && prevRollup != rollupState)
+        if (prevRollup != rollupState)
         {
             await EvaluateRollupForRulesAsync(ruleList, hostId, prevRollup, rollupState, at, ct);
         }
-        else if (!_lastRollup.ContainsKey(hostId))
-        {
-            await EvaluateRollupForRulesAsync(ruleList, hostId, "unknown", rollupState, at, ct);
-        }
-        _lastRollup[hostId] = rollupState;
 
-        // Component-level evaluation (delta against the previous poll).
+        // Component-level evaluation (delta against the stored previous poll).
+        var prevByKey = prevComponents
+            .GroupBy(c => $"{c.Type}|{c.Name}")
+            .ToDictionary(g => g.Key, g => g.First());
         foreach (var comp in components)
         {
-            var ckey = $"{hostId}|{comp.Type}|{comp.Name}";
-            var prev = _lastComponentState.GetValueOrDefault(ckey, HealthStates.ToWire(HealthState.Unknown));
-            if (prev == HealthStates.ToWire(comp.State)) continue;
-            _lastComponentState[ckey] = HealthStates.ToWire(comp.State);
+            var ckey = $"{comp.Type}|{comp.Name}";
+            var wire = HealthStates.ToWire(comp.State);
+            var prev = prevByKey.TryGetValue(ckey, out var prevComp)
+                ? HealthStates.ToWire(prevComp.State)
+                : HealthStates.ToWire(HealthState.Unknown);
+            if (prev == wire) continue;
 
             foreach (var rule in ruleList)
             {
@@ -88,7 +94,6 @@ public sealed class AlertEvaluatorService(
                 if (match is null) continue;
                 if (match.ComponentTypes.Count > 0 && !match.ComponentTypes.Contains(comp.Type)) continue;
 
-                var wire = HealthStates.ToWire(comp.State);
                 if (match.States.Contains(wire))
                 {
                     await FireAsync(rule, hostId, null, $"component:{comp.Type}:{comp.Name}:{wire}",
@@ -167,18 +172,20 @@ public sealed class AlertEvaluatorService(
                     "eq" => Math.Abs(metric.Value - match.Value) < 0.0001,
                     _ => false,
                 };
-                var key = $"{rule.Id}|{hostId}|threshold:{metric.Name}";
-                var was = _lastThreshold.GetValueOrDefault(key, false);
-                if (crossing && !was)
+                // D3: the previous crossing state is the live alert itself —
+                // no in-memory history. Fire only on a fresh crossing (no live
+                // alert), resolve on a recovered crossing (live alert present).
+                var key = AlertKey(rule, hostId, null, $"threshold:{metric.Name}");
+                var live = await alerts.FindLiveAsync(key, ct);
+                if (crossing && live is null)
                 {
                     await FireAsync(rule, hostId, null, $"threshold:{metric.Name}",
                         $"{metric.Name} {match.Comparator} {match.Value}", $"{metric.Name} = {metric.Value:0.##} {metric.Unit}", at, bump: true, ct);
                 }
-                else if (!crossing && was)
+                else if (!crossing && live is not null)
                 {
                     await ResolveAsync(rule, hostId, null, $"threshold:{metric.Name}", at, ct);
                 }
-                _lastThreshold[key] = crossing;
             }
         }
     }
@@ -194,9 +201,6 @@ public sealed class AlertEvaluatorService(
         {
             var components = await health.GetComponentsAsync(host.Id, ct);
             var rollup = RollupOf(components);
-            _lastRollup[host.Id] = rollup;
-            foreach (var comp in components)
-                _lastComponentState[$"{host.Id}|{comp.Type}|{comp.Name}"] = HealthStates.ToWire(comp.State);
 
             var ruleList = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.Health).ToList();
             foreach (var rule in ruleList)
@@ -249,7 +253,7 @@ public sealed class AlertEvaluatorService(
     private async Task FireAsync(RuleRecord rule, string? hostId, string? sourceId, string fingerprint,
         string title, string? detail, DateTimeOffset at, bool bump, CancellationToken ct)
     {
-        var key = $"{rule.Id}|{hostId ?? "-"}|{sourceId ?? "-"}|{fingerprint}";
+        var key = AlertKey(rule, hostId, sourceId, fingerprint);
         var live = await alerts.FindLiveAsync(key, ct);
         if (live is not null)
         {
@@ -265,7 +269,12 @@ public sealed class AlertEvaluatorService(
             return;
         }
 
-        if (_lastFired.TryGetValue(key, out var last) && (at - last).TotalSeconds < rule.CooldownS)
+        // D3: cooldown is durable — keyed off the most recent occurrence's
+        // last_seen (the resolved alert's last_seen once the previous
+        // occurrence is closed), so a fresh evaluator enforces it identically
+        // and it survives restarts.
+        var last = await alerts.GetLatestAsync(key, ct);
+        if (last is not null && (at - last.LastSeen).TotalSeconds < rule.CooldownS)
             return;
         if (hostId is not null && await windows.IsInWindowAsync(hostId, at, ct))
             return;
@@ -290,7 +299,6 @@ public sealed class AlertEvaluatorService(
             ResolvedAt: null,
             UpdatedAt: at);
         await alerts.CreateAsync(alert, ct);
-        _lastFired[key] = at;
         log.LogInformation("Alert {alertId} fired: {title} (severity {severity})", alert.Id, title, rule.Severity);
 
         var channelIds = await rules.GetChannelIdsAsync(rule.Id, ct);
@@ -301,13 +309,19 @@ public sealed class AlertEvaluatorService(
     private async Task ResolveAsync(RuleRecord rule, string? hostId, string? sourceId, string fingerprint,
         DateTimeOffset at, CancellationToken ct)
     {
-        var key = $"{rule.Id}|{hostId ?? "-"}|{sourceId ?? "-"}|{fingerprint}";
+        var key = AlertKey(rule, hostId, sourceId, fingerprint);
         var live = await alerts.FindLiveAsync(key, ct);
         if (live is null) return;
         var resolved = live with { Status = AlertStatuses.Resolved, ResolvedAt = at, UpdatedAt = at };
         await alerts.UpdateAsync(resolved, ct);
         log.LogInformation("Alert {alertId} resolved: {title}", resolved.Id, resolved.Title);
     }
+
+    /// <summary>Stable alert key: rule|host|-|source|-|fingerprint. Single
+    /// construction site so heartbeat, threshold and reconcile paths cannot
+    /// drift apart (DEFECTS.md D8).</summary>
+    private static string AlertKey(RuleRecord rule, string? hostId, string? sourceId, string fingerprint)
+        => $"{rule.Id}|{hostId ?? "-"}|{sourceId ?? "-"}|{fingerprint}";
 
     internal static string EffectiveStatus(AlertRecord alert, DateTimeOffset at)
     {

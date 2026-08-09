@@ -150,6 +150,91 @@ public class SqliteIntegrationTests : IDisposable
         Assert.DoesNotContain(page1.Items.Select(i => i.Id), id => page2.Items.Any(i => i.Id == id));
     }
 
+    // ── alerts (DEFECTS.md D2/D3) ──────────────────────────────────────────
+
+    private async Task SeedAlertParentsAsync()
+    {
+        using var conn = _db.Open();
+        await conn.ExecuteAsync("INSERT INTO sources(id, kind, name, created_at) VALUES ('src_1','windows-agent','HOST01','2024-01-01T00:00:00.0000000Z')");
+        await conn.ExecuteAsync("INSERT INTO hosts(id, name, kind, enabled, updated_at, created_at) " +
+            "VALUES ('hst_1','HOST01','windows-server',1,'2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z')");
+        await conn.ExecuteAsync("INSERT INTO rules(id, name, type, match_json, severity, cooldown_s, enabled, created_at, updated_at) " +
+            "VALUES ('rul_1','6008','event','{}','warning',0,1,'2024-01-01T00:00:00.0000000Z','2024-01-01T00:00:00.0000000Z')");
+    }
+
+    private static AlertRecord Alert(string id, string key, string status, DateTimeOffset at) => new(
+        id, "rul_1", "hst_1", "src_1", key, "event:System:6008", "warning", status,
+        "Event 6008", null, at, at, 1, null, null, null, null, at);
+
+    [Fact]
+    public async Task Alerts_TwoFireResolveCycles_SameKey_KeepHistory()
+    {
+        // D2: UNIQUE(key, status) made the second resolve of an alert key throw
+        // (SQLite Error 19). Migration V5 replaced it with a partial unique
+        // index over live statuses; two full cycles on one key must both
+        // resolve and both rows must remain in history.
+        await SeedAlertParentsAsync();
+        var store = new AlertStore(_db);
+        var at = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var key = "rul_1|hst_1|src_1|event:System:6008";
+
+        // Cycle 1: fire → resolve.
+        await store.CreateAsync(Alert("al_1", key, AlertStatuses.Active, at), CancellationToken.None);
+        await store.UpdateAsync(Alert("al_1", key, AlertStatuses.Resolved, at) with
+        {
+            ResolvedAt = at.AddMinutes(1), UpdatedAt = at.AddMinutes(1),
+        }, CancellationToken.None);
+
+        // Cycle 2: fire → resolve. The resolve previously collided with al_1.
+        var at2 = at.AddDays(1);
+        await store.CreateAsync(Alert("al_2", key, AlertStatuses.Active, at2), CancellationToken.None);
+        await store.UpdateAsync(Alert("al_2", key, AlertStatuses.Resolved, at2) with
+        {
+            ResolvedAt = at2.AddMinutes(1), UpdatedAt = at2.AddMinutes(1),
+        }, CancellationToken.None);
+
+        var all = await store.ListAsync(new AlertQuery(null, null, null, null, null, 50, null), CancellationToken.None);
+        Assert.Equal(2, all.Count);
+        Assert.Contains(all, a => a.Id == "al_1" && a.Status == AlertStatuses.Resolved);
+        Assert.Contains(all, a => a.Id == "al_2" && a.Status == AlertStatuses.Resolved);
+        Assert.All(all, a => Assert.Equal(key, a.Key));
+
+        // No live occurrence remains for the key.
+        Assert.Null(await store.FindLiveAsync(key, CancellationToken.None));
+        // GetLatestAsync (D3 cooldown lookup) returns the most recent occurrence.
+        var latest = await store.GetLatestAsync(key, CancellationToken.None);
+        Assert.NotNull(latest);
+        Assert.Equal("al_2", latest!.Id);
+    }
+
+    [Fact]
+    public async Task Alerts_PartialIndex_EnforcesOneLivePerKey()
+    {
+        // The migration drops UNIQUE(key, status) and installs a partial unique
+        // index over live statuses: still at most one live occurrence per key
+        // (now across active/acknowledged/silenced), while resolved history is
+        // unconstrained.
+        using var conn = _db.Open();
+        var idx = await conn.QuerySingleOrDefaultAsync<string>(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'ux_alerts_live_key'");
+        Assert.NotNull(idx);
+
+        await SeedAlertParentsAsync();
+        var store = new AlertStore(_db);
+        var at = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var key = "rul_1|hst_1|src_1|event:System:6008";
+        await store.CreateAsync(Alert("al_1", key, AlertStatuses.Active, at), CancellationToken.None);
+
+        // A second live occurrence (any live status) is refused.
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() =>
+            store.CreateAsync(Alert("al_2", key, AlertStatuses.Acknowledged, at), CancellationToken.None));
+
+        // Resolved history alongside a live occurrence is fine.
+        await store.CreateAsync(Alert("al_3", key, AlertStatuses.Resolved, at), CancellationToken.None);
+        var all = await store.ListAsync(new AlertQuery(null, null, null, null, null, 50, null), CancellationToken.None);
+        Assert.Equal(2, all.Count);
+    }
+
     [Fact]
     public async Task Retention_PurgesEventsAndFts()
     {

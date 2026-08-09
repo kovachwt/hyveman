@@ -145,6 +145,8 @@ public class AlertEvaluatorTests
         public List<AlertRecord> Alerts { get; } = [];
         public Task<AlertRecord?> FindLiveAsync(string key, CancellationToken ct)
             => Task.FromResult(Alerts.FirstOrDefault(a => a.Key == key && AlertStatuses.Live.Contains(a.Status)));
+        public Task<AlertRecord?> GetLatestAsync(string key, CancellationToken ct)
+            => Task.FromResult(Alerts.Where(a => a.Key == key).OrderByDescending(a => a.LastSeen).FirstOrDefault());
         public Task<AlertRecord?> GetAsync(string id, CancellationToken ct) => Task.FromResult(Alerts.FirstOrDefault(a => a.Id == id));
         public Task CreateAsync(AlertRecord alert, CancellationToken ct) { Alerts.Add(alert); return Task.CompletedTask; }
         public Task UpdateAsync(AlertRecord alert, CancellationToken ct)
@@ -179,8 +181,15 @@ public class AlertEvaluatorTests
 
     private sealed class NoopHealth : IHealthStore
     {
-        public Task ReplaceComponentsAsync(string hostId, IReadOnlyList<ComponentRecord> components, CancellationToken ct) => Task.CompletedTask;
-        public Task<IReadOnlyList<ComponentRecord>> GetComponentsAsync(string hostId, CancellationToken ct) => Task.FromResult<IReadOnlyList<ComponentRecord>>([]);
+        public List<ComponentRecord> Components { get; } = [];
+        public Task ReplaceComponentsAsync(string hostId, IReadOnlyList<ComponentRecord> components, CancellationToken ct)
+        {
+            Components.Clear();
+            Components.AddRange(components);
+            return Task.CompletedTask;
+        }
+        public Task<IReadOnlyList<ComponentRecord>> GetComponentsAsync(string hostId, CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<ComponentRecord>>(Components);
         public Task AddSnapshotAsync(string hostId, DateTimeOffset time, string rollupState, string componentsJson, CancellationToken ct) => Task.CompletedTask;
         public Task<IReadOnlyList<HealthSnapshotRecord>> GetSnapshotsAsync(string hostId, DateTimeOffset? from, DateTimeOffset? to, int limit, CancellationToken ct) => Task.FromResult<IReadOnlyList<HealthSnapshotRecord>>([]);
         public Task AddMetricsAsync(string hostId, DateTimeOffset time, IReadOnlyList<MetricRecord> metrics, CancellationToken ct) => Task.CompletedTask;
@@ -228,15 +237,16 @@ public class AlertEvaluatorTests
         public Task<IReadOnlyList<AuditEntry>> ListAsync(AuditQuery query, CancellationToken ct) => Task.FromResult<IReadOnlyList<AuditEntry>>([]);
     }
 
-    private static (AlertEvaluatorService Eval, InMemoryRuleStore Rules, InMemoryAlertStore Alerts, NoopOutbox Outbox) Build(DateTimeOffset now)
+    private static (AlertEvaluatorService Eval, InMemoryRuleStore Rules, InMemoryAlertStore Alerts, NoopOutbox Outbox, NoopHealth Health) Build(DateTimeOffset now)
     {
         var rules = new InMemoryRuleStore();
         var alerts = new InMemoryAlertStore();
         var outbox = new NoopOutbox();
-        var eval = new AlertEvaluatorService(rules, alerts, new NoopHosts(), new NoopSources(), new NoopHealth(),
+        var health = new NoopHealth();
+        var eval = new AlertEvaluatorService(rules, alerts, new NoopHosts(), new NoopSources(), health,
             new NoopAgentStatus(), new NoopWindows(), outbox, new FixedClock(now),
             NullLogger<AlertEvaluatorService>.Instance);
-        return (eval, rules, alerts, outbox);
+        return (eval, rules, alerts, outbox, health);
     }
 
     private sealed class FixedClock(DateTimeOffset now) : IClock
@@ -252,7 +262,7 @@ public class AlertEvaluatorTests
     public async Task EventRule_Fires_Deduplicates_ThenResolves()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, _) = Build(now);
+        var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
             """{"channel":"System","eventIds":[6008],"severityMin":3}""", "warning", 0, true, now, now));
 
@@ -277,7 +287,7 @@ public class AlertEvaluatorTests
     public async Task EventRule_SeverityMin_Filters()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, _) = Build(now);
+        var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "critical only", RuleTypes.Event,
             """{"channel":"System","severityMin":2}""", "critical", 0, true, now, now));
 
@@ -292,7 +302,7 @@ public class AlertEvaluatorTests
     public async Task HealthRule_ComponentTransition_FiresAndResolves()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, _) = Build(now);
+        var (eval, rules, alerts, _, health) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "disk health", RuleTypes.Health,
             """{"componentTypes":["disk"],"states":["warning","critical"],"includeRollup":false}""",
             "critical", 0, true, now, now));
@@ -307,8 +317,13 @@ public class AlertEvaluatorTests
         Assert.Equal("h1", alert.HostId);
         Assert.Contains("Physical Disk 1", alert.Title);
 
+        // The evaluator reads the previous poll from the store (D3); the poller
+        // replaces components after evaluation, so the test mirrors that order.
+        await health.ReplaceComponentsAsync("h1", [bad], CancellationToken.None);
+
         // Returning to OK resolves the occurrence.
         await eval.OnHealthStateChangedAsync("h1", "ok", [disk], now.AddMinutes(1), CancellationToken.None);
+        await health.ReplaceComponentsAsync("h1", [disk], CancellationToken.None);
         Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single(a => a.Id == alert.Id).Status);
     }
 
@@ -316,7 +331,7 @@ public class AlertEvaluatorTests
     public async Task Cooldown_SuppressesRapidRefire()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, _) = Build(now);
+        var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
             """{"channel":"System","eventIds":[6008]}""", "warning", 3600, true, now, now));
 
@@ -335,7 +350,7 @@ public class AlertEvaluatorTests
     public async Task HeartbeatSilence_FiresAndClears()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, _) = Build(now);
+        var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "silent", RuleTypes.Heartbeat,
             """{"silenceAfterS":300}""", "warning", 0, true, now, now));
 
@@ -351,7 +366,7 @@ public class AlertEvaluatorTests
     public async Task ThresholdRule_FiresOnCrossing()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, _) = Build(now);
+        var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "hot", RuleTypes.Threshold,
             """{"metric":"temperature:System Board Inlet Temp","comparator":"gt","value":45}""",
             "warning", 0, true, now, now));
@@ -370,7 +385,7 @@ public class AlertEvaluatorTests
     public async Task Outbox_EnqueuedForRuleChannels()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
-        var (eval, rules, alerts, outbox) = Build(now);
+        var (eval, rules, alerts, outbox, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
             """{"channel":"System","eventIds":[6008]}""", "warning", 0, true, now, now));
         rules.Channels["r1"] = ["ch_telegram", "ch_webhook"];

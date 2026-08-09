@@ -22,8 +22,8 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | ID | Sev | Component | Summary | Evidence |
 |---|---|---|---|---|
 | [D1](#d1) | P1 | api | Derived data attributed to wrong events in mixed dedup/new batches | ~~verified~~ **fixed** |
-| [D2](#d2) | P1 | api | Second resolve of an alert key throws; cascades to telemetry 500s | verified |
-| [D3](#d3) | P1 | api | Alert evaluator state is per-request: cooldown dead, alerts never auto-resolve | inspection |
+| [D2](#d2) | P1 | api | Second resolve of an alert key throws; cascades to telemetry 500s | ~~verified~~ **fixed** |
+| [D3](#d3) | P1 | api | Alert evaluator state is per-request: cooldown dead, alerts never auto-resolve | ~~inspection~~ **fixed** |
 | [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | inspection |
 | [D5](#d5) | P1 | api | Event search skips a row at every page boundary | verified |
 | [D6](#d6) | P1 | api | Web session lifetime compounds without bound | inspection |
@@ -138,6 +138,23 @@ applies to log ingest).
 succeed and history retains two rows. Plus: a telemetry POST must return 200
 even when the evaluator throws.
 
+**Status: FIXED (2026-08-09).** Migration V5 rebuilds `alerts` without the
+`UNIQUE(key, status)` constraint and installs a partial unique index over live
+statuses only (`ux_alerts_live_key ... WHERE status IN ('active','acknowledged','silenced')`),
+plus a plain `idx_alerts_key` for the cooldown lookup. Resolved history is now
+unconstrained while "at most one live alert per key" is still enforced at the
+schema level — now across active/acknowledged/silenced, which the old
+constraint could not express. `TelemetryService.ProcessAsync` now guards the
+`OnHeartbeatSilenceChangedAsync` call exactly like `LogIngestService` guards
+`OnEventsAcceptedAsync`, so a derived-alerting failure can never fail an
+accepted telemetry request. Regression coverage: `Alerts_TwoFireResolveCycles_SameKey_KeepHistory`
+and `Alerts_PartialIndex_EnforcesOneLivePerKey` (store-level, real SQLite) and
+`Telemetry_Returns200_WhenAlertEvaluatorThrows` (API-level, DI override), plus
+`HealthAlert_TwoWarningToOkCycles_ResolveAndKeepHistory` which drives the
+second resolve of a key through the real evaluator and DI container. All four
+were verified to fail against the pre-fix code — the first reproduced the
+exact `SQLite Error 19: UNIQUE constraint failed` from the field report.
+
 ---
 
 <a id="d3"></a>
@@ -183,6 +200,26 @@ fixed first, or making resolution reachable will start throwing.
 **Test to add.** Poll a host warning→ok across two ticks through the real DI
 container and assert the alert reaches `resolved`; fire twice inside a cooldown
 window and assert one alert.
+
+**Status: FIXED (2026-08-09).** The evaluator is now stateless: the four
+`ConcurrentDictionary` fields are gone, and every transition input is read from
+durable stores. The previous component/rollup state comes from the `components`
+table — `HardwarePollingService` now calls the evaluator *before*
+`ReplaceComponentsAsync` (contained in its own try/catch, so a derived-alerting
+failure can no longer lose the accepted poll result or mark it a poll failure);
+the previous threshold crossing is the live alert itself (`FindLiveAsync`); and
+cooldown keys off the most recent occurrence's `last_seen` via the new
+`IAlertStore.GetLatestAsync`. Key construction is unified behind one
+`AlertKey` helper so the paths cannot drift again. The scoped registration is
+now correct as-is — no singleton needed. Regression coverage:
+`HealthAlert_TwoWarningToOkCycles_ResolveAndKeepHistory` (two full warning→ok
+cycles across fresh DI scopes; both resolve and history retains two rows — the
+second cycle also proves D2 through the real container) and
+`EventRule_RefireInsideCooldown_Suppressed` (refire inside the window from a
+fresh scope produces no new alert), both API-level; the store-level cooldown
+lookup is covered by `Alerts_TwoFireResolveCycles_SameKey_KeepHistory`. All
+were verified to fail against the pre-fix code (no auto-resolve and no cooldown
+across fresh evaluator instances).
 
 ---
 

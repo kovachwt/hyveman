@@ -62,6 +62,7 @@ public class OverviewIdracStatusTests
     private sealed class NoopAlerts : IAlertStore
     {
         public Task<AlertRecord?> FindLiveAsync(string key, CancellationToken ct) => Task.FromResult<AlertRecord?>(null);
+        public Task<AlertRecord?> GetLatestAsync(string key, CancellationToken ct) => Task.FromResult<AlertRecord?>(null);
         public Task<AlertRecord?> GetAsync(string id, CancellationToken ct) => Task.FromResult<AlertRecord?>(null);
         public Task CreateAsync(AlertRecord alert, CancellationToken ct) => Task.CompletedTask;
         public Task UpdateAsync(AlertRecord alert, CancellationToken ct) => Task.CompletedTask;

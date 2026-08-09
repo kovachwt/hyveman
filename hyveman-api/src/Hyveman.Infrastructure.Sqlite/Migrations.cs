@@ -12,6 +12,7 @@ public static class Migrations
         (2, V2),
         (3, V3),
         (4, V4),
+        (5, V5),
     ];
 
     private const string V1 = """
@@ -318,5 +319,54 @@ public static class Migrations
             fingerprint TEXT NOT NULL,
             cert_der BLOB NOT NULL,
             accepted_at TEXT NOT NULL);
+        """;
+
+    private const string V5 = """
+        -- DEFECTS.md D2: UNIQUE(key, status) breaks the second fire→resolve
+        -- cycle of an alert key — resolving the second occurrence collides
+        -- with the first cycle's resolved row, which surfaced as 500s on the
+        -- ordinary heartbeat-clear path. Replace the table-level constraint
+        -- with a partial unique index over live statuses only: at most one
+        -- live occurrence per key, unlimited resolved history (API.md §9.3).
+        CREATE TABLE alerts_v5(
+            id TEXT PRIMARY KEY,
+            rule_id TEXT NULL REFERENCES rules(id),
+            host_id TEXT NULL REFERENCES hosts(id),
+            source_id TEXT NULL REFERENCES sources(id),
+            key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            ack_at TEXT NULL,
+            ack_reason TEXT NULL,
+            silence_until TEXT NULL,
+            resolved_at TEXT NULL,
+            updated_at TEXT NOT NULL);
+
+        INSERT INTO alerts_v5(id, rule_id, host_id, source_id, key, fingerprint, severity, status,
+                              title, detail, first_seen, last_seen, count, ack_at, ack_reason,
+                              silence_until, resolved_at, updated_at)
+            SELECT id, rule_id, host_id, source_id, key, fingerprint, severity, status,
+                   title, detail, first_seen, last_seen, count, ack_at, ack_reason,
+                   silence_until, resolved_at, updated_at
+            FROM alerts;
+
+        DROP TABLE alerts;
+        ALTER TABLE alerts_v5 RENAME TO alerts;
+
+        -- Live-uniqueness invariant, enforced at the schema level.
+        CREATE UNIQUE INDEX ux_alerts_live_key ON alerts(key)
+            WHERE status IN ('active','acknowledged','silenced');
+        -- Plain key index serves the cooldown lookup (D3: cooldown keys off the
+        -- most recent occurrence's last_seen, which can be a resolved row).
+        CREATE INDEX idx_alerts_key ON alerts(key);
+        CREATE INDEX idx_alerts_status ON alerts(status);
+        CREATE INDEX idx_alerts_host ON alerts(host_id);
+        CREATE INDEX idx_alerts_last_seen ON alerts(last_seen);
         """;
 }

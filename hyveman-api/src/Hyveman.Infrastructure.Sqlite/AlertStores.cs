@@ -16,6 +16,15 @@ public sealed class AlertStore(SqliteDb db) : IAlertStore
         return r is null ? null : Map(r);
     }
 
+    public async Task<AlertRecord?> GetLatestAsync(string key, CancellationToken ct)
+    {
+        using var conn = StoreHelpers.Open(db);
+        var r = await conn.QuerySingleOrDefaultAsync(new CommandDefinition("""
+            SELECT * FROM alerts WHERE key = @key ORDER BY last_seen DESC, id DESC LIMIT 1
+            """, new { key }, cancellationToken: ct));
+        return r is null ? null : Map(r);
+    }
+
     public async Task<AlertRecord?> GetAsync(string id, CancellationToken ct)
     {
         using var conn = StoreHelpers.Open(db);

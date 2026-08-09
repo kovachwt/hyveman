@@ -63,8 +63,19 @@ public sealed class TelemetryService(
         }
 
         // Heartbeat arrival resets the agent-silent timer (API.md §6.4); the
-        // monitor is notified so a silence alert can clear.
+        // monitor is notified so a silence alert can clear. Derived alerting
+        // must never fail an accepted telemetry request (DEFECTS.md D2); the
+        // heartbeat monitor and reconciliation pass repair state (API.md §9.3).
         if (heartbeats.Count > 0)
-            await evaluator.OnHeartbeatSilenceChangedAsync(ruleId: null, sourceId, silent: false, receivedAt, ct);
+        {
+            try
+            {
+                await evaluator.OnHeartbeatSilenceChangedAsync(ruleId: null, sourceId, silent: false, receivedAt, ct);
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "Heartbeat silence evaluation failed for source {sourceId}; will reconcile later", sourceId);
+            }
+        }
     }
 }
