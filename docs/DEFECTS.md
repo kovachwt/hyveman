@@ -24,7 +24,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | [D1](#d1) | P1 | api | Derived data attributed to wrong events in mixed dedup/new batches | ~~verified~~ **fixed** |
 | [D2](#d2) | P1 | api | Second resolve of an alert key throws; cascades to telemetry 500s | ~~verified~~ **fixed** |
 | [D3](#d3) | P1 | api | Alert evaluator state is per-request: cooldown dead, alerts never auto-resolve | ~~inspection~~ **fixed** |
-| [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | inspection |
+| [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | ~~inspection~~ **fixed** |
 | [D5](#d5) | P1 | api | Event search skips a row at every page boundary | verified |
 | [D6](#d6) | P1 | api | Web session lifetime compounds without bound | inspection |
 | [D7](#d7) | P2 | api | `heartbeat_ok: false` coerced to `null` | verified |
@@ -268,6 +268,25 @@ size). Then re-derive the OEM paths from a captured payload.
 normalized component list contains the expected CPU/DIMM/disk rows. Note the
 existing `InfrastructureTests` Redfish coverage exercises the mapper on
 already-inlined JSON, which is why this is invisible today.
+
+**Status: FIXED (2026-08-09).** Verified against the live fleet iDRAC first
+(HOST-A, 10.x.x.x, iDRAC9 / PowerEdge R7415): every collection
+(`Processors`, `Memory`, `Storage`) returns bare link objects in `Members`,
+and the Chassis `Oem.Dell` carries only `DellChassis` — no
+`DellPhysicalDisk`/`DellController` — confirming the OEM path was dead code.
+The captured payloads are recorded in the §14 #3 artifact,
+`docs/REDFISH-MAPPING.md`. `DellRedfishProvider` now follows each member's
+`@odata.id` for Processors and Memory, and walks the real storage tree
+(`Systems/.../Storage/<controller>` → `Drives/<id>`) for controllers and
+physical disks, replacing the chassis-OEM path; a drive with
+`FailurePredicted: true` escalates to `warning` even when firmware reports
+`Status.Health: OK`. Regression coverage, all fixture-based on the recorded
+payloads: `Poll_RealFleetPayloads_NormalizesAllComponentTypes` (asserts CPU /
+DIMM / controller / disk rows plus the member-fetch request set and the
+absence of the chassis fetch), `Poll_PredictiveFailure_EscalatesDiskToWarning`,
+`Poll_CriticalComponent_DrivesRollupToCritical`, and the retained failure
+path. The two new tests were verified to fail against the pre-fix provider
+(the inline-only parse skipped every CPU/DIMM/disk/controller member).
 
 ---
 

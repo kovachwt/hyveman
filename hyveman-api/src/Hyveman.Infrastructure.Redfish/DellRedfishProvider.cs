@@ -67,25 +67,21 @@ public sealed class DellRedfishProvider(
 
             var processors = await GetJsonAsync(client, baseUri, "redfish/v1/Systems/System.Embedded.1/Processors", auth, ct);
             var memory = await GetJsonAsync(client, baseUri, "redfish/v1/Systems/System.Embedded.1/Memory", auth, ct);
+            var storage = await GetJsonAsync(client, baseUri, "redfish/v1/Systems/System.Embedded.1/Storage", auth, ct);
             var thermal = await GetJsonAsync(client, baseUri, "redfish/v1/Chassis/System.Embedded.1/Thermal", auth, ct);
             var power = await GetJsonAsync(client, baseUri, "redfish/v1/Chassis/System.Embedded.1/Power", auth, ct);
-            var chassis = await GetJsonAsync(client, baseUri, "redfish/v1/Chassis/System.Embedded.1", auth, ct);
 
-            var members = (JsonElement? collection, string type) =>
-            {
-                if (collection is not { } c || !c.TryGetProperty("Members", out var ms)) return;
-                foreach (var m in ms.EnumerateArray())
-                {
-                    if (!m.TryGetProperty("Name", out var nameProp)) continue;
-                    var name = nameProp.GetString() ?? "unknown";
-                    var state = MapHealth(m, type);
-                    var detail = ReadDetail(m);
-                    components.Add(new ComponentRecord(target.HostId, type, name, state, detail, now));
-                    rollup = MaxRollup(rollup, state);
-                }
-            };
-            members(processors, ComponentTypes.Cpu);
-            members(memory, ComponentTypes.Memory);
+            // Redfish collections (Processors/Memory/Storage) return bare link
+            // objects in Members — member resources are only inlined when the
+            // request asks for ?$expand, which iDRAC does not honor here. Each
+            // link is followed so CPUs, DIMMs, storage controllers and
+            // physical disks actually reach the component table (D4).
+            rollup = await CollectLinkedMembersAsync(client, baseUri, auth, ct, processors, ComponentTypes.Cpu,
+                target.HostId, components, now, rollup);
+            rollup = await CollectLinkedMembersAsync(client, baseUri, auth, ct, memory, ComponentTypes.Memory,
+                target.HostId, components, now, rollup);
+            rollup = await CollectStorageAsync(client, baseUri, auth, ct, storage,
+                target.HostId, components, now, rollup);
 
             if (thermal is { } th)
             {
@@ -142,17 +138,6 @@ public sealed class DellRedfishProvider(
                 }
             }
 
-            // Dell OEM: physical disks and controllers under the chassis.
-            var oem = chassis is { } ch && ch.TryGetProperty("Oem", out var oemEl)
-                && oemEl.TryGetProperty("Dell", out var dell) ? (JsonElement?)dell : null;
-            if (oem is { } oe)
-            {
-                if (oe.TryGetProperty("DellPhysicalDisk", out var disks) && disks.TryGetProperty("Members", out var dm))
-                    CollectDellOem(target, components, now, dm, ComponentTypes.Disk, ref rollup);
-                if (oe.TryGetProperty("DellController", out var ctrls) && ctrls.TryGetProperty("Members", out var cm))
-                    CollectDellOem(target, components, now, cm, ComponentTypes.Controller, ref rollup);
-            }
-
             components.Add(new ComponentRecord(target.HostId, ComponentTypes.System, "System.Embedded.1",
                 MapHealth(system.Value, ComponentTypes.System), null, now));
             rollup = MaxRollup(rollup, MapHealth(system.Value, ComponentTypes.System));
@@ -201,17 +186,79 @@ public sealed class DellRedfishProvider(
         return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
     }
 
-    private void CollectDellOem(HardwarePollTarget target, List<ComponentRecord> components,
-        DateTimeOffset now, JsonElement members, string type, ref string rollup)
+    /// <summary>Normalizes a Redfish collection into components. Members are
+    /// bare link objects ({"@odata.id": ...}) on real iDRACs; each link is
+    /// fetched and normalized. Inlined members (Name present) are used as-is.
+    /// (D4: collections were previously treated as inline-only, so every
+    /// processor and DIMM member was silently skipped.)</summary>
+    private async Task<string> CollectLinkedMembersAsync(HttpClient client, Uri baseUri, string auth, CancellationToken ct,
+        JsonElement? collection, string type, string hostId, List<ComponentRecord> components,
+        DateTimeOffset now, string rollup)
     {
-        foreach (var m in members.EnumerateArray())
+        if (collection is not { } c || !c.TryGetProperty("Members", out var ms)) return rollup;
+        foreach (var member in ms.EnumerateArray())
         {
-            var name = m.TryGetProperty("Name", out var n) && n.ValueKind == JsonValueKind.String
-                ? n.GetString()! : "unknown";
-            var state = MapHealth(m, type);
-            components.Add(new ComponentRecord(target.HostId, type, name, state, ReadDetail(m), now));
+            var el = member;
+            if (!el.TryGetProperty("Name", out var nameProp))
+            {
+                if (!el.TryGetProperty("@odata.id", out var link) || link.ValueKind != JsonValueKind.String) continue;
+                var resource = await GetJsonAsync(client, baseUri, link.GetString()!, auth, ct);
+                if (resource is not { } r || !r.TryGetProperty("Name", out nameProp)) continue;
+                el = r;
+            }
+            var name = nameProp.GetString() ?? "unknown";
+            var state = MapHealth(el, type);
+            components.Add(new ComponentRecord(hostId, type, name, state, ReadDetail(el), now));
             rollup = MaxRollup(rollup, state);
         }
+        return rollup;
+    }
+
+    /// <summary>Dell exposes storage controllers under
+    /// /Systems/&lt;system&gt;/Storage and physical disks under each
+    /// controller's Drives array. The previous OEM path —
+    /// Oem.Dell.DellPhysicalDisk/DellController on the Chassis resource — does
+    /// not exist on real iDRACs (verified against a fleet iDRAC9: Chassis
+    /// Oem.Dell carries only DellChassis), so disks and controllers never
+    /// reached the component table (D4).</summary>
+    private async Task<string> CollectStorageAsync(HttpClient client, Uri baseUri, string auth, CancellationToken ct,
+        JsonElement? storage, string hostId, List<ComponentRecord> components, DateTimeOffset now, string rollup)
+    {
+        if (storage is not { } s || !s.TryGetProperty("Members", out var controllers)) return rollup;
+        foreach (var controllerLink in controllers.EnumerateArray())
+        {
+            if (!controllerLink.TryGetProperty("@odata.id", out var cLink) || cLink.ValueKind != JsonValueKind.String) continue;
+            var controller = await GetJsonAsync(client, baseUri, cLink.GetString()!, auth, ct);
+            if (controller is not { } ctl) continue;
+
+            if (ctl.TryGetProperty("Name", out var cName) && cName.ValueKind == JsonValueKind.String)
+            {
+                var name = cName.GetString() ?? "unknown";
+                var state = MapHealth(ctl, ComponentTypes.Controller);
+                components.Add(new ComponentRecord(hostId, ComponentTypes.Controller, name, state, ReadDetail(ctl), now));
+                rollup = MaxRollup(rollup, state);
+            }
+
+            if (!ctl.TryGetProperty("Drives", out var drives)) continue;
+            foreach (var driveLink in drives.EnumerateArray())
+            {
+                if (!driveLink.TryGetProperty("@odata.id", out var dLink) || dLink.ValueKind != JsonValueKind.String) continue;
+                var drive = await GetJsonAsync(client, baseUri, dLink.GetString()!, auth, ct);
+                if (drive is not { } d || !d.TryGetProperty("Name", out var dName)
+                    || dName.ValueKind != JsonValueKind.String) continue;
+                var name = dName.GetString() ?? "unknown";
+                var state = MapHealth(d, ComponentTypes.Disk);
+                // Predictive disk failure (SMART alert) is the motivating case
+                // for the disk component (DESIGN §4.4); some firmware keeps
+                // Status=OK while FailurePredicted is set, so escalate rather
+                // than trust Status alone.
+                if (d.TryGetProperty("FailurePredicted", out var fp) && fp.ValueKind == JsonValueKind.True)
+                    state = HealthStates.Max(state, HealthState.Warning);
+                components.Add(new ComponentRecord(hostId, ComponentTypes.Disk, name, state, ReadDetail(d), now));
+                rollup = MaxRollup(rollup, state);
+            }
+        }
+        return rollup;
     }
 
     private static async Task<JsonElement?> GetJsonAsync(HttpClient client, Uri baseUri,

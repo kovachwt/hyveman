@@ -524,4 +524,5 @@ produce:
    plus the `install.ps1` registration flow.
 3. **Redfish mapping table** — exact endpoints per data point (health
    rollup, thermal, power, disks, OEM extensions) with sample payloads from
-   one fleet iDRAC.
+   one fleet iDRAC. **Produced: `docs/REDFISH-MAPPING.md`** (captured from
+   HOST-A / iDRAC9, 2026-08-09; the source for the D4 fix).

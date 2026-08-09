@@ -517,81 +517,217 @@ public class SqliteIntegrationTests : IDisposable
 
 public class RedfishNormalizationTests
 {
+    // Fixtures recorded from the fleet iDRAC (HOST-A, 10.x.x.x, iDRAC9,
+    // PowerEdge R7415) on 2026-08-09, trimmed to the fields the provider
+    // reads. The collection payloads are faithful: members are bare link
+    // objects ({"@odata.id": ...}) — the exact shape that defeated the
+    // pre-D4 inline-only parsing.
     private static readonly string SystemJson = """
-        {"Name":"System","Status":{"State":"Enabled","Health":"OK","HealthRollup":"OK"},
-         "Processors":{"@odata.id":"/Systems/1/Processors"},"Memory":{"@odata.id":"/Systems/1/Memory"}}
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1","Name":"System",
+         "Status":{"Health":"OK","HealthRollup":"OK","State":"Enabled"},
+         "Model":"PowerEdge R7415","Manufacturer":"Dell Inc.","SerialNumber":"EXAMPLE1"}
         """;
     private static readonly string ProcessorsJson = """
-        {"Members":[
-          {"Name":"CPU1","Status":{"State":"Enabled","Health":"OK"}},
-          {"Name":"CPU2","Status":{"State":"Enabled","Health":"OK"}}]}
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Processors",
+         "Members":[{"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Processors/CPU.Socket.1"}],
+         "Members@odata.count":1,"Name":"ProcessorsCollection"}
+        """;
+    private static readonly string CpuJson = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Processors/CPU.Socket.1",
+         "Name":"CPU 1","Status":{"Health":"OK","State":"Enabled"},
+         "Model":"AMD EPYC 7551P 32-Core Processor","Manufacturer":"AMD",
+         "Socket":"CPU.Socket.1","TotalCores":32,"TotalThreads":64,"MaxSpeedMHz":3000}
         """;
     private static readonly string MemoryJson = """
-        {"Members":[
-          {"Name":"DIMM.A1","Status":{"State":"Enabled","Health":"OK"}}]}
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Memory",
+         "Members":[
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1"},
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A2"}],
+         "Members@odata.count":8,"Name":"Memory Devices Collection"}
+        """;
+    private static readonly string DimmA1Json = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1",
+         "Name":"DIMM A1","Status":{"Health":"OK","State":"Enabled"},
+         "Manufacturer":"Samsung","SerialNumber":"DIMMSN01","PartNumber":"M393A2K40BB2-CTD",
+         "CapacityMiB":16384,"DeviceLocator":"DIMM A1","MemoryDeviceType":"DDR4","OperatingSpeedMhz":2666}
+        """;
+    private static readonly string DimmA2Json = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A2",
+         "Name":"DIMM A2","Status":{"Health":"OK","State":"Enabled"},
+         "Manufacturer":"Samsung","SerialNumber":"DIMMSN02","PartNumber":"M393A2K40BB2-CTD",
+         "CapacityMiB":16384,"DeviceLocator":"DIMM A2","MemoryDeviceType":"DDR4","OperatingSpeedMhz":2666}
+        """;
+    private static readonly string StorageJson = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage",
+         "Members":[
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1"},
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/AHCI.Slot.5-1"},
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/AHCI.Embedded.3-1"},
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/PCIeSSD.Slot.2-C"},
+           {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/PCIeSSD.Slot.3-C"}],
+         "Members@odata.count":5,"Name":"Storage Collection"}
+        """;
+    private static readonly string RaidControllerJson = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1",
+         "Name":"PERC H330 Mini","Status":{"Health":"OK","HealthRollup":"OK","State":"Enabled"},
+         "Description":"PERC H330 Mini",
+         "Drives":[{"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0:Enclosure.Internal.0-1:RAID.Integrated.1-1"}],
+         "Drives@odata.count":1}
+        """;
+    private static readonly string AhciControllerJson = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/AHCI.Embedded.3-1",
+         "Name":"FCH SATA Controller [AHCI mode]",
+         "Status":{"Health":null,"HealthRollup":null,"State":"Enabled"},
+         "Description":"FCH SATA Controller [AHCI mode]","Drives":[],"Drives@odata.count":0}
+        """;
+    private static readonly string DriveJson = """
+        {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0:Enclosure.Internal.0-1:RAID.Integrated.1-1",
+         "Name":"Physical Disk 0:1:0","Status":{"Health":"OK","HealthRollup":"OK","State":"Enabled"},
+         "Model":"TOSHIBA MG04ACA1","Manufacturer":"TOSHIBA","SerialNumber":"DRIVESN0001",
+         "PartNumber":"EXAMPLEPARTNUMBER0000001","CapacityBytes":1000204886016,
+         "FailurePredicted":false,"MediaType":"HDD","Protocol":"SATA","RotationSpeedRPM":8220,"Revision":"FK5D"}
         """;
     private static readonly string ThermalJson = """
-        {"Temperatures":[{"Name":"System Board Inlet Temp","ReadingCelsius":28.5,"Status":{"State":"Enabled","Health":"OK"}},
-                          {"Name":"CPU1 Temp","ReadingCelsius":52.0,"Status":{"State":"Enabled","Health":"Warning"}}],
-         "Fans":[{"Name":"Fan1","Status":{"State":"Enabled","Health":"OK"}}]}
+        {"Name":"Thermal",
+         "Temperatures":[
+           {"Name":"CPU1 Temp","ReadingCelsius":57,"Status":{"Health":"OK","State":"Enabled"}},
+           {"Name":"System Board Inlet Temp","ReadingCelsius":25,"Status":{"Health":"OK","State":"Enabled"}},
+           {"Name":"System Board Exhaust Temp","ReadingCelsius":30,"Status":{"Health":"OK","State":"Enabled"}}],
+         "Fans":[{"Name":"System Board Fan1","Status":{"Health":"OK","State":"Enabled"}}]}
         """;
     private static readonly string PowerJson = """
-        {"PowerSupplies":[{"Name":"PSU1","Status":{"State":"Enabled","Health":"OK"}},
-                          {"Name":"PSU2","Status":{"State":"Enabled","Health":"Critical"}}],
-         "PowerControl":[{"PowerConsumedWatts":312.5}]}
+        {"Name":"Power",
+         "PowerSupplies":[
+           {"Name":"PS1 Status","Status":{"Health":"OK","State":"Enabled"}},
+           {"Name":"PS2 Status","Status":{"Health":"OK","State":"Enabled"}}],
+         "PowerControl":[{"Name":"System Power Control","PowerConsumedWatts":162}]}
         """;
-    private static readonly string ChassisJson = """
-        {"Oem":{"Dell":{"DellPhysicalDisk":{"Members":[
-            {"Name":"Physical Disk 0:1:0","Status":{"State":"Enabled","Health":"Warning"},"FailurePredicted":true}]},
-          "DellController":{"Members":[{"Name":"PERC H755","Status":{"State":"Enabled","Health":"OK"}}]}}}}
+    private static readonly string PowerCriticalJson = """
+        {"Name":"Power",
+         "PowerSupplies":[
+           {"Name":"PS1 Status","Status":{"Health":"OK","State":"Enabled"}},
+           {"Name":"PS2 Status","Status":{"Health":"Critical","State":"Enabled"}}],
+         "PowerControl":[{"Name":"System Power Control","PowerConsumedWatts":162}]}
         """;
 
-    private sealed class FakeHandler(
-        string system, string processors, string memory, string thermal, string power, string chassis) : HttpMessageHandler
+    private sealed class FakeHandler(Dictionary<string, string> routes) : HttpMessageHandler
     {
         public List<string> Requests { get; } = [];
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             Requests.Add(path);
-            var json = path.Contains("Thermal") ? thermal
-                : path.Contains("Power") ? power
-                : path.Contains("Chassis") ? chassis
-                : path.Contains("Processors") ? processors
-                : path.Contains("Memory") ? memory
-                : system;
-            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-            {
-                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
-            });
+            if (routes.TryGetValue(path, out var json))
+                return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+                });
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
         }
     }
 
-    [Fact]
-    public async Task Poll_Normalizes_VendorNeutralModel()
+    private static FakeHandler RealFleetHandler(bool predictiveFailure = false, bool criticalPsu = false)
     {
-        var handler = new FakeHandler(SystemJson, ProcessorsJson, MemoryJson, ThermalJson, PowerJson, ChassisJson);
+        var drive = predictiveFailure
+            ? DriveJson.Replace("\"FailurePredicted\":false", "\"FailurePredicted\":true")
+            : DriveJson;
+        return new FakeHandler(new Dictionary<string, string>
+        {
+            ["/redfish/v1/Systems/System.Embedded.1"] = SystemJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Processors"] = ProcessorsJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Processors/CPU.Socket.1"] = CpuJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Memory"] = MemoryJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1"] = DimmA1Json,
+            ["/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A2"] = DimmA2Json,
+            ["/redfish/v1/Systems/System.Embedded.1/Storage"] = StorageJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1"] = RaidControllerJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Storage/AHCI.Embedded.3-1"] = AhciControllerJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0:Enclosure.Internal.0-1:RAID.Integrated.1-1"] = drive,
+            ["/redfish/v1/Chassis/System.Embedded.1/Thermal"] = ThermalJson,
+            ["/redfish/v1/Chassis/System.Embedded.1/Power"] = criticalPsu ? PowerCriticalJson : PowerJson,
+        });
+    }
+
+    [Fact]
+    public async Task Poll_RealFleetPayloads_NormalizesAllComponentTypes()
+    {
+        var handler = RealFleetHandler();
         var factory = new FakeHttpClientFactory(handler);
         var provider = new DellRedfishProvider(factory, IdracCertPolicies.Strict, new NoopCertStore(),
             NullLogger<DellRedfishProvider>.Instance);
         var result = await provider.PollAsync(new HardwarePollTarget("h1", "HOST01",
             "https://idrac.example", "root", "calvin"), CancellationToken.None);
-        Assert.Contains("/redfish/v1/Chassis/System.Embedded.1", handler.Requests);
 
         Assert.True(result.Success);
-        // Critical PSU and warning disk drive the rollup to critical.
+        Assert.Equal("ok", result.RollupState);
+
+        // Link-only collection members must be followed (D4): a CPU, DIMMs,
+        // storage controllers and a physical disk all arrive as components.
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Cpu && c.Name == "CPU 1"
+            && c.State == HealthState.Ok && c.Detail!.Contains("Model=AMD EPYC 7551P 32-Core Processor"));
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Memory && c.Name == "DIMM A1"
+            && c.Detail!.Contains("Manufacturer=Samsung"));
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Memory && c.Name == "DIMM A2");
+        Assert.Equal(2, result.Components.Count(c => c.Type == ComponentTypes.Memory));
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Controller && c.Name == "PERC H330 Mini"
+            && c.State == HealthState.Ok);
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Controller && c.Name == "FCH SATA Controller [AHCI mode]");
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Disk && c.Name == "Physical Disk 0:1:0"
+            && c.State == HealthState.Ok && c.Detail!.Contains("CapacityBytes=1000204886016")
+            && c.Detail.Contains("FailurePredicted=False"));
+
+        // Thermal/power paths unchanged: inline sensors.
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Temp && c.Name == "CPU1 Temp" && c.State == HealthState.Ok);
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Fan && c.Name == "System Board Fan1");
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Psu && c.Name == "PS1 Status");
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Psu && c.Name == "PS2 Status");
+
+        Assert.Contains(result.Metrics, m => m.Name == "temperature:CPU1 Temp" && Math.Abs(m.Value - 57.0) < 0.01 && m.Unit == "C");
+        Assert.Contains(result.Metrics, m => m.Name == "power:consumed" && Math.Abs(m.Value - 162.0) < 0.01);
+
+        // Member resources were fetched by following @odata.id links...
+        Assert.Contains("/redfish/v1/Systems/System.Embedded.1/Processors/CPU.Socket.1", handler.Requests);
+        Assert.Contains("/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1", handler.Requests);
+        Assert.Contains("/redfish/v1/Systems/System.Embedded.1/Storage", handler.Requests);
+        Assert.Contains("/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1", handler.Requests);
+        Assert.Contains("/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0:Enclosure.Internal.0-1:RAID.Integrated.1-1", handler.Requests);
+        // ...and the dead chassis OEM path is gone.
+        Assert.DoesNotContain("/redfish/v1/Chassis/System.Embedded.1", handler.Requests);
+    }
+
+    [Fact]
+    public async Task Poll_PredictiveFailure_EscalatesDiskToWarning()
+    {
+        // iDRAC signals an imminent disk failure via FailurePredicted; some
+        // firmware keeps Status=OK, so the provider must not trust Status
+        // alone (DESIGN §4.4 motivating case).
+        var handler = RealFleetHandler(predictiveFailure: true);
+        var factory = new FakeHttpClientFactory(handler);
+        var provider = new DellRedfishProvider(factory, IdracCertPolicies.Strict, new NoopCertStore(),
+            NullLogger<DellRedfishProvider>.Instance);
+        var result = await provider.PollAsync(new HardwarePollTarget("h1", "HOST01",
+            "https://idrac.example", "root", "calvin"), CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("warning", result.RollupState);
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Disk && c.State == HealthState.Warning
+            && c.Detail!.Contains("FailurePredicted=True"));
+    }
+
+    [Fact]
+    public async Task Poll_CriticalComponent_DrivesRollupToCritical()
+    {
+        var handler = RealFleetHandler(criticalPsu: true);
+        var factory = new FakeHttpClientFactory(handler);
+        var provider = new DellRedfishProvider(factory, IdracCertPolicies.Strict, new NoopCertStore(),
+            NullLogger<DellRedfishProvider>.Instance);
+        var result = await provider.PollAsync(new HardwarePollTarget("h1", "HOST01",
+            "https://idrac.example", "root", "calvin"), CancellationToken.None);
+
+        Assert.True(result.Success);
         Assert.Equal("critical", result.RollupState);
-
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Psu && c.Name == "PSU2" && c.State == HealthState.Critical);
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Disk && c.State == HealthState.Warning && c.Detail!.Contains("FailurePredicted=True"));
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Cpu);
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Memory);
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Controller && c.Name == "PERC H755");
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Temp && c.Name == "CPU1 Temp" && c.State == HealthState.Warning);
-        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Fan);
-
-        Assert.Contains(result.Metrics, m => m.Name == "temperature:CPU1 Temp" && Math.Abs(m.Value - 52.0) < 0.01 && m.Unit == "C");
-        Assert.Contains(result.Metrics, m => m.Name == "power:consumed" && Math.Abs(m.Value - 312.5) < 0.01);
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Psu && c.Name == "PS2 Status"
+            && c.State == HealthState.Critical);
     }
 
     [Fact]
@@ -612,6 +748,7 @@ public class RedfishNormalizationTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
     }
+
 
     private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
