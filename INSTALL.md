@@ -88,8 +88,8 @@ https://hyveman.example.com/                                → hyveman-web stat
 ```
 
 The concrete configuration for the API VM is the nginx site shipped in this
-repo: `deploy/nginx/hyveman.conf` (+ `deploy/nginx/hyveman-security-headers.conf`,
-its security-header snippet). It serves the SPA, proxies `/api/`,
+repo: `deploy/nginx/hyveman-linux-vm.conf` (single file — security headers
+inlined). It serves the SPA, proxies `/api/`,
 `/register`, `/ingest/`, `/health` to the loopback API, and applies the
 cache policy and security headers (install and certbot steps: §5.4). Any
 other proxy (Caddy, IIS) must preserve the same path routing,
@@ -276,13 +276,13 @@ This repo ships the site config used on the API VM:
 
 | File | Install to |
 |---|---|
-| `deploy/nginx/hyveman.conf` | `/etc/nginx/sites-available/hyveman` + symlink into `sites-enabled/` |
-| `deploy/nginx/hyveman-security-headers.conf` | `/etc/nginx/snippets/` |
+| `deploy/nginx/hyveman-linux-vm.conf` | `/etc/nginx/sites-available/hyveman` + symlink into `sites-enabled/` |
 
-It serves the SPA from `/var/www/hyveman/current`, proxies `/api/`,
+It serves the SPA from the configured `root` (this VM: `/home/user/www/hyveman/current`),
+proxies `/api/`,
 `/register`, `/ingest/`, `/health` to `http://127.0.0.1:5080`, and applies
-the cache policy and security headers from FRONTEND.md §3/§13 and API.md
-§12. Replace the `server_name` placeholder with the real FQDN, then:
+security headers from FRONTEND.md §3/§13 and API.md
+§12. Replace the `server_name` with your FQDN, then:
 
 ```bash
 sudo nginx -t && sudo systemctl enable --now nginx

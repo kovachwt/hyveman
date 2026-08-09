@@ -37,7 +37,7 @@ hyveman-api/          backend source (src/Hyveman.*), tests
 hyveman-web/          React SPA, generated OpenAPI client, e2e tests
 Hyveman.Api.sln       API + test solution (repo root)
 Hyveman.Agent.sln     agent + test solution (repo root)
-deploy/nginx/         production nginx site + security headers for the API VM
+deploy/nginx/         single-file production nginx site for the API VM (TLS terminates at proxy)
 DEV-STACK.md          run all three projects together on a dev machine (generic)
 INSTALL.md            production install & operations guide
 ```
