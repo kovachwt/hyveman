@@ -21,6 +21,21 @@ $InstallDir = "C:\Program Files\hyveman-agent"
 
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
+function Invoke-Native {
+    param([string]$FilePath, [string[]]$Arguments)
+    # PS 5.1 gotcha: with $ErrorActionPreference=Stop, ANY stderr from a native
+    # command becomes a terminating error even when redirected (2>$null). Drop
+    # EAP around the call and judge success by exit code alone.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments 2>$null | Out-Null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 Write-Step "Stop + delete service"
 $svc = Get-Service $ServiceName -ErrorAction SilentlyContinue
 if ($null -ne $svc) {
@@ -37,9 +52,8 @@ if (Test-Path $marker) {
     $enabled = (Get-Content $marker | ConvertFrom-Json).channels
     foreach ($ch in $enabled) {
         # Leave the channel alone if something else is using it.
-        $existing = wevtutil gl $ch 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            & wevtutil sl $ch /e:false 2>$null
+        if ((Invoke-Native "wevtutil" @("gl", $ch)) -eq 0) {
+            Invoke-Native "wevtutil" @("sl", $ch, "/e:false") | Out-Null
             Write-Step "  disabled $ch (left in place, disabled)"
         }
     }

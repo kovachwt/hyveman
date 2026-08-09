@@ -557,7 +557,7 @@ start with a clear event-log message (never starts in a half-broken state).
 # downloaded/invoked per host; bootstrap params: backend URL + one-time reg token
 ./install.ps1 -BackendUrl https://hyveman.example.lan:8443 `
               -InstallToken reg_... `        # exchanged for an ingest token on first contact
-              -SpoolDir C:\ProgramData\hyveman-agent\spool `
+              [-DataDir C:\ProgramData\hyveman-agent] `   # default; spool/state/logs derive from it
               [-EnableHyperV]
 ```
 Steps (idempotent — re-run is safe):
@@ -569,6 +569,12 @@ Steps (idempotent — re-run is safe):
 4. Create the **Hyper-V operational channels** (`wevtutil sl /e:true` for the
    channels in App. B) **only when** `-EnableHyperV` is given. This is the
    *only* place channel/enabled state changes (the runtime invariant, §15.5).
+   Each channel is probed with `wevtutil gl` first: channels the host doesn't
+   have (e.g. `High-Availability-Admin` on non-clustered hosts) are omitted
+   from `agent.json` and skipped with a warning — a missing channel never
+   aborts the install (PS 5.1 note: native stderr must not become a
+   terminating error under `$ErrorActionPreference = "Stop"`, so wevtutil
+   calls run with EAP dropped and exit-code checks).
 5. Service account: **`LocalSystem`** (default for now, DESIGN §13 #17). A
    dedicated least-privilege account (member of *Event Log Readers*) is a
    later option the installer will expose via a `-Account` flag; not used
@@ -897,7 +903,7 @@ alert, before fleet rollout.
 | Microsoft-Windows-Hyper-V-Compute-Operational | Warning | `--EnableHyperV` |
 | Microsoft-Windows-Hyper-V-Config-Operational | Information | `--EnableHyperV` (operational) |
 | Microsoft-Windows-Hyper-V-StorageVSP-Admin | Warning | `--EnableHyperV` |
-| Microsoft-Windows-Hyper-V-High-Availability-Admin | Warning | `--EnableHyperV` (clustered) |
+| Microsoft-Windows-Hyper-V-High-Availability-Admin | Warning | `--EnableHyperV` (clustered; skipped with a warning if absent — install never aborts) |
 | Microsoft-Windows-Hyper-V-Image-Management-Operational | Information | `--EnableHyperV` |
 | Microsoft-Windows-FailoverCluster*/… | Warning | if clustered (auto-detected) |
 | storage driver channels (storahci/percsas/…) | Warning | auto-detected by provider presence |

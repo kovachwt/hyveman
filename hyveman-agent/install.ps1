@@ -53,6 +53,23 @@ $ExeName = "hyveman-agent.exe"
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Assert($cond, $msg) { if (-not $cond) { throw $msg } }
 
+function Invoke-Native {
+    param([string]$FilePath, [string[]]$Arguments)
+    # PS 5.1 gotcha: with $ErrorActionPreference=Stop, ANY stderr from a native
+    # command becomes a terminating error even when redirected (2>$null). Drop
+    # EAP around the call and judge success by exit code alone — the callers
+    # decide warn-vs-abort (AGENT §11.3: missing Hyper-V channels must not
+    # abort the install).
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments 2>$null | Out-Null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 # ---------------------------------------------------------------------------
 Write-Step "Preflight (fail closed, AGENT §11.3)"
 
@@ -139,16 +156,30 @@ $channels = @(
     @{ name = "HyvemanAgent";  channel = "Application"; provider = "HyvemanAgent"; level = "Information"; include_ids = @(1,2,3,4,5) }
 )
 
+# Hyper-V channel set (AGENT App. B). Probing: channels are auto-detected —
+# e.g. High-Availability-Admin only exists on clustered hosts — so each is
+# checked with `wevtutil gl` before being added to agent.json (omitted with a
+# warning if absent; the agent skips configured-but-missing channels anyway).
+$hypervChannels = @(
+    @{ name = "Microsoft-Windows-Hyper-V-VMMS-Admin";            level = "Warning" },
+    @{ name = "Microsoft-Windows-Hyper-V-Worker-Admin";          level = "Warning" },
+    @{ name = "Microsoft-Windows-Hyper-V-Compute-Operational";   level = "Warning" },
+    @{ name = "Microsoft-Windows-Hyper-V-Config-Operational";    level = "Information" },
+    @{ name = "Microsoft-Windows-Hyper-V-StorageVSP-Admin";      level = "Warning" },
+    @{ name = "Microsoft-Windows-Hyper-V-High-Availability-Admin"; level = "Warning" },
+    @{ name = "Microsoft-Windows-Hyper-V-Image-Management-Operational"; level = "Information" }
+)
+$hypervPresent = @()
+
 if ($EnableHyperV) {
-    $channels += @(
-        @{ name = "Microsoft-Windows-Hyper-V-VMMS-Admin";            level = "Warning" },
-        @{ name = "Microsoft-Windows-Hyper-V-Worker-Admin";          level = "Warning" },
-        @{ name = "Microsoft-Windows-Hyper-V-Compute-Operational";   level = "Warning" },
-        @{ name = "Microsoft-Windows-Hyper-V-Config-Operational";    level = "Information" },
-        @{ name = "Microsoft-Windows-Hyper-V-StorageVSP-Admin";      level = "Warning" },
-        @{ name = "Microsoft-Windows-Hyper-V-High-Availability-Admin"; level = "Warning" },
-        @{ name = "Microsoft-Windows-Hyper-V-Image-Management-Operational"; level = "Information" }
-    )
+    foreach ($def in $hypervChannels) {
+        if ((Invoke-Native "wevtutil" @("gl", $def.name)) -eq 0) {
+            $channels += $def
+            $hypervPresent += $def.name
+        } else {
+            Write-Host "WARNING: Hyper-V channel $($def.name) not readable on this host — omitted from agent.json" -ForegroundColor Yellow
+        }
+    }
 }
 
 $config = @{
@@ -200,8 +231,11 @@ if (Test-Path $configPath) {
     # any operator edits (channels, limits). Overwriting it would break agent auth
     # and silently discard those edits — so preserve it (server installers do the
     # same). Regenerate only when it fails validation (with a backup kept).
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     & $deployedExe --config $configPath --validate-config 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    $validateCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    if ($validateCode -eq 0) {
         Write-Step "agent.json exists and validates — preserving it (keeps the exchanged ingest token and operator edits)."
         Write-Host "         To regenerate from scratch: delete $configPath and re-run." -ForegroundColor Yellow
     } else {
@@ -217,22 +251,12 @@ if (Test-Path $configPath) {
 Write-Step "Enable Hyper-V operational channels (installer-only; §11.2 step 4)"
 
 if ($EnableHyperV) {
-    $hypervChannels = @(
-        "Microsoft-Windows-Hyper-V-VMMS-Admin",
-        "Microsoft-Windows-Hyper-V-Worker-Admin",
-        "Microsoft-Windows-Hyper-V-Compute-Operational",
-        "Microsoft-Windows-Hyper-V-Config-Operational",
-        "Microsoft-Windows-Hyper-V-StorageVSP-Admin",
-        "Microsoft-Windows-Hyper-V-High-Availability-Admin",
-        "Microsoft-Windows-Hyper-V-Image-Management-Operational"
-    )
-    foreach ($ch in $hypervChannels) {
-        & wevtutil sl $ch /e:true 2>$null
-        if ($LASTEXITCODE -eq 0) { Write-Step "  enabled $ch" }
+    foreach ($ch in $hypervPresent) {
+        if ((Invoke-Native "wevtutil" @("sl", $ch, "/e:true")) -eq 0) { Write-Step "  enabled $ch" }
         else { Write-Host "  WARNING: could not enable $ch (may not exist on this host)" -ForegroundColor Yellow }
     }
     # Marker for uninstall (only remove channels we enabled).
-    @{ channels = $hypervChannels } | ConvertTo-Json | Set-Content (Join-Path $DataDir "state\hyperv-channels-enabled.json")
+    @{ channels = $hypervPresent } | ConvertTo-Json | Set-Content (Join-Path $DataDir "state\hyperv-channels-enabled.json")
 }
 
 # ---------------------------------------------------------------------------
@@ -262,8 +286,11 @@ sc.exe config $ServiceName start= delayed-auto | Out-Null
 # ---------------------------------------------------------------------------
 Write-Step "Validate config with the real binary (fail closed)"
 
+$prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
 & (Join-Path $InstallDir $ExeName) --config $configPath --validate-config
-Assert ($LASTEXITCODE -eq 0) "agent config validation failed — aborting before service start (roll back: run uninstall.ps1)"
+$validateCode = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+Assert ($validateCode -eq 0) "agent config validation failed — aborting before service start (roll back: run uninstall.ps1)"
 
 # ---------------------------------------------------------------------------
 Write-Step "Start service"
