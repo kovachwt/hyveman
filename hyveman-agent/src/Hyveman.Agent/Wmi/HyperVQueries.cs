@@ -14,8 +14,8 @@ public static class HyperVQueries
 
     // Msvm_SummaryInformation / GetSummaryInformation request IDs
     // (MS-WIN32 docs, GetSummaryInformation method).
-    public const uint ReqName = 0;                 // Name (always returned regardless)
-    public const uint ReqElementName = 1;          // ElementName
+    public const uint ReqName = 0;                 // Name = VM GUID (always returned regardless)
+    public const uint ReqElementName = 1;          // ElementName = friendly display name
     public const uint ReqEnabledState = 100;       // EnabledState
     public const uint ReqProcessorLoad = 101;      // ProcessorLoad (uint16, %)
     public const uint ReqMemoryUsage = 103;        // MemoryUsage (uint64, MB)
@@ -60,7 +60,11 @@ public static class HyperVQueries
     /// </summary>
     public static VmFact? ToVmFact(CimInstance summary)
     {
-        string? name = GetString(summary, "Name");
+        // ElementName is the friendly display name; Name is the VM's GUID
+        // (MS-WIN32 docs, Msvm_SummaryInformation). Prefer ElementName, fall
+        // back to the GUID so a VM is still identifiable when the display
+        // name is unavailable.
+        string? name = GetString(summary, "ElementName") ?? GetString(summary, "Name");
         if (string.IsNullOrEmpty(name))
             return null; // entry for a VM that could not be found
 

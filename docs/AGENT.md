@@ -360,6 +360,9 @@ serialized scan per `wmi.scan_interval_s` (default 60 s).
   memory assigned/used). Exact WQL is finalized in a **Hyper-V WMI reference
   sub-doc** (companion to the Redfish mapping table, DESIGN §14 #3) tied to the
   Server 2019 / Hyper-V version API surface.
+- **VM name:** `vms[].name` = `ElementName` (request ID 1, the friendly display
+  name), falling back to `Name` (request ID 0, the VM GUID) when empty — the
+  GUID is never sent as the display name.
 - **Output:** a single `facts` envelope per scan, sent best-effort via
   TelemetrySender. If a query times out, the prior facts are re-sent with
   `stale=true` and `wmi_timeouts++`; a "wmi_degraded" hint appears in the
