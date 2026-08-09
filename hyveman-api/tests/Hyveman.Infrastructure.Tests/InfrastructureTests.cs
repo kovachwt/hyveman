@@ -97,6 +97,8 @@ public class SqliteIntegrationTests : IDisposable
              Item("41236", "System", "disk error", 2, "System", 7)], CancellationToken.None);
         Assert.Equal(2, first.Accepted);
         Assert.Equal(0, first.Deduped);
+        // D1: the store reports the exact accepted subset, not a prefix.
+        Assert.Equal(["41235", "41236"], first.AcceptedItems.Select(i => i.RecordId).ToArray());
 
         // Replay: the unique key collapses duplicates.
         var replay = await store.InsertBatchAsync("src_1",
@@ -104,6 +106,9 @@ public class SqliteIntegrationTests : IDisposable
              Item("e1:1", "System", "after channel clear", 4)], CancellationToken.None);
         Assert.Equal(1, replay.Accepted);
         Assert.Equal(1, replay.Deduped);
+        // D1: mixed batch — item 1 deduped, item 2 accepted; the subset is [item 2].
+        Assert.Equal(["e1:1"], replay.AcceptedItems.Select(i => i.RecordId).ToArray());
+        Assert.Equal("after channel clear", Assert.Single(replay.AcceptedItems).Message);
 
         // FTS5 search finds the newly inserted message only.
         var page = await store.SearchAsync(new EventQuery(null, null, null, "src_1", null, null, null, "unexpected", 50, null, "desc"), CancellationToken.None);

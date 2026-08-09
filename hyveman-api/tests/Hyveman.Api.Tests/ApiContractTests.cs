@@ -388,6 +388,68 @@ public class AgentContractTests
     }
 
     [Fact]
+    public async Task WebApi_MixedBatch_DerivedData_AttributedToAcceptedItemsOnly()
+    {
+        // D1 (PROTOCOL §6.6): when a retried batch mixes a deduped prefix with
+        // a new item, derived data (logon_stats, alert evaluation) must be
+        // attributed to the item actually accepted — never to the deduped
+        // replay. Regression: Take(Accepted) yielded the batch prefix, so the
+        // replayed logon was counted twice and the evaluator never saw the new
+        // item.
+        var token = await _fx.RegisterAgentAsync("D1-MIXED");
+        var logon = """
+            {"kind":"log","record_id":"sec-1","dedup_scope":"Security","time":"2024-08-07T10:00:00Z","severity":4,"message":"logon","fields":{"channel":"Security","event_id":4624,"event_data":{"LogonType":"10","TargetUserName":"admin"}}}
+            """;
+        var lockout = """
+            {"kind":"log","record_id":"sec-2","dedup_scope":"Security","time":"2024-08-07T10:00:01Z","severity":4,"message":"lockout","fields":{"channel":"Security","event_id":4740,"event_data":{"TargetUserName":"bob"}}}
+            """;
+
+        // An event rule matching only the lockout (sec-2): the evaluator must
+        // see sec-2, not the deduped replay sec-1.
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+        using var createRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        createRule.Headers.Add("X-CSRF-Token", csrf);
+        createRule.Headers.Add("Origin", "http://localhost:5173");
+        createRule.Content = new StringContent(
+            """{"name":"D1 probe","type":"event","severity":"critical","cooldownS":0,"match":{"eventIds":[4740]}}""",
+            Encoding.UTF8, "application/json");
+        var ruleResp = await client.SendAsync(createRule);
+        Assert.Equal(HttpStatusCode.OK, ruleResp.StatusCode);
+
+        // First batch: [A] accepted.
+        var first = await PostAsync("/ingest/logs", token, "{\"v\":1,\"items\":[" + logon + "]}");
+        Assert.Equal(1, (await ReadJson(first)).GetProperty("accepted").GetInt32());
+
+        // Retry with one new item appended: A dedupes, B is accepted.
+        var retry = await PostAsync("/ingest/logs", token, "{\"v\":1,\"items\":[" + logon + "," + lockout + "]}");
+        var retryBody = await ReadJson(retry);
+        Assert.Equal(1, retryBody.GetProperty("accepted").GetInt32());
+        Assert.Equal(1, retryBody.GetProperty("deduped").GetInt32());
+
+        // logon_stats: admin counted exactly once (the replay must not
+        // re-count it); bob counted once. The endpoint is cross-source, so
+        // scope to this agent's rows.
+        var stats = await ReadJson(await client.GetAsync("/api/v1/logon-stats"));
+        var statItems = stats.GetProperty("items").EnumerateArray()
+            .Where(i => i.GetProperty("sourceName").GetString() == "D1-MIXED").ToList();
+        var admin = Assert.Single(statItems, i => i.GetProperty("user").GetString() == "admin");
+        Assert.Equal(1, admin.GetProperty("successCount").GetInt32());
+        var bob = Assert.Single(statItems, i => i.GetProperty("user").GetString() == "bob");
+        Assert.Equal(1, bob.GetProperty("failureCount").GetInt32());
+
+        // The evaluator saw B (the accepted item): the 4740 rule fired exactly
+        // once. Before the fix it saw A instead and no alert was created.
+        var alerts = await ReadJson(await client.GetAsync("/api/v1/alerts?limit=50"));
+        var alert = Assert.Single(alerts.GetProperty("items").EnumerateArray(),
+            a => a.GetProperty("ruleName").GetString() == "D1 probe");
+        Assert.Equal("active", alert.GetProperty("status").GetString());
+        Assert.Equal(1, alert.GetProperty("count").GetInt32());
+        Assert.Contains("4740", alert.GetProperty("title").GetString());
+    }
+
+    [Fact]
     public async Task WebApi_HostHealth_Endpoint()
     {
         var client = _fx.NewClient();

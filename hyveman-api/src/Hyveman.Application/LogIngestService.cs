@@ -51,11 +51,14 @@ public sealed class LogIngestService(
         }
 
         if (valid.Count == 0)
-            return new IngestResult(0, 0, rejected);
+            return new IngestResult(0, 0, rejected, []);
 
         var result = await events.InsertBatchAsync(sourceId, valid, ct);
-        // accepted rows only: deduped items are not new events.
-        var acceptedItems = valid.Take(result.Accepted).ToList();
+        // Accepted rows only: deduped items are not new events. The store returns
+        // the exact accepted subset — dedup can hit any position when a partially
+        // committed batch is retried (PROTOCOL §6.6), so it cannot be reconstructed
+        // from the Accepted count.
+        var acceptedItems = result.AcceptedItems;
         if (acceptedItems.Count > 0)
         {
             try

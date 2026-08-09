@@ -15,6 +15,7 @@ public sealed class EventStore(SqliteDb db) : IEventStore
     {
         var accepted = 0;
         var deduped = 0;
+        var acceptedItems = new List<ValidatedLogItem>();
         using var conn = StoreHelpers.Open(db);
         using var tx = conn.BeginTransaction();
         foreach (var item in items)
@@ -46,6 +47,7 @@ public sealed class EventStore(SqliteDb db) : IEventStore
             if (affected == 1)
             {
                 accepted++;
+                acceptedItems.Add(item);
                 if (item.Message is { Length: > 0 })
                 {
                     var rowid = await conn.ExecuteScalarAsync<long>(new CommandDefinition(
@@ -61,7 +63,7 @@ public sealed class EventStore(SqliteDb db) : IEventStore
             }
         }
         tx.Commit();
-        return new IngestResult(accepted, deduped, []);
+        return new IngestResult(accepted, deduped, [], acceptedItems);
     }
 
     public async Task<EventSearchPage> SearchAsync(EventQuery q, CancellationToken ct)

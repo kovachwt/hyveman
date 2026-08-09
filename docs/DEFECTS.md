@@ -21,7 +21,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 
 | ID | Sev | Component | Summary | Evidence |
 |---|---|---|---|---|
-| [D1](#d1) | P1 | api | Derived data attributed to wrong events in mixed dedup/new batches | verified |
+| [D1](#d1) | P1 | api | Derived data attributed to wrong events in mixed dedup/new batches | ~~verified~~ **fixed** |
 | [D2](#d2) | P1 | api | Second resolve of an alert key throws; cascades to telemetry 500s | verified |
 | [D3](#d3) | P1 | api | Alert evaluator state is per-request: cooldown dead, alerts never auto-resolve | inspection |
 | [D4](#d4) | P1 | api | Redfish collections never expanded — no CPU/DIMM/disk/controller health | inspection |
@@ -49,7 +49,7 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 ---
 
 <a id="d1"></a>
-## D1 — Derived data attributed to the wrong events in mixed batches (P1, verified)
+## D1 — Derived data attributed to the wrong events in mixed batches (P1, verified → fixed)
 
 **Location:** `hyveman-api/src/Hyveman.Application/LogIngestService.cs:58`
 **Contract:** PROTOCOL §6.6, API.md §6.3.
@@ -77,6 +77,18 @@ wire response shape is unaffected.
 
 **Test to add.** Ingest `[A]`, then `[A, B]`; assert `accepted==1 && deduped==1`,
 that `logon_stats` counts one success total, and that the evaluator saw `B`.
+
+**Status: FIXED (2026-08-09).** `IngestResult` now carries `AcceptedItems` — the
+exact accepted subset in batch order — collected in `EventStore.InsertBatchAsync`
+where each row's `affected == 1` is already known, and `LogIngestService`
+consumes `result.AcceptedItems` instead of `valid.Take(result.Accepted)`. The
+wire response shape is unchanged. Regression coverage per the test above:
+`WebApi_MixedBatch_DerivedData_AttributedToAcceptedItemsOnly` (API-level: ingests
+`[A]` then `[A, B]`, asserts `accepted==1 && deduped==1`, one `logon_stats`
+success, and that a 4740-only rule fired on `B` — i.e. the evaluator saw the
+accepted item, not the replay), plus store-level `AcceptedItems` assertions in
+`InfrastructureTests` (`Events_IdempotentInsert_DedupesAndSearches`). Both were
+verified to fail against the old `Take(count)` code.
 
 ---
 

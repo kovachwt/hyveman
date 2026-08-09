@@ -72,8 +72,12 @@ public sealed record ValidatedLogItem(
 /// <summary>Per-item ingest outcome (PROTOCOL §6.3/§6.4).</summary>
 public sealed record ItemRejection(string RecordId, string DedupScope, string Reason, bool Permanent = true);
 
-/// <summary>Batch ingest outcome. Invariant: accepted + deduped + rejected == items.</summary>
-public sealed record IngestResult(int Accepted, int Deduped, IReadOnlyList<ItemRejection> Rejected);
+/// <summary>Batch ingest outcome. Invariant: accepted + deduped + rejected == items,
+/// and AcceptedItems.Count == Accepted. AcceptedItems is the exact accepted subset in
+/// batch order — dedup can hit any position when a partially committed batch is retried
+/// (PROTOCOL §6.6), so derived processing must not reconstruct it from the count.</summary>
+public sealed record IngestResult(int Accepted, int Deduped, IReadOnlyList<ItemRejection> Rejected,
+    IReadOnlyList<ValidatedLogItem> AcceptedItems);
 
 /// <summary>Heartbeat payload accepted from the wire (PROTOCOL §7).</summary>
 public sealed record HeartbeatPayload(
