@@ -10,7 +10,7 @@ Windows Server log aggregator & hardware health monitor — **agent** implementa
 
 ## What's here
 
-- **`src/Hyveman.Agent/`** — `hyveman-agent`, the Windows service (C# / .NET 8,
+- **`src/Hyveman.Agent/`** — `hyveman-agent`, the Windows service (C# / .NET 10,
   self-contained single-file exe):
   - `EvtSubscribe` push subscriptions per channel with persisted bookmarks
     (no gaps / no duplicates on the happy path, crash-safe via

@@ -18,7 +18,7 @@ hardware polling, SQLite storage), and a React **web** operations console.
 
 | Component | What it is | Docs |
 |---|---|---|
-| [`hyveman-agent/`](hyveman-agent/) | Windows service (.NET 8, C#): event-log collection (`EvtSubscribe`, bookmarks), curated Security logon IDs, durable disk spool, heartbeat + Hyper-V WMI facts, HTTPS ingest with backoff/retry | [`docs/AGENT.md`](docs/AGENT.md) |
+| [`hyveman-agent/`](hyveman-agent/) | Windows service (.NET 10, C#): event-log collection (`EvtSubscribe`, bookmarks), curated Security logon IDs, durable disk spool, heartbeat + Hyper-V WMI facts, HTTPS ingest with backoff/retry | [`docs/AGENT.md`](docs/AGENT.md) |
 | [`hyveman-api/`](hyveman-api/) | Backend (.NET 10, ASP.NET Core): agent ingest, web/admin API, alert engine, Dell iDRAC Redfish poller, notification outbox (Telegram/webhook/SMTP), SQLite (WAL + FTS5), AES-GCM credential vault | [`docs/API.md`](docs/API.md) |
 | [`hyveman-web/`](hyveman-web/) | Operations console (React 19 + TypeScript + Vite): fleet overview, event search, alerts/rules/channels, passkey-only login (WebAuthn) | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
 
@@ -33,8 +33,10 @@ web API are deliberately separate contracts.
 ```text
 docs/                 DESIGN, PROTOCOL, API, AGENT, FRONTEND + wire schema
 hyveman-agent/        agent source (src/Hyveman.Agent), tests, build/install scripts
-hyveman-api/          backend source (src/Hyveman.*), tests, Hyveman.Api.sln
+hyveman-api/          backend source (src/Hyveman.*), tests
 hyveman-web/          React SPA, generated OpenAPI client, e2e tests
+Hyveman.Api.sln       API + test solution (repo root)
+Hyveman.Agent.sln     agent + test solution (repo root)
 deploy/nginx/         production nginx site + security headers for the API VM
 DEV-STACK.md          run all three projects together on a dev machine (generic)
 INSTALL.md            production install & operations guide
@@ -44,7 +46,7 @@ INSTALL.md            production install & operations guide
 
 | Piece | Technology |
 |---|---|
-| Agent | C# / .NET 8, Win32 Event Log API (`EvtSubscribe`), WMI (`root\virtualization\v2`), self-contained single-file exe |
+| Agent | C# / .NET 10, Win32 Event Log API (`EvtSubscribe`), WMI (`root\virtualization\v2`), self-contained single-file exe |
 | API | C# / .NET 10 / ASP.NET Core, SQLite (Microsoft.Data.Sqlite, WAL + FTS5), Serilog, WebAuthn (Fido2), Redfish polling |
 | Web | React 19, TypeScript, Vite 7, MUI 7, TanStack Query, React Router 7, ECharts, `@simplewebauthn/browser`, Orval-generated API client, Vitest + Playwright |
 | Protocol | HTTPS JSON, versioned (`X-Hyveman-Protocol: 1`), idempotent log batches, latest-wins telemetry, token auth (hashed `reg_`/`agt_`) |
@@ -59,9 +61,9 @@ checklist, and troubleshooting.
 In short:
 
 ```bash
-# 1. Build (needs .NET 10 + .NET 8 SDKs, Node 22 LTS)
-dotnet build hyveman-api/Hyveman.Api.sln
-dotnet build hyveman-agent/Hyveman.Agent.sln
+# 1. Build (needs .NET 10 SDK, Node 22 LTS)
+dotnet build Hyveman.Api.sln
+dotnet build Hyveman.Agent.sln
 (cd hyveman-web && npm ci)
 
 # 2. API with a data dir (creates DB, vault key, config on first start)
@@ -86,10 +88,10 @@ loopback.
 ## Build & test
 
 ```bash
-dotnet build hyveman-api/Hyveman.Api.sln
-dotnet test  hyveman-api/Hyveman.Api.sln        # protocol/contract/application/infrastructure/api suites
-dotnet build hyveman-agent/Hyveman.Agent.sln
-dotnet test  hyveman-agent/Hyveman.Agent.sln    # 97 unit/property tests
+dotnet build Hyveman.Api.sln
+dotnet test  Hyveman.Api.sln        # protocol/contract/application/infrastructure/api suites
+dotnet build Hyveman.Agent.sln
+dotnet test  Hyveman.Agent.sln    # 97 unit/property tests
 (cd hyveman-web && npm run lint && npm run typecheck && npm run test -- --run)
 (cd hyveman-web && npm run build)               # static artifact in dist/
 ```

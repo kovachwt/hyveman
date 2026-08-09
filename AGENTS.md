@@ -4,7 +4,7 @@
 
 Hyveman: Windows Server log aggregator & hardware health monitor for Dell PowerEdge Hyper-V hosts. Three independently built/deployed components:
 
-- `hyveman-agent/` — Windows service (.NET 8, C#): Event Log + Hyper-V WMI collection, HTTPS ingest
+- `hyveman-agent/` — Windows service (.NET 10, C#): Event Log + Hyper-V WMI collection, HTTPS ingest
 - `hyveman-api/` — Backend (.NET 10, ASP.NET Core): ingest, alert engine, Redfish polling, SQLite
 - `hyveman-web/` — React 19 + TypeScript + Vite SPA: operations console, passkey-only (WebAuthn) login
 
@@ -23,12 +23,12 @@ The wire protocol and web API are deliberately separate contracts. Don't couple 
 
 ```bash
 # API (.NET 10)
-dotnet build hyveman-api/Hyveman.Api.sln
-dotnet test  hyveman-api/Hyveman.Api.sln
+dotnet build Hyveman.Api.sln
+dotnet test  Hyveman.Api.sln
 
-# Agent (.NET 8)
-dotnet build hyveman-agent/Hyveman.Agent.sln
-dotnet test  hyveman-agent/Hyveman.Agent.sln
+# Agent (.NET 10)
+dotnet build Hyveman.Agent.sln
+dotnet test  Hyveman.Agent.sln
 
 # Web (Node 22)
 (cd hyveman-web && npm ci)

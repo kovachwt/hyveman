@@ -32,8 +32,7 @@ Setup guide for the two deployable components:
 ## 1. Prerequisites
 
 **Build machine** (any Windows/Linux with internet for NuGet):
-- .NET SDK **10.0** (builds `hyveman-api`)
-- .NET SDK **8.0** (builds `hyveman-agent`)
+- .NET SDK **10.0** (builds `hyveman-api` and `hyveman-agent`)
 
 **Target servers**:
 - Windows Server 2019 or 2022 (agent requires the Windows Event Log API;
@@ -63,8 +62,8 @@ cd hyveman-agent
 Optionally run the test suites first (both must be green):
 
 ```powershell
-dotnet test hyveman-api/Hyveman.Api.sln
-dotnet test hyveman-agent/Hyveman.Agent.sln
+dotnet test Hyveman.Api.sln
+dotnet test Hyveman.Agent.sln
 ```
 
 ---

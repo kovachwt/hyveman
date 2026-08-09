@@ -12,7 +12,7 @@ Production install: [`INSTALL.md`](INSTALL.md).
 ## Topology
 
 ```text
-hyveman-agent (console, .NET 8)        hyveman-api (dev, .NET 10)        hyveman-web (Vite)
+hyveman-agent (console, .NET 10)        hyveman-api (dev, .NET 10)        hyveman-web (Vite)
  Event Log + WMI facts ──HTTPS──►      https://127.0.0.1:8443             http://localhost:5173
  /register, /ingest/*, /health          data dir: <repo>/devdata/api       proxies /api ──► https://127.0.0.1:8443
                                         config: devdata/api/config.json    (HYVEMAN_API_PROXY)
@@ -22,16 +22,15 @@ hyveman-agent (console, .NET 8)        hyveman-api (dev, .NET 10)        hyveman
 
 | Component | Required |
 |---|---|
-| .NET SDK **10.0** | builds `hyveman-api` |
-| .NET SDK **8.0** | builds `hyveman-agent` |
+| .NET SDK **10.0** | builds `hyveman-api` and `hyveman-agent` |
 | Node.js **22 LTS** + npm | `hyveman-web` (Vite 7) |
 | A browser with a passkey authenticator | Windows Hello / platform authenticator for admin setup |
 
 ## 1. Build
 
 ```bash
-dotnet build hyveman-api/Hyveman.Api.sln
-dotnet build hyveman-agent/Hyveman.Agent.sln
+dotnet build Hyveman.Api.sln
+dotnet build Hyveman.Agent.sln
 cd hyveman-web && npm ci
 ```
 

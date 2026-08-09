@@ -8,7 +8,7 @@ design contract). It focuses on the agent; it defers the wire-protocol
 *reference* to the agent-config spec (DESIGN §14 #2), while describing what the
 agent emits and consumes.
 
-- **Language/runtime:** C# / .NET 8 (LTS), self-contained single-file exe.
+- **Language/runtime:** C# / .NET 10 (LTS), self-contained single-file exe.
 - **Target OS:** Windows Server 2019+ (and Windows 10/11 for lab).
 - **Form:** Windows service, single process, no child processes.
 - **Scope (MVP):** event log tail + curated Security + heartbeat + durable
@@ -726,7 +726,7 @@ Startup/shutdown have unit + integration tests (§19).
 
 ```
 src/Hyveman.Agent/
-    Hyveman.Agent.csproj            net8.0; Worker template; PackageRef:
+    Hyveman.Agent.csproj            net10.0; Worker template; PackageRef:
        Microsoft.Extensions.Hosting.WindowsServices
        Microsoft.Management.Infrastructure (CimSession)
        Serilog.Extensions.Hosting + rolling

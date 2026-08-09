@@ -46,7 +46,7 @@ public sealed class BackendClient : IDisposable
         }
         else if (!string.IsNullOrEmpty(opts.Backend.CaPath))
         {
-            var ca = new X509Certificate2(opts.Backend.CaPath);
+            var ca = X509CertificateLoader.LoadCertificateFromFile(opts.Backend.CaPath);
             handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, _, _) =>
             {
                 try

@@ -16,7 +16,7 @@ public sealed class ConfigLoader
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = SnakeCaseNamingPolicy.Instance, // agent.json keys are snake_case (AGENT §10)
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower, // agent.json keys are snake_case (AGENT §10)
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
         WriteIndented = true

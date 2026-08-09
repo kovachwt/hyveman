@@ -69,7 +69,7 @@ tests/
 Requires the .NET 10 SDK.
 
 ```bash
-dotnet build Hyveman.Api.sln
+dotnet build ../Hyveman.Api.sln
 dotnet run --project src/Hyveman.Api -- --data-dir /path/to/data
 ```
 
@@ -207,7 +207,7 @@ logs don't.
 ## Tests
 
 ```bash
-dotnet test Hyveman.Api.sln
+dotnet test ../Hyveman.Api.sln
 ```
 
 - `Hyveman.Protocol.Tests` — schema + endpoint validators: per-item

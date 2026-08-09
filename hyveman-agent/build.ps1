@@ -3,7 +3,7 @@
     Publishes hyveman-agent as a single-file self-contained exe (AGENT.md §11.1).
     No PublishTrimmed (wevtapi PInvoke + WMI reflection are trim-hostile).
 
-    Output: src\Hyveman.Agent\bin\Release\net8.0\win-x64\publish\hyveman-agent.exe
+    Output: src\Hyveman.Agent\bin\Release\net10.0\win-x64\publish\hyveman-agent.exe
     Then:   ./install.ps1 -BackendUrl https://... -InstallToken reg_... [-EnableHyperV]
 #>
 $ErrorActionPreference = "Stop"
