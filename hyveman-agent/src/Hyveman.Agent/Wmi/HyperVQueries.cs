@@ -19,7 +19,7 @@ public static class HyperVQueries
     public const uint ReqEnabledState = 100;       // EnabledState
     public const uint ReqProcessorLoad = 101;      // ProcessorLoad (uint16, %)
     public const uint ReqMemoryUsage = 103;        // MemoryUsage (uint64, MB)
-    public const uint ReqHeartbeat = 104;          // Heartbeat (uint16: 0 unknown,1 OK,2 error,3 no contact,4 lost comm)
+    public const uint ReqHeartbeat = 104;          // Heartbeat (uint16, VMHeartbeat enum: 0 unknown,1 OK,2 OK+app healthy,3 OK+app not healthy,4 no contact,5 lost comm,6 error)
     public const uint ReqUptime = 105;             // UpTime (uint64, s)
     public const uint ReqHealthState = 109;        // HealthState (uint16)
     public const uint ReqMemoryAvailable = 112;    // MemoryAvailable (uint64, MB)
@@ -44,13 +44,32 @@ public static class HyperVQueries
         _ => "other"
     };
 
-    /// <summary>SummaryInformation Heartbeat (104) → heartbeat_ok (PROTOCOL §7.1).</summary>
+    /// <summary>
+    /// SummaryInformation Heartbeat (104) → heartbeat_ok (PROTOCOL §7.1).
+    /// Values are the Hyper-V VMHeartbeat enum (the same enum Get-VM surfaces;
+    /// Microsoft.HyperV.PowerShell.VMHeartbeat):
+    ///   0 Unknown · 1 Ok · 2 OkApplicationsHealthy · 3 OkApplicationsNotHealthy
+    ///   4 OkApplicationsUnknown · 5 NoContact · 6 LostCommunication · 7 Error
+    /// States 1–4 all mean the guest IS heartbeating (2–4 add application-health
+    /// detail Windows guests report and Linux guests don't) → true. 5–7 are
+    /// real failure states → false. The old table (2=error, 3=no contact,
+    /// 4=lost comm) was the pre-application-health 5-value enum: modern
+    /// Hyper-V inserted the app-health states at 2–4, so healthy Windows
+    /// guests (2 = OkApplicationsHealthy) and healthy Linux guests (4 =
+    /// OkApplicationsUnknown) were both shown as Lost. Note: 3
+    /// (OkApplicationsNotHealthy) is guest-reported application health —
+    /// heartbeat_ok in protocol v1 cannot carry it, so it is treated as
+    /// heartbeat OK (the guest is responsive).
+    /// </summary>
     public static bool? MapHeartbeat(ushort heartbeat) => heartbeat switch
     {
-        1 => true,      // OK
-        2 => false,     // Error
-        3 => false,     // No contact
-        4 => false,     // Lost communication
+        1 => true,      // Ok
+        2 => true,      // OkApplicationsHealthy
+        3 => true,      // OkApplicationsNotHealthy (heartbeat OK; app health not representable in v1)
+        4 => true,      // OkApplicationsUnknown (Linux guests: no app-health reporting)
+        5 => false,     // No contact
+        6 => false,     // Lost communication
+        7 => false,     // Error
         _ => null       // 0 = unknown / not available
     };
 

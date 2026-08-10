@@ -359,8 +359,17 @@ serialized scan per `wmi.scan_interval_s` (default 60 s).
   `Caption='Virtual Machine'`); map `OperationalStatus`/`EnabledState` →
   `{on,off,paused,saved,other,unknown}`.
 - **Heartbeat:** per-VM Integration Services heartbeat from
-  `OperationalStatus`/`Msvm_HeartbeatIntegrationService`-style status →
-  `{ok,error,no_contact,unknown, stale}`.
+  `Msvm_SummaryInformation.Heartbeat` (request ID 104) → `heartbeat_ok`
+  `{true,false,null}` (PROTOCOL §7.1). Values are the Hyper-V **VMHeartbeat**
+  enum (same values `Get-VM` surfaces): 0 Unknown · 1 Ok · 2
+  OkApplicationsHealthy · 3 OkApplicationsNotHealthy · 4
+  OkApplicationsUnknown · 5 NoContact · 6 LostCommunication · 7 Error.
+  States 1–4 → `true` (guest is heartbeating; 2–4 are application-health
+  detail — Windows guests report it, Linux guests report 4 =
+  OkApplicationsUnknown); 5–7 → `false`; 0 → `null`. (Regression: the table
+  once used the pre-application-health 5-value enum, so healthy guests
+  showed as Lost. 3 = OkApplicationsNotHealthy is guest-reported app health
+  that heartbeat_ok cannot carry in protocol v1 — treated as heartbeat OK.)
 - **Per-VM CPU/RAM/disk:** `Msvm_SummaryInformation` via
   `Msvm_VirtualSystemManagementService.GetSummaryInformation` (CPU utilization,
   memory assigned/used). Exact WQL is finalized in a **Hyper-V WMI reference
