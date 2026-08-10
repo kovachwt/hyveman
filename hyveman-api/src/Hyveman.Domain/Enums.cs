@@ -77,8 +77,9 @@ public static class RuleTypes
     public const string Event = "event";
     public const string Heartbeat = "heartbeat";
     public const string Threshold = "threshold";
+    public const string VmHeartbeat = "vm_heartbeat";
 
-    public static readonly string[] Known = [Health, Event, Heartbeat, Threshold];
+    public static readonly string[] Known = [Health, Event, Heartbeat, Threshold, VmHeartbeat];
 }
 
 /// <summary>Notification channel kinds (DESIGN §4.4).</summary>

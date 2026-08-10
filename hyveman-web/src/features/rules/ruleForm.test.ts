@@ -88,6 +88,24 @@ describe('heartbeat rule', () => {
   });
 });
 
+describe('vm_heartbeat rule', () => {
+  it('accepts an empty match document and round-trips', () => {
+    const values = ruleFormSchema.parse({ ...base, name: 'VM down', type: 'vm_heartbeat' as const });
+    expect(ruleFormToMatch(values)).toEqual({});
+    const form = ruleToForm({
+      id: 'r1',
+      name: 'VM down',
+      type: 'vm_heartbeat',
+      severity: 'critical',
+      cooldownS: 0,
+      enabled: true,
+      channelIds: [],
+      match: {},
+    } as never);
+    expect(form.type).toBe('vm_heartbeat');
+  });
+});
+
 describe('parseEventIds', () => {
   it('parses comma-separated positive integers', () => {
     expect(parseEventIds('4624, 4625,6008')).toEqual([4624, 4625, 6008]);
@@ -137,6 +155,7 @@ describe('ruleSummary (human-readable)', () => {
     expect(ruleSummary({ type: 'health', match: { componentTypes: ['disk'], states: ['critical'] } })).toContain('disk');
     expect(ruleSummary({ type: 'event', match: { channel: 'Security', eventIds: [4625] } })).toContain('Security');
     expect(ruleSummary({ type: 'heartbeat', match: { silenceAfterS: 300 } })).toContain('300');
+    expect(ruleSummary({ type: 'vm_heartbeat', match: {} })).toContain('prior OK heartbeat');
     expect(ruleSummary({ type: 'threshold', match: { metric: 'power_watts', comparator: 'gt', value: 500 } })).toContain('500');
   });
 });

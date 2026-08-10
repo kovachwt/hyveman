@@ -541,7 +541,7 @@ resource surface is:
 | Saved searches | CRUD under `/api/v1/saved-searches` | Single-admin configuration |
 | Sources/tokens | `GET /api/v1/sources`, `POST /api/v1/registration-tokens`, revoke actions | Raw registration token returned once |
 | Alerts | CRUD/list/action endpoints under `/api/v1/alerts` | Acknowledge and silence actions |
-| Rules | CRUD under `/api/v1/rules` | Health, event, heartbeat, and threshold rules |
+| Rules | CRUD under `/api/v1/rules` | Health, event, heartbeat, threshold, and VM-heartbeat rules |
 | Notifications | CRUD/test under `/api/v1/notification-channels` | Secrets write-only and redacted |
 | Maintenance | CRUD under `/api/v1/maintenance-windows` | Host-scoped suppression windows |
 | Settings | `GET/PATCH /api/v1/settings/retention` | Retention policy and safe operational settings |
@@ -609,6 +609,27 @@ payload, but never treats event content as trusted HTML.
 Rules are stored as typed records with a JSON match document validated according
 to the rule type. The API validates the JSON shape before persistence and
 returns a normalized representation to the frontend.
+
+Rule types and their match documents:
+
+- `health` — `componentTypes[]`, `states[]`, `includeRollup`; fires on a
+  component/rollup state transition into a matching state, resolves on recovery.
+- `event` — `channel`, `eventIds[]`, `severityMin`, `messagePattern` (regex);
+  fires on each matching accepted event.
+- `heartbeat` — `silenceAfterS`; fires when a source (agent) has sent no
+  heartbeat for that many seconds.
+- `threshold` — `metric`, `comparator` (`gt|gte|lt|lte|eq`), `value`; fires on a
+  fresh crossing, resolves when the crossing clears.
+- `vm_heartbeat` — optional `sourceKinds[]` scope, no required fields. Fires
+  when a **running** VM whose stored Hyper-V heartbeat was OK reports a lost
+  heartbeat (`heartbeat_ok` true→false/null in the agent's WMI facts), and
+  resolves when the heartbeat returns OK or the VM leaves the running state.
+  Only fresh OK→lost transitions fire (a VM still lost on the next scan does
+  not bump the alert); powered-off, saved and paused VMs never trigger it;
+  `stale:true` facts (re-emitted old data after a WMI timeout, PROTOCOL §7.4)
+  are never evaluated. Because the `vms` table is latest-wins, the transition
+  cannot be replayed after a restart — a rule created while a VM is already
+  lost fires only after the VM recovers and loses its heartbeat again.
 
 Alert actions are explicit:
 
@@ -772,13 +793,17 @@ The evaluator handles:
 - event matches by source/host, channel, event ID, severity, and message
   expression;
 - heartbeat silence;
-- threshold crossings; and
+- threshold crossings;
+- VM heartbeat transitions (OK→lost for running VMs, from Hyper-V facts); and
 - deduplication, cooldown, escalation, acknowledgement, and maintenance
   suppression.
 
 A periodic reconciliation pass re-evaluates current heartbeat and hardware
 state after restart. Event rules are evaluated as events are accepted; a later
-reconciliation can repair state after a crash.
+reconciliation can repair state after a crash. VM-heartbeat transitions are
+*not* replayed by reconciliation — the `vms` table is latest-wins, so the
+pre-transition state is gone — but fired alerts are durable rows and survive
+restarts unchanged.
 
 An alert has a stable fingerprint. The recommended uniqueness model is
 `(rule_id, host_id, fingerprint, active state)`, allowing a resolved occurrence

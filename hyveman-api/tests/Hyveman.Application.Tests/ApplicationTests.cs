@@ -183,6 +183,7 @@ public class AlertEvaluatorTests
     private sealed class NoopHealth : IHealthStore
     {
         public List<ComponentRecord> Components { get; } = [];
+        public List<VmRecord> Vms { get; } = [];
         public Task ReplaceComponentsAsync(string hostId, IReadOnlyList<ComponentRecord> components, CancellationToken ct)
         {
             Components.Clear();
@@ -196,8 +197,13 @@ public class AlertEvaluatorTests
         public Task AddMetricsAsync(string hostId, DateTimeOffset time, IReadOnlyList<MetricRecord> metrics, CancellationToken ct) => Task.CompletedTask;
         public Task<IReadOnlyList<MetricRecord>> GetLatestMetricsAsync(string hostId, int maxPerName, CancellationToken ct) => Task.FromResult<IReadOnlyList<MetricRecord>>([]);
         public Task<IReadOnlyList<MetricRecord>> GetMetricsInRangeAsync(string hostId, DateTimeOffset from, DateTimeOffset to, CancellationToken ct) => Task.FromResult<IReadOnlyList<MetricRecord>>([]);
-        public Task UpsertVmsAsync(string hostId, IReadOnlyList<VmRecord> vms, bool stale, DateTimeOffset collectedAt, CancellationToken ct) => Task.CompletedTask;
-        public Task<IReadOnlyList<VmRecord>> GetVmsAsync(string hostId, CancellationToken ct) => Task.FromResult<IReadOnlyList<VmRecord>>([]);
+        public Task UpsertVmsAsync(string hostId, IReadOnlyList<VmRecord> vms, bool stale, DateTimeOffset collectedAt, CancellationToken ct)
+        {
+            Vms.Clear();
+            Vms.AddRange(vms);
+            return Task.CompletedTask;
+        }
+        public Task<IReadOnlyList<VmRecord>> GetVmsAsync(string hostId, CancellationToken ct) => Task.FromResult<IReadOnlyList<VmRecord>>(Vms);
         public Task<long> PurgeMetricsOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct) => Task.FromResult(0L);
         public Task<long> PurgeSnapshotsOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct) => Task.FromResult(0L);
         public Task<long> PurgeVmsAsync(DateTimeOffset cutoff, CancellationToken ct) => Task.FromResult(0L);
@@ -379,6 +385,71 @@ public class AlertEvaluatorTests
         Assert.Single(alerts.Alerts);
 
         await eval.OnThresholdsAsync("h1", [new MetricRecord("h1", "temperature:System Board Inlet Temp", 44, "C", now)], now, CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    private static VmRecord Vm(string name, string state, bool? heartbeatOk) =>
+        new("h1", name, state, heartbeatOk, null, null, LastSeen: DateTimeOffset.Parse("2024-08-07T15:00:00Z"), Stale: false, CollectedAt: DateTimeOffset.Parse("2024-08-07T15:00:00Z"));
+
+    [Fact]
+    public async Task VmHeartbeatRule_OkToLost_FiresAndResolves()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, health) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, true, now, now));
+
+        // Store the previous facts (the telemetry path evaluates BEFORE the
+        // latest-wins upsert, so the test mirrors that order).
+        await health.UpsertVmsAsync("h1", [Vm("web01", "on", true)], stale: false, now, CancellationToken.None);
+
+        // OK → lost while running: fires.
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", false)], now, CancellationToken.None);
+        var alert = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal("h1", alert.HostId);
+        Assert.Contains("web01", alert.Title);
+        await health.UpsertVmsAsync("h1", [Vm("web01", "on", false)], stale: false, now, CancellationToken.None);
+
+        // Still lost on the next scan: no new alert, count stays one per episode.
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", false)], now.AddSeconds(60), CancellationToken.None);
+        Assert.Equal(1, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal(1, alerts.Alerts.Single().Count);
+
+        // Heartbeat returns: resolved.
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", true)], now.AddMinutes(2), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task VmHeartbeatRule_NoFire_ForVmsWithoutPriorOkHeartbeat()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, health) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, true, now, now));
+
+        // VM that never had an OK heartbeat (prev unknown/off): no fire.
+        await health.UpsertVmsAsync("h1", [Vm("web01", "off", null)], stale: false, now, CancellationToken.None);
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", false)], now, CancellationToken.None);
+        Assert.Empty(alerts.Alerts);
+
+        // Power-off of a heartbeating VM is not a loss either.
+        await health.UpsertVmsAsync("h1", [Vm("web01", "on", true)], stale: false, now, CancellationToken.None);
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "off", null)], now, CancellationToken.None);
+        Assert.Empty(alerts.Alerts);
+    }
+
+    [Fact]
+    public async Task VmHeartbeatRule_PowerOff_ResolvesOpenAlert()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, health) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, true, now, now));
+
+        await health.UpsertVmsAsync("h1", [Vm("web01", "on", true)], stale: false, now, CancellationToken.None);
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", false)], now, CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+
+        // Graceful shutdown: heartbeat loss is moot, alert resolves.
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "off", null)], now.AddMinutes(1), CancellationToken.None);
         Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
     }
 
@@ -632,6 +703,7 @@ public class TelemetryServiceTests
     {
         public Exception? ThrowOnThresholds { get; set; }
         public List<(string HostId, IReadOnlyList<MetricRecord> Metrics)> ThresholdCalls { get; } = [];
+        public List<(string HostId, IReadOnlyList<VmRecord> Vms)> VmCalls { get; } = [];
         public Task OnEventsAcceptedAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct) => Task.CompletedTask;
         public Task OnHealthStateChangedAsync(string hostId, string rollupState, IReadOnlyList<ComponentRecord> components, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
         public Task OnHeartbeatSilenceChangedAsync(string? ruleId, string sourceId, bool silent, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
@@ -639,6 +711,11 @@ public class TelemetryServiceTests
         {
             ThresholdCalls.Add((hostId, metrics));
             return ThrowOnThresholds is null ? Task.CompletedTask : Task.FromException(ThrowOnThresholds);
+        }
+        public Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct)
+        {
+            VmCalls.Add((hostId, vms));
+            return Task.CompletedTask;
         }
         public Task ReconcileAsync(CancellationToken ct) => Task.CompletedTask;
     }
@@ -680,6 +757,28 @@ public class TelemetryServiceTests
         await svc.ProcessAsync("src_1", [Item(HbWithDisk)], CancellationToken.None);
 
         Assert.Empty(health.StoredMetrics); // evaluation failed → storage not reached
+    }
+
+    [Fact]
+    public async Task Facts_StaleBatch_SkipsVmHeartbeatEvaluation()
+    {
+        // PROTOCOL §7.4: stale facts are re-emitted old data after a WMI
+        // timeout — a VM heartbeat transition must not be evaluated from them
+        // (they are still stored so the UI can mark them stale).
+        var health = new RecordingHealth();
+        var evaluator = new RecordingEvaluator();
+        var svc = new TelemetryService(new FakeStatusStore(stored: true), new FakeHosts(Host), health, evaluator,
+            new FixedClock(ReceivedAt), NullLogger<TelemetryService>.Instance);
+
+        var staleFacts = Item("""{"kind":"facts","collected_at":"2024-08-07T15:00:00Z","stale":true,"vms":[{"name":"web01","state":"on","heartbeat_ok":false}]}""");
+        await svc.ProcessAsync("src_1", [staleFacts], CancellationToken.None);
+        Assert.Empty(evaluator.VmCalls);
+
+        var freshFacts = Item("""{"kind":"facts","collected_at":"2024-08-07T15:01:00Z","stale":false,"vms":[{"name":"web01","state":"on","heartbeat_ok":false}]}""");
+        await svc.ProcessAsync("src_1", [freshFacts], CancellationToken.None);
+        var call = Assert.Single(evaluator.VmCalls);
+        Assert.Equal("h1", call.HostId);
+        Assert.Equal("web01", Assert.Single(call.Vms).Name);
     }
 
     [Fact]

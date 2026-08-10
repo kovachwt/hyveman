@@ -81,6 +81,24 @@ public sealed class TelemetryService(
                 var vms = f.Vms.Select(v => new VmRecord(
                     host.Id, v.Name, v.State, v.HeartbeatOk, v.CpuPct, v.MemMb, v.LastSeen,
                     Stale: f.Stale, CollectedAt: f.CollectedAt)).ToList();
+                // VM heartbeat transitions (DESIGN §4.4 rule type 5) are
+                // evaluated BEFORE the latest-wins upsert so the evaluator can
+                // read the previous facts from the store (D3). Stale facts are
+                // re-emitted old data after a WMI timeout (PROTOCOL §7.4) — not
+                // a state change — so they are stored (the UI marks them stale)
+                // but never evaluated. Derived alerting must never fail an
+                // accepted telemetry request (DEFECTS.md D2).
+                if (!f.Stale)
+                {
+                    try
+                    {
+                        await evaluator.OnVmsChangedAsync(host.Id, vms, receivedAt, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogError(ex, "VM heartbeat evaluation failed for source {sourceId}; facts still stored", sourceId);
+                    }
+                }
                 await health.UpsertVmsAsync(host.Id, vms, f.Stale, f.CollectedAt, ct);
             }
         }

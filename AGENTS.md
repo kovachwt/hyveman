@@ -27,7 +27,10 @@ dotnet build Hyveman.Api.sln
 dotnet test  Hyveman.Api.sln
 
 # Linux server only — rebuild API, sync run/api/, restart the user unit. No-op on Windows. Run when finished with server changes
-[ "$(uname -s)" = Linux ] && [ -f ~/.config/systemd/user/hyveman-api.service ] && dotnet build Hyveman.Api.sln && cp -a hyveman-api/src/Hyveman.Api/bin/Debug/net10.0/. run/api/ && systemctl --user restart hyveman-api
+[ "$(uname -s)" = Linux ] && [ -f ~/.config/systemd/user/hyveman-api.service ] && dotnet build Hyveman.Api.sln && cp -a hyveman-api/src/Hyveman.Api/bin/Debug/net10.0/. run/api/ && systemctl --user restart hyveman-api 
+
+# Linux server only — build web SPA, deploy a versioned release dir + atomic symlink swap (nginx serves it). Run when finished with web changes
+[ "$(uname -s)" = Linux ] && (cd hyveman-web && npm ci && npm run build) && REL="$HOME/www/hyveman/releases/$(date -u +%Y%m%d-%H%M%S)" && mkdir -p "$REL" && cp -a hyveman-web/dist/. "$REL/" && ln -sfn "$REL" "$HOME/www/hyveman/current"
 
 # Agent (.NET 10)
 dotnet build Hyveman.Agent.sln

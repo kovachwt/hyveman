@@ -150,6 +150,55 @@ public sealed class AlertEvaluatorService(
         }
     }
 
+    /// <summary>VM heartbeat transitions (DESIGN §4.4 rule type 5): fires when a
+    /// running VM whose stored heartbeat was OK reports a lost heartbeat, and
+    /// resolves when the heartbeat returns or the VM leaves the running state.
+    /// D3: the caller (TelemetryService) evaluates BEFORE the latest-wins
+    /// upsert, so the previous facts are read from the durable store here.</summary>
+    public async Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
+        DateTimeOffset at, CancellationToken ct)
+    {
+        var ruleList = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.VmHeartbeat).ToList();
+        if (ruleList.Count == 0) return;
+
+        var prevVms = await health.GetVmsAsync(hostId, ct);
+        var prevByName = prevVms.ToDictionary(v => v.Name);
+        var parsed = ruleList
+            .Select(r => (Rule: r, Match: RuleMatch.ParseVmHeartbeat(r.MatchJson)))
+            .Where(x => x.Match is not null && MatchSourceKind(x.Match!, "windows-agent"))
+            .ToList();
+        if (parsed.Count == 0) return;
+
+        foreach (var vm in vms)
+        {
+            var prev = prevByName.GetValueOrDefault(vm.Name);
+            // "Had an OK heartbeat, suddenly lost it": a fresh OK→lost
+            // transition while the VM is running. Powered-off/saved/paused
+            // VMs report heartbeat_ok=null by design (the agent only
+            // heartbeats running VMs, HYPERV §4.4), so a loss is only
+            // meaningful while state is on; and a prev that is already lost
+            // is skipped so count stays one per episode, not one per scan.
+            if (prev is null || prev.HeartbeatOk != true || vm.HeartbeatOk == true || vm.State != "on")
+                continue;
+
+            foreach (var (rule, _) in parsed)
+            {
+                await FireAsync(rule, hostId, null, $"vmheartbeat:{vm.Name}",
+                    $"VM lost heartbeat: {vm.Name}",
+                    $"VM {vm.Name} heartbeat was OK and is now lost (state: {vm.State})", at, bump: true, ct);
+            }
+        }
+
+        // Resolution: the heartbeat returned, or the VM left the running state
+        // (a graceful power-off makes the loss moot). No-op when no live alert.
+        foreach (var vm in vms)
+        {
+            if (vm.HeartbeatOk != true && vm.State == "on") continue;
+            foreach (var (rule, _) in parsed)
+                await ResolveAsync(rule, hostId, null, $"vmheartbeat:{vm.Name}", at, ct);
+        }
+    }
+
     public async Task OnThresholdsAsync(string hostId, IReadOnlyList<MetricRecord> metrics,
         DateTimeOffset at, CancellationToken ct)
     {
@@ -399,6 +448,11 @@ public sealed class RuleMatch
     {
         m.SourceKinds.AddRange(ReadStrings(m, json, "sourceKinds"));
         m.SilenceAfterS = ReadInt(m, json, "silenceAfterS") ?? 300;
+    });
+
+    public static RuleMatch? ParseVmHeartbeat(string json) => Parse(json, m =>
+    {
+        m.SourceKinds.AddRange(ReadStrings(m, json, "sourceKinds"));
     });
 
     public static RuleMatch? ParseThreshold(string json) => Parse(json, m =>

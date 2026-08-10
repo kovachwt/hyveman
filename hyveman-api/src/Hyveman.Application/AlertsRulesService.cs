@@ -208,6 +208,10 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
                     if (m.GetValueOrDefault("silenceAfterS") is not JsonElement { ValueKind: JsonValueKind.Number })
                         errors["match.silenceAfterS"] = ["silenceAfterS (seconds) is required for heartbeat rules."];
                     break;
+                case RuleTypes.VmHeartbeat:
+                    // No required match fields: the rule fires on any OK→lost
+                    // transition for running VMs (optional sourceKinds scope).
+                    break;
                 case RuleTypes.Threshold:
                     // NOTE: values in a JSON-deserialized Dictionary<string, object?>
                     // are JsonElement, not CLR strings (the old `is not string` check

@@ -173,5 +173,9 @@ public sealed class ThrowingEvaluator : IAlertEvaluator
         DateTimeOffset at, CancellationToken ct)
         => Task.CompletedTask;
 
+    public Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
+        DateTimeOffset at, CancellationToken ct)
+        => Task.CompletedTask;
+
     public Task ReconcileAsync(CancellationToken ct) => Task.CompletedTask;
 }

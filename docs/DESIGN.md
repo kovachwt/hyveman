@@ -199,6 +199,10 @@ Three independently built and deployed components:
      e.g. Event 6008 unexpected shutdown, disk events 7/11/15, Hyper-V VMMS errors.
   3. *Heartbeat rules*: agent or iDRAC unreachable for X minutes.
   4. *Threshold rules*: temperature, PSU wattage, disk free space.
+  5. *VM heartbeat rules*: a running VM whose Hyper-V heartbeat was OK suddenly
+     loses it (transition on the agent's WMI facts, per host+VM); resolves when
+     the heartbeat returns or the VM leaves the running state. Powered-off VMs
+     are excluded by design; `stale:true` facts never trigger.
 - **Behaviors:** deduplication window, escalation levels (info/warn/critical),
   per-rule cooldown, maintenance windows (per host), ack/silence from UI.
 - **Notification channels (per decision):**
@@ -279,6 +283,8 @@ components(id, host_id, type[cpu|memory|disk|controller|psu|fan|temp|...],
 health_snapshots(host_id, time, rollup_state, components_json)  -- history for sparklines
 metrics(host_id, time, name, value, unit)                        -- temps, watts, per-volume disk free
 vms(id, host_id, name, state, heartbeat_ok, last_seen, cpu_pct, mem_mb)
+  -- latest-wins per (host, name); vm_heartbeat rules detect OK→lost
+  -- transitions against the previous stored facts before the upsert
 alerts(id, rule_id, host_id, severity, first_seen, last_seen, count, status, ...)
 rules(id, name, type, match_json, severity, cooldown, enabled)
 rule_channels(rule_id, channel_id)                               -- many-to-many fan-out

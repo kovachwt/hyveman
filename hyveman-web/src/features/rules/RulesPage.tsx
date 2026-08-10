@@ -53,6 +53,7 @@ import {
   ruleFormSchema,
   ruleSummary,
   ruleToForm,
+  RULE_TYPE_LABELS,
   SOURCE_KINDS,
   type RuleFormValues,
 } from './ruleForm';
@@ -173,7 +174,7 @@ export default function RulesPage() {
     <Box>
       <PageHeader
         title="Alert rules"
-        subtitle="Health, event, heartbeat, and threshold rules evaluated server-side."
+        subtitle="Health, event, agent-heartbeat, threshold, and VM-heartbeat rules evaluated server-side."
         actions={
           <Button variant="contained" startIcon={<Add />} onClick={() => { setEditing(null); setFormOpen(true); }}>
             New rule
@@ -186,7 +187,7 @@ export default function RulesPage() {
       {rules.data && rules.data.length === 0 ? (
         <EmptyState
           title="No rules yet"
-          description="Create rules to raise alerts on hardware health, events, missing heartbeats, and metric thresholds."
+          description="Create rules to raise alerts on hardware health, events, missing agent heartbeats, metric thresholds, and VMs that lose their heartbeat."
           action={<Button variant="contained" startIcon={<Add />} onClick={() => { setEditing(null); setFormOpen(true); }}>New rule</Button>}
         />
       ) : null}
@@ -214,7 +215,7 @@ export default function RulesPage() {
                 render={({ field, fieldState }) => (
                   <TextField {...field} select label="Type *" fullWidth margin="dense" error={Boolean(fieldState.error)} helperText={fieldState.error?.message} disabled={busy} sx={{ minWidth: 180 }}>
                     {RULE_TYPES.map((t) => (
-                      <MenuItem key={t} value={t}>{t}</MenuItem>
+                      <MenuItem key={t} value={t}>{RULE_TYPE_LABELS[t]}</MenuItem>
                     ))}
                   </TextField>
                 )}
@@ -434,6 +435,15 @@ export default function RulesPage() {
                   />
                 )}
               />
+            ) : null}
+
+            {type === 'vm_heartbeat' ? (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Fires when a running VM that had a healthy heartbeat suddenly loses it
+                (heartbeat_ok flips from OK to lost on the host&apos;s Hyper-V WMI scan),
+                and resolves when the heartbeat returns or the VM is powered off.
+                Powered-off, saved and paused VMs never trigger this rule.
+              </Typography>
             ) : null}
 
             {type === 'threshold' ? (

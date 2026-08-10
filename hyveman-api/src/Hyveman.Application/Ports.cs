@@ -453,6 +453,7 @@ public interface IAlertEvaluator
     /// for every rule of that source (telemetry arrival path).</summary>
     Task OnHeartbeatSilenceChangedAsync(string? ruleId, string sourceId, bool silent, DateTimeOffset at, CancellationToken ct);
     Task OnThresholdsAsync(string hostId, IReadOnlyList<MetricRecord> metrics, DateTimeOffset at, CancellationToken ct);
+    Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct);
     Task ReconcileAsync(CancellationToken ct);
 }
 

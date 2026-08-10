@@ -432,8 +432,10 @@ Rule forms are type-specific:
 
 - health state rules expose component/state selectors;
 - event rules expose source/channel/event ID/severity/message matching;
-- heartbeat rules expose duration and source scope; and
-- threshold rules expose metric, comparator, value, and duration.
+- heartbeat rules expose duration and source scope;
+- threshold rules expose metric, comparator, value, and duration; and
+- VM-heartbeat rules have no options: they fire when a running VM with a
+  prior OK heartbeat goes lost, and resolve on recovery or power-off.
 
 The UI provides human-readable summaries but submits the typed match document
 expected by the API. Client-side schemas improve feedback; the backend remains

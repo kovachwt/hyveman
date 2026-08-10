@@ -230,7 +230,7 @@ export default function AlertsPage() {
       {alerts.data && items.length === 0 ? (
         <EmptyState
           title={filters.status ? `No ${filters.status} alerts` : 'No alerts'}
-          description="Alert rules evaluate health, events, heartbeats, and thresholds server-side."
+          description="Alert rules evaluate health, events, heartbeats, thresholds, and VM heartbeats server-side."
         />
       ) : null}
 

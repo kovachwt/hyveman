@@ -7,7 +7,14 @@
 import { z } from 'zod';
 import type { RuleDto } from '@/api/generated/endpoints';
 
-export const RULE_TYPES = ['health', 'event', 'heartbeat', 'threshold'] as const;
+export const RULE_TYPES = ['health', 'event', 'heartbeat', 'threshold', 'vm_heartbeat'] as const;
+export const RULE_TYPE_LABELS: Record<(typeof RULE_TYPES)[number], string> = {
+  health: 'Health state',
+  event: 'Event match',
+  heartbeat: 'Agent heartbeat',
+  threshold: 'Metric threshold',
+  vm_heartbeat: 'VM heartbeat lost',
+};
 export const RULE_SEVERITIES = ['info', 'warning', 'critical'] as const;
 export const SOURCE_KINDS = ['windows-agent', 'linux-agent', 'syslog-feed'] as const;
 export const COMPONENT_TYPES = ['cpu', 'memory', 'disk', 'controller', 'psu', 'fan', 'temp', 'chassis', 'system', 'other'] as const;
@@ -136,6 +143,9 @@ export function ruleFormToMatch(values: RuleFormValuesValidated): Record<string,
     case 'heartbeat':
       match.silenceAfterS = values.silenceAfterS;
       break;
+    case 'vm_heartbeat':
+      // No options: fires when a running VM whose heartbeat was OK goes lost.
+      break;
     case 'threshold':
       match.metric = values.metric;
       match.comparator = values.comparator;
@@ -200,6 +210,8 @@ export function ruleSummary(rule: Pick<RuleDto, 'type' | 'match'>): string {
     }
     case 'heartbeat':
       return `Heartbeat: silent for ${m.silenceAfterS ?? 300}s`;
+    case 'vm_heartbeat':
+      return 'VM heartbeat: fires when a running VM with a prior OK heartbeat goes lost';
     case 'threshold':
       return `Threshold: ${m.metric ?? '?'} ${m.comparator ?? 'gt'} ${m.value ?? '?'}`;
     default:
