@@ -404,6 +404,25 @@ request. A valid but older payload still receives HTTP 200 with
 Historical heartbeat
 samples are optional and are not required for MVP dashboards.
 
+**Disk free space (metrics + threshold rules):** when a heartbeat is stored
+and its source has a host row, the `free_disk` array (PROTOCOL §7.1, AGENT §8)
+is mapped into the host `metrics` time series and fed to threshold-rule
+evaluation (DESIGN §4.4 rule type 4), mirroring the Redfish poller path. Two
+series per volume, named by volume path:
+
+| Metric name | Value | Unit |
+|---|---|---|
+| `disk_free:<path>` | free bytes (e.g. `12345678`) | `B` |
+| `disk_free_pct:<path>` | free share 0–100 (wire `pct` is a fraction; the metric stores percent) | `%` |
+
+Example rule: threshold rule with metric `disk_free_pct:D:\`, comparator `lt`,
+value `15` alerts when any volume named `D:\` drops below 15 % free; use
+`disk_free:<path>` with a byte value for absolute-space rules (e.g. `lt
+50000000000` for 50 GB). Rules are free-text on metric name, so a rule
+matches exactly the volumes whose path appears in the metric name. Evaluation
+and storage are derived work: a failure is logged and contained, never
+rejecting an accepted telemetry request (DEFECTS.md D2).
+
 ### 6.5 Health endpoint
 
 `GET /health` is intentionally separate from operational readiness endpoints.

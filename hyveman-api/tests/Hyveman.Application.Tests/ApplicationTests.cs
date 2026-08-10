@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hyveman.Application;
 using Hyveman.Domain;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -500,5 +501,190 @@ public class TelemetryOrderingTests
         Assert.Equal(42, id);
         Assert.False(CursorCodec.TryDecode("not-base64!!", out _, out _));
         Assert.False(CursorCodec.TryDecode("", out _, out _));
+    }
+}
+
+public class HeartbeatDiskMetricsTests
+{
+    private static HeartbeatPayload Hb(string? freeDiskJson) => new(
+        DateTimeOffset.Parse("2024-08-07T15:00:00Z"), "0.1.0", 1, "17763",
+        DateTimeOffset.Parse("2024-08-01T00:00:00Z"), 100, "", "abc", null, freeDiskJson);
+
+    [Fact]
+    public void FromHeartbeat_MapsEveryVolumeToBytesAndPctSeries()
+    {
+        var metrics = HeartbeatDiskMetrics.FromHeartbeat("h1", Hb(
+            """[{"path":"C:\\","bytes":12345678,"pct":0.23},{"path":"D:\\","bytes":999999999,"pct":0.05}]"""),
+            DateTimeOffset.Parse("2024-08-07T15:00:30Z"));
+
+        Assert.Equal(4, metrics.Count);
+        Assert.Contains(metrics, m => m.Name == "disk_free:C:\\" && m.Value == 12345678 && m.Unit == "B");
+        Assert.Contains(metrics, m => m.Name == "disk_free_pct:C:\\" && m.Value == 23.0 && m.Unit == "%");
+        Assert.Contains(metrics, m => m.Name == "disk_free:D:\\" && m.Value == 999999999 && m.Unit == "B");
+        Assert.Contains(metrics, m => m.Name == "disk_free_pct:D:\\" && m.Value == 5.0 && m.Unit == "%");
+        Assert.All(metrics, m => Assert.Equal("h1", m.HostId));
+    }
+
+    [Fact]
+    public void FromHeartbeat_NoFreeDisk_ReturnsEmpty()
+    {
+        Assert.Empty(HeartbeatDiskMetrics.FromHeartbeat("h1", Hb(null), DateTimeOffset.UtcNow));
+        Assert.Empty(HeartbeatDiskMetrics.FromHeartbeat("h1", Hb("null"), DateTimeOffset.UtcNow));
+        Assert.Empty(HeartbeatDiskMetrics.FromHeartbeat("h1", Hb("{}"), DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public void FromHeartbeat_SkipsMalformedEntries()
+    {
+        var metrics = HeartbeatDiskMetrics.FromHeartbeat("h1", Hb(
+            """[{"bytes":1,"pct":0.5},{"path":"","bytes":2,"pct":0.5},{"path":"E:\\"},{"path":"F:\\","bytes":3,"pct":"oops"},42]"""),
+            DateTimeOffset.UtcNow);
+
+        var single = Assert.Single(metrics);
+        Assert.Equal("disk_free:F:\\", single.Name);
+        Assert.Equal(3, single.Value);
+        Assert.Equal("B", single.Unit);
+    }
+}
+
+public class TelemetryServiceTests
+{
+    private const string HbWithDisk = """
+        {"kind":"heartbeat","sent_at":"2024-08-07T15:00:00Z","boot_time":"2024-08-01T00:00:00Z",
+         "free_disk":[{"path":"C:\\","bytes":12345678,"pct":0.23},{"path":"D:\\","bytes":999999999,"pct":0.05}]}
+        """;
+
+    private static readonly DateTimeOffset ReceivedAt = DateTimeOffset.Parse("2024-08-07T15:00:30Z");
+
+    private static readonly HostRecord Host = new("h1", "HOST01", "windows-agent", "src_1", null, null, true, null,
+        DateTimeOffset.Parse("2024-08-01T00:00:00Z"), DateTimeOffset.Parse("2024-08-01T00:00:00Z"));
+
+    private static JsonElement Item(string json) => JsonDocument.Parse(json).RootElement.Clone();
+
+    private sealed class FixedClock(DateTimeOffset now) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = now;
+    }
+
+    private sealed class FakeStatusStore(bool stored) : IAgentStatusStore
+    {
+        public Task<AgentStatusRow?> GetAsync(string sourceId, CancellationToken ct) => Task.FromResult<AgentStatusRow?>(null);
+        public Task<IReadOnlyList<AgentStatusRow>> ListAllAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgentStatusRow>>([]);
+        public Task<bool> ApplyHeartbeatAsync(string sourceId, HeartbeatPayload hb, DateTimeOffset receivedAt, CancellationToken ct)
+            => Task.FromResult(stored);
+        public Task<bool> ApplyFactsAsync(string sourceId, FactsPayload facts, DateTimeOffset receivedAt, CancellationToken ct)
+            => Task.FromResult(true);
+    }
+
+    private sealed class FakeHosts(HostRecord? host) : IHostStore
+    {
+        public Task<IReadOnlyList<HostRecord>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<HostRecord>>(host is null ? [] : [host]);
+        public Task<HostRecord?> GetAsync(string id, CancellationToken ct) => Task.FromResult(host);
+        public Task<HostRecord?> GetBySourceAsync(string sourceId, CancellationToken ct) => Task.FromResult(host);
+        public Task<HostRecord> CreateAsync(HostRecord h, CancellationToken ct) => Task.FromResult(h);
+        public Task<bool> UpdateAsync(HostRecord h, DateTimeOffset expectedUpdatedAt, CancellationToken ct) => Task.FromResult(true);
+        public Task DeleteAsync(string id, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingHealth : IHealthStore
+    {
+        public List<MetricRecord> StoredMetrics { get; } = [];
+        public Task ReplaceComponentsAsync(string hostId, IReadOnlyList<ComponentRecord> components, CancellationToken ct) => Task.CompletedTask;
+        public Task<IReadOnlyList<ComponentRecord>> GetComponentsAsync(string hostId, CancellationToken ct) => Task.FromResult<IReadOnlyList<ComponentRecord>>([]);
+        public Task AddSnapshotAsync(string hostId, DateTimeOffset time, string rollupState, string componentsJson, CancellationToken ct) => Task.CompletedTask;
+        public Task<IReadOnlyList<HealthSnapshotRecord>> GetSnapshotsAsync(string hostId, DateTimeOffset? from, DateTimeOffset? to, int limit, CancellationToken ct) => Task.FromResult<IReadOnlyList<HealthSnapshotRecord>>([]);
+        public Task AddMetricsAsync(string hostId, DateTimeOffset time, IReadOnlyList<MetricRecord> metrics, CancellationToken ct)
+        { StoredMetrics.AddRange(metrics); return Task.CompletedTask; }
+        public Task<IReadOnlyList<MetricRecord>> GetLatestMetricsAsync(string hostId, int maxPerName, CancellationToken ct) => Task.FromResult<IReadOnlyList<MetricRecord>>(StoredMetrics);
+        public Task<IReadOnlyList<MetricRecord>> GetMetricsInRangeAsync(string hostId, DateTimeOffset from, DateTimeOffset to, CancellationToken ct) => Task.FromResult<IReadOnlyList<MetricRecord>>(StoredMetrics);
+        public Task UpsertVmsAsync(string hostId, IReadOnlyList<VmRecord> vms, bool stale, DateTimeOffset collectedAt, CancellationToken ct) => Task.CompletedTask;
+        public Task<IReadOnlyList<VmRecord>> GetVmsAsync(string hostId, CancellationToken ct) => Task.FromResult<IReadOnlyList<VmRecord>>([]);
+        public Task<long> PurgeMetricsOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct) => Task.FromResult(0L);
+        public Task<long> PurgeSnapshotsOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct) => Task.FromResult(0L);
+        public Task<long> PurgeVmsAsync(DateTimeOffset cutoff, CancellationToken ct) => Task.FromResult(0L);
+    }
+
+    private sealed class RecordingEvaluator : IAlertEvaluator
+    {
+        public Exception? ThrowOnThresholds { get; set; }
+        public List<(string HostId, IReadOnlyList<MetricRecord> Metrics)> ThresholdCalls { get; } = [];
+        public Task OnEventsAcceptedAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct) => Task.CompletedTask;
+        public Task OnHealthStateChangedAsync(string hostId, string rollupState, IReadOnlyList<ComponentRecord> components, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
+        public Task OnHeartbeatSilenceChangedAsync(string? ruleId, string sourceId, bool silent, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
+        public Task OnThresholdsAsync(string hostId, IReadOnlyList<MetricRecord> metrics, DateTimeOffset at, CancellationToken ct)
+        {
+            ThresholdCalls.Add((hostId, metrics));
+            return ThrowOnThresholds is null ? Task.CompletedTask : Task.FromException(ThrowOnThresholds);
+        }
+        public Task ReconcileAsync(CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Heartbeat_WithFreeDisk_StoresMetricsAndEvaluatesThresholds()
+    {
+        var health = new RecordingHealth();
+        var evaluator = new RecordingEvaluator();
+        var svc = new TelemetryService(new FakeStatusStore(stored: true), new FakeHosts(Host), health, evaluator,
+            new FixedClock(ReceivedAt), NullLogger<TelemetryService>.Instance);
+
+        await svc.ProcessAsync("src_1", [Item(HbWithDisk)], CancellationToken.None);
+
+        // Thresholds are evaluated before the metrics are stored (poll pattern).
+        var call = Assert.Single(evaluator.ThresholdCalls);
+        Assert.Equal("h1", call.HostId);
+        Assert.Equal(4, call.Metrics.Count);
+
+        Assert.Equal(4, health.StoredMetrics.Count);
+        Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free:C:\\" && m.Value == 12345678 && m.Unit == "B");
+        Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free_pct:C:\\" && m.Value == 23.0 && m.Unit == "%");
+        Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free:D:\\" && m.Value == 999999999 && m.Unit == "B");
+        Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free_pct:D:\\" && m.Value == 5.0 && m.Unit == "%");
+        Assert.All(health.StoredMetrics, m => Assert.Equal(ReceivedAt, m.Time));
+    }
+
+    [Fact]
+    public async Task Heartbeat_ThresholdFailure_DoesNotFailIngest()
+    {
+        // DEFECTS.md D2: derived alerting must never fail an accepted telemetry request.
+        var health = new RecordingHealth();
+        var evaluator = new RecordingEvaluator { ThrowOnThresholds = new InvalidOperationException("boom") };
+        var svc = new TelemetryService(new FakeStatusStore(stored: true), new FakeHosts(Host), health, evaluator,
+            new FixedClock(ReceivedAt), NullLogger<TelemetryService>.Instance);
+
+        await svc.ProcessAsync("src_1", [Item(HbWithDisk)], CancellationToken.None);
+
+        Assert.Empty(health.StoredMetrics); // evaluation failed → storage not reached
+    }
+
+    [Fact]
+    public async Task Heartbeat_NoHostRow_NoDiskMetrics()
+    {
+        // Metrics are host-scoped (DESIGN §5.2); no host row (not yet created in
+        // the web UI) ⇒ the disk samples are dropped, like facts.
+        var health = new RecordingHealth();
+        var evaluator = new RecordingEvaluator();
+        var svc = new TelemetryService(new FakeStatusStore(stored: true), new FakeHosts(null), health, evaluator,
+            new FixedClock(ReceivedAt), NullLogger<TelemetryService>.Instance);
+
+        await svc.ProcessAsync("src_1", [Item(HbWithDisk)], CancellationToken.None);
+
+        Assert.Empty(evaluator.ThresholdCalls);
+        Assert.Empty(health.StoredMetrics);
+    }
+
+    [Fact]
+    public async Task Heartbeat_NotStored_OlderPayload_NoDiskMetrics()
+    {
+        // PROTOCOL §7.4: an older payload in the same boot session is ignored,
+        // so its disk samples must not pollute the time series.
+        var health = new RecordingHealth();
+        var evaluator = new RecordingEvaluator();
+        var svc = new TelemetryService(new FakeStatusStore(stored: false), new FakeHosts(Host), health, evaluator,
+            new FixedClock(ReceivedAt), NullLogger<TelemetryService>.Instance);
+
+        await svc.ProcessAsync("src_1", [Item(HbWithDisk)], CancellationToken.None);
+
+        Assert.Empty(evaluator.ThresholdCalls);
+        Assert.Empty(health.StoredMetrics);
     }
 }

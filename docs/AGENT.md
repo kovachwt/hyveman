@@ -398,7 +398,7 @@ Envelope fields:
 | `protocol_version` | 1 |
 | `os_build` | `Environment.OSVersion` / WMI `Win32_OperatingSystem` |
 | `boot_time`, `uptime_s` | `GetTickCount64` / WMI |
-| `free_disk` | `DriveInfo` for OS volume + spool volume (bytes + pct) |
+| `free_disk` | `DriveInfo` for **every fixed volume** (bytes + pct) — OS, spool, VHD datastores, ...; USB/optical/network drives excluded, non-ready fixed drives skipped |
 | `source_id` | from registration (corroborates token-derived identity) |
 | `counters` | `events_sent`, `events_dropped`, `batches_sent`, `batches_failed`, `spool_bytes`, `spool_files`, `queue_depth`, `wmi_timeouts`, `send_errors_last_min` |
 | `degraded` | `""` \| `spool_full` \| `overrun` \| `auth_rejected` \| `quarantined` \| `wmi_degraded` \| `channel_reset` |

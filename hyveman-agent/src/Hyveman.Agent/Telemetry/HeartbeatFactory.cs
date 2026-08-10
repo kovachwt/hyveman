@@ -26,7 +26,7 @@ public static class HeartbeatFactory
             OsBuild = AgentInfo.OsBuild,
             BootTime = AgentInfo.BootTimeUtc?.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
             UptimeS = AgentInfo.UptimeSeconds,
-            FreeDisk = FreeDiskInfo(opts.Spool.Dir),
+            FreeDisk = FreeDiskInfo(),
             SourceId = opts.SourceId,
             Counters = new HeartbeatCountersWire
             {
@@ -45,36 +45,31 @@ public static class HeartbeatFactory
         };
     }
 
-    private static List<FreeDisk> FreeDiskInfo(string spoolDir)
+    /// <summary>Every fixed volume (AGENT §8), so the backend can alert on any
+    /// drive (OS, spool, VHD datastores, ...). USB/optical/network drives are
+    /// excluded; a fixed drive that is not ready is skipped, never sampled.</summary>
+    private static List<FreeDisk> FreeDiskInfo()
     {
         var list = new List<FreeDisk>();
         try
         {
-            var osRoot = Path.GetPathRoot(Environment.SystemDirectory);
-            if (osRoot is not null)
-                list.Add(FreeDiskFor(osRoot));
-
-            var spoolRoot = Path.GetPathRoot(spoolDir);
-            if (spoolRoot is not null && !string.Equals(osRoot, spoolRoot, StringComparison.OrdinalIgnoreCase))
-                list.Add(FreeDiskFor(spoolRoot));
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+                var total = drive.TotalSize;
+                list.Add(new FreeDisk
+                {
+                    Path = drive.Name,
+                    Bytes = drive.AvailableFreeSpace,
+                    Pct = total > 0 ? (double)drive.AvailableFreeSpace / total : 0
+                });
+            }
         }
         catch (Exception)
         {
             // disk info must never break the heartbeat
         }
         return list;
-    }
-
-    private static FreeDisk FreeDiskFor(string root)
-    {
-        var drive = new DriveInfo(root);
-        var total = drive.TotalSize;
-        return new FreeDisk
-        {
-            Path = root,
-            Bytes = drive.AvailableFreeSpace,
-            Pct = total > 0 ? (double)drive.AvailableFreeSpace / total : 0
-        };
     }
 }
 
