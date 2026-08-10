@@ -126,8 +126,31 @@ public class HyperVQueriesTests
     [InlineData("20240807150211.000000Z")]     // ISO form, not CIM form
     [InlineData("************************")]   // wildcard (unused timestamp)
     [InlineData("20240807150211.000000+00")]   // truncated offset
+    [InlineData("16000101000000.000000+000")]  // CIM "never" sentinel → null, not a real timestamp
     public void TryParseWmiDateTime_Unparseable_Is_Null(string raw)
     {
         Assert.Null(HyperVQueries.TryParseWmiDateTime(raw));
+    }
+
+    [Theory]
+    // The verified host shape (Server 2019): "Microsoft:<VM-GUID>\HVR\<n>".
+    [InlineData("Microsoft:4708A0F4-C902-429B-A1E0-D4AB0893E452\\HVR\\0", "4708A0F4-C902-429B-A1E0-D4AB0893E452")]
+    [InlineData("Microsoft:B563ED60-EF39-4FCE-B521-D91D065D9665\\HVR\\1", "B563ED60-EF39-4FCE-B521-D91D065D9665")]
+    [InlineData("SomeVendor:0104C3AA-68EE-4C89-B9ED-63B766213F30\\XYZ\\2", "0104C3AA-68EE-4C89-B9ED-63B766213F30")] // unknown prefix still parses
+    [InlineData("Microsoft:4708A0F4-C902-429B-A1E0-D4AB0893E452", "4708A0F4-C902-429B-A1E0-D4AB0893E452")] // no trailing segment
+    public void TryParseInstanceIdGuid_ExtractsVmGuid(string instanceId, string expected)
+    {
+        Assert.Equal(expected, HyperVQueries.TryParseInstanceIdGuid(instanceId));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Microsoft:\\HVR\\0")]                // no GUID at all
+    [InlineData("Microsoft:not-a-guid\\HVR\\0")]     // wrong shape
+    [InlineData("no-separator-and-no-guid")]           // no colon, not a GUID
+    public void TryParseInstanceIdGuid_Unparseable_IsNull(string? instanceId)
+    {
+        Assert.Null(HyperVQueries.TryParseInstanceIdGuid(instanceId));
     }
 }

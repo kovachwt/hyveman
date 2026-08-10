@@ -383,9 +383,12 @@ serialized scan per `wmi.scan_interval_s` (default 60 s).
   instance per VM replication relationship (this is the WMI behind
   `Get-VMReplication`). One extra query per scan, counted in the
   `max_queries_per_scan` budget (operations, not instances — §4.4 rule 2).
-  Join to the VM list by `SystemName` (relationship key = VM GUID) against
-  `Msvm_SummaryInformation.Name` (request ID 0, always returned). Mapped per
-  PROTOCOL §7.1:
+  **Join key (empirical, verified on Server 2019):** the class's key
+  properties `SystemName`/`Name` come back **empty** from the provider, so
+  the agent joins on `ElementName` (the VM display name — populated on both
+  sides) with a precision fallback to the VM GUID embedded in `InstanceID`
+  (`Microsoft:<VM-GUID>\HVR\<n>`). Both joins are case-insensitive. Mapped
+  per PROTOCOL §7.1:
   - `ReplicationState` (uint16): 0 `disabled` · 1 `error` · 2 `enabled` ·
     3 `replication_in_progress` · 4 `planned_failover_in_progress` ·
     5 `snapshot_in_progress` · 6 `initial_replication_in_progress` ·
@@ -428,7 +431,7 @@ Envelope fields:
 | `mem_available_bytes` | `GlobalMemoryStatusEx.ullAvailPhys` — the Windows "available" number (free + standby cache), the right low-memory alert signal |
 | `free_disk` | `DriveInfo` for **every fixed volume** (bytes + pct) — OS, spool, VHD datastores, ...; USB/optical/network drives excluded, non-ready fixed drives skipped |
 | `source_id` | from registration (corroborates token-derived identity) |
-| `counters` | `events_sent`, `events_dropped`, `batches_sent`, `batches_failed`, `spool_bytes`, `spool_files`, `queue_depth`, `wmi_timeouts`, `send_errors_last_min` |
+| `counters` | `events_sent`, `events_dropped`, `batches_sent`, `batches_failed`, `spool_bytes`, `spool_files`, `queue_depth`, `wmi_timeouts`, `send_errors_last_min`, `replication_relationships` (additive-optional: `Msvm_ReplicationRelationship` count from the last WMI scan; `0` = no replication configured, `-1` = scan not run / query unavailable — lets the backend distinguish the two) |
 | `degraded` | `""` \| `spool_full` \| `overrun` \| `auth_rejected` \| `quarantined` \| `wmi_degraded` \| `channel_reset` |
 | `config_hash` | short hash of active config (change → backend notices) |
 

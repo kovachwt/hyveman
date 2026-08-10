@@ -178,11 +178,19 @@ public sealed class WmiFactCollector : BackgroundService
         }
 
         // 3. Replication relationships (AGENT.md §7): one extra operation in
-        // the budget. Joined to the summaries by VM GUID (SystemName = Name).
-        // A host where this class is unavailable (or the query fails) must
-        // not fail the scan: replication facts are best-effort, the rest of
-        // the scan is unaffected.
-        var replicationByGuid = new Dictionary<string, ReplicationFact>();
+        // the budget. Joined to the summaries by VM GUID (parsed from
+        // InstanceID) with an ElementName fallback — the relationship class's
+        // key properties (SystemName/Name) come back EMPTY from the provider
+        // (verified on Server 2019), so ElementName/InstanceID are the real
+        // join surface. A host where this class is unavailable (or the query
+        // fails) must not fail the scan: replication facts are best-effort,
+        // the rest of the scan is unaffected. The heartbeat counter reports
+        // the found count (0 = genuinely no replication configured, -1 =
+        // query unavailable) so the backend can tell the two apart.
+        // OrdinalIgnoreCase: casing is not guaranteed to match between the
+        // summary and relationship instances.
+        var replicationByGuid = new Dictionary<string, ReplicationFact>(StringComparer.OrdinalIgnoreCase);
+        var replicationByName = new Dictionary<string, ReplicationFact>(StringComparer.OrdinalIgnoreCase);
         if (budget.TrySpend())
         {
             try
@@ -190,24 +198,33 @@ public sealed class WmiFactCollector : BackgroundService
                 foreach (var rel in session.QueryInstances(ns, "WQL", HyperVQueries.ReplicationRelationshipWql))
                 {
                     var repl = HyperVQueries.ToReplicationFact(rel);
-                    if (repl is not null)
+                    if (repl is null)
+                        continue;
+                    if (repl.VmGuid is not null)
                         replicationByGuid[repl.VmGuid] = repl;
+                    if (repl.VmElementName is not null)
+                        replicationByName[repl.VmElementName] = repl;
                 }
+                _monitor.SetReplicationRelationships(replicationByGuid.Count > 0 || replicationByName.Count > 0
+                    ? Math.Max(replicationByGuid.Count, replicationByName.Count)
+                    : 0);
             }
             catch (CimException ex) when ((uint)ex.NativeErrorCode is 0x8004100E or 0x80041002 or 0x80041010)
             {
                 // Class/namespace missing on this host (pre-2012 R2 Hyper-V,
                 // exotic providers): replication facts simply absent.
+                _monitor.SetReplicationRelationships(-1);
             }
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Replication relationship scan failed; replication facts omitted for this scan");
+                _monitor.SetReplicationRelationships(-1);
             }
         }
 
         foreach (var s in summaries)
         {
-            var fact = HyperVQueries.ToVmFact(s, replicationByGuid);
+            var fact = HyperVQueries.ToVmFact(s, replicationByGuid, replicationByName);
             if (fact is not null)
                 facts.Add(fact);
         }

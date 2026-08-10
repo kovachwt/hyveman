@@ -412,7 +412,8 @@ Content-Type: application/json; charset=utf-8
         "batches_sent": 5, "batches_failed": 0,
         "spool_bytes": 0, "spool_files": 0,
         "queue_depth": 0, "wmi_timeouts": 0,
-        "send_errors_last_min": 0
+        "send_errors_last_min": 0,
+        "replication_relationships": 2   // additive-optional: -1 = query unavailable, 0 = none configured
       },
       "degraded": "",                    // "" | "spool_full" | "overrun" |
                                          // "auth_rejected" | "quarantined" |

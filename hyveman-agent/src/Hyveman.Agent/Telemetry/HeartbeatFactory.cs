@@ -42,7 +42,8 @@ public static class HeartbeatFactory
                 SpoolFiles = spoolFiles,
                 QueueDepth = queue.Count,
                 WmiTimeouts = counters.WmiTimeouts,
-                SendErrorsLastMin = counters.SendErrorsLastMin
+                SendErrorsLastMin = counters.SendErrorsLastMin,
+                ReplicationRelationships = counters.ReplicationRelationships
             },
             Degraded = monitor.Degraded,
             ConfigHash = snapshot.ConfigHash

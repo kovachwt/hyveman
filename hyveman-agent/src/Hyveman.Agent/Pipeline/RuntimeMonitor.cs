@@ -16,6 +16,7 @@ public sealed class RuntimeMonitor
     private long _wmiTimeouts;
     private long _channelResets;
     private long _quarantinedBatches;
+    private long _replicationRelationships = -1; // -1 = scan not run / query unavailable
 
     private readonly ConcurrentQueue<long> _sendErrorTimes = new(); // Environment.TickCount64
 
@@ -31,6 +32,12 @@ public sealed class RuntimeMonitor
     public void AddWmiTimeouts(long n) => Interlocked.Add(ref _wmiTimeouts, n);
     public void AddChannelResets(long n) => Interlocked.Add(ref _channelResets, n);
     public void AddQuarantinedBatches(long n) => Interlocked.Add(ref _quarantinedBatches, n);
+
+    /// <summary>Msvm_ReplicationRelationship instances found in the last WMI
+    /// scan; -1 when the scan has not run or the query was unavailable
+    /// (non-Hyper-V host / class missing / query failure). Lets the backend
+    /// distinguish "no replication configured" (0) from "can't query" (-1).</summary>
+    public void SetReplicationRelationships(long n) => Interlocked.Exchange(ref _replicationRelationships, n);
 
     public void RecordSendError()
     {
@@ -77,12 +84,14 @@ public sealed class RuntimeMonitor
     }
 
     public (long EventsSent, long EventsDropped, long BatchesSent, long BatchesFailed,
-            long WmiTimeouts, long ChannelResets, long QuarantinedBatches, long SendErrorsLastMin)
+            long WmiTimeouts, long ChannelResets, long QuarantinedBatches, long SendErrorsLastMin,
+            long ReplicationRelationships)
         Snapshot()
         => (Interlocked.Read(ref _eventsSent), Interlocked.Read(ref _eventsDropped),
             Interlocked.Read(ref _batchesSent), Interlocked.Read(ref _batchesFailed),
             Interlocked.Read(ref _wmiTimeouts), Interlocked.Read(ref _channelResets),
-            Interlocked.Read(ref _quarantinedBatches), SendErrorsLastMinute);
+            Interlocked.Read(ref _quarantinedBatches), SendErrorsLastMinute,
+            Interlocked.Read(ref _replicationRelationships));
 
     public HeartbeatCounters HeartbeatCounters(int queueDepth, long spoolBytes, int spoolFiles) => new()
     {
@@ -94,7 +103,8 @@ public sealed class RuntimeMonitor
         SpoolFiles = spoolFiles,
         QueueDepth = queueDepth,
         WmiTimeouts = Interlocked.Read(ref _wmiTimeouts),
-        SendErrorsLastMin = SendErrorsLastMinute
+        SendErrorsLastMin = SendErrorsLastMinute,
+        ReplicationRelationships = Interlocked.Read(ref _replicationRelationships)
     };
 }
 
@@ -109,4 +119,5 @@ public sealed class HeartbeatCounters
     public int QueueDepth { get; set; }
     public long WmiTimeouts { get; set; }
     public long SendErrorsLastMin { get; set; }
+    public long ReplicationRelationships { get; set; } = -1;
 }

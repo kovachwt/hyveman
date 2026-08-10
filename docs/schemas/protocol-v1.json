@@ -238,7 +238,11 @@
                       "spool_files": { "type": "integer", "minimum": 0 },
                       "queue_depth": { "type": "integer", "minimum": 0 },
                       "wmi_timeouts": { "type": "integer", "minimum": 0 },
-                      "send_errors_last_min": { "type": "integer", "minimum": 0 }
+                      "send_errors_last_min": { "type": "integer", "minimum": 0 },
+                      "replication_relationships": {
+                        "type": "integer",
+                        "description": "Additive-optional (PROTOCOL §7.1): Msvm_ReplicationRelationship instances found by the last WMI scan; 0 = none configured, -1 = scan not run / query unavailable."
+                      }
                     },
                     "additionalProperties": true,
                     "description": "Cumulative or per-interval; server diffs for rates (§7.1)."

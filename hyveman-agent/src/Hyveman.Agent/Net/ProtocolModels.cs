@@ -100,6 +100,9 @@ public sealed class HeartbeatCountersWire
     [JsonPropertyName("queue_depth")] public int QueueDepth { get; set; }
     [JsonPropertyName("wmi_timeouts")] public long WmiTimeouts { get; set; }
     [JsonPropertyName("send_errors_last_min")] public long SendErrorsLastMin { get; set; }
+    // Additive-optional (PROTOCOL §3/§7.1): Msvm_ReplicationRelationship count
+    // from the last WMI scan; -1 = scan not run / query unavailable.
+    [JsonPropertyName("replication_relationships")] public long ReplicationRelationships { get; set; } = -1;
 }
 
 public sealed class FactsItem

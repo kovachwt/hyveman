@@ -123,21 +123,28 @@ public static class HyperVQueries
 
     /// <summary>
     /// Reads the replication-facts CimInstances returned by the
-    /// Msvm_ReplicationRelationship enumeration. SystemName is the key
-    /// property holding the VM GUID (matches Msvm_ComputerSystem.Name /
-    /// Msvm_SummaryInformation.Name request ID 0). Extended-replica hosts
-    /// expose two relationships per VM; no reliable primary discriminator
-    /// exists in WMI, so the last enumerated wins (documented simplification,
-    /// AGENT.md §7).
+    /// Msvm_ReplicationRelationship enumeration.
+    ///
+    /// Empirical note (Server 2019 host, 2026): the class's key properties
+    /// SystemName/Name come back EMPTY from the provider — they cannot be the
+    /// join key. What is populated: ElementName (the VM's display name) and
+    /// InstanceID ("Microsoft:&lt;VM-GUID&gt;\HVR\&lt;n&gt;"). The agent joins on
+    /// ElementName first (both sides verified populated), then falls back to
+    /// the InstanceID-embedded GUID against Msvm_SummaryInformation.Name.
+    /// Extended-replica hosts expose two relationships per VM; no reliable
+    /// primary discriminator exists in WMI, so the last enumerated wins
+    /// (documented simplification, AGENT.md §7).
     /// </summary>
     public static ReplicationFact? ToReplicationFact(CimInstance rel)
     {
-        string? guid = GetString(rel, "SystemName");
-        if (string.IsNullOrEmpty(guid))
+        string? elementName = GetString(rel, "ElementName");
+        string? guid = TryParseInstanceIdGuid(GetString(rel, "InstanceID"));
+        if (string.IsNullOrEmpty(elementName) && guid is null)
             return null;
 
         return new ReplicationFact
         {
+            VmElementName = string.IsNullOrEmpty(elementName) ? null : elementName,
             VmGuid = guid,
             State = MapReplicationState(GetUInt16(rel, "ReplicationState") ?? 0),
             Health = MapReplicationHealth(GetUInt16(rel, "ReplicationHealth") ?? 0),
@@ -146,17 +153,39 @@ public static class HyperVQueries
     }
 
     /// <summary>
+    /// Extracts the VM GUID from an InstanceID like
+    /// "Microsoft:4708A0F4-C902-429B-A1E0-D4AB0893E452\HVR\0". Returns null
+    /// when the shape does not match (unknown prefix/separator — the caller
+    /// falls back to the ElementName join, so a format change degrades
+    /// gracefully instead of failing the scan).
+    /// </summary>
+    public static string? TryParseInstanceIdGuid(string? instanceId)
+    {
+        if (string.IsNullOrEmpty(instanceId))
+            return null;
+        var segment = instanceId.Split('\\')[0];
+        var colon = segment.LastIndexOf(':');
+        var guid = colon >= 0 ? segment[(colon + 1)..] : segment;
+        return guid.Length == 36 && guid[8] == '-' && guid[13] == '-' && guid[18] == '-' && guid[23] == '-'
+            ? guid
+            : null;
+    }
+
+    /// <summary>
     /// Reads the summary-info CimInstances returned by GetSummaryInformation.
     /// Property values are null when not requested / unavailable.
     /// Replication facts (from Msvm_ReplicationRelationship) are attached by
-    /// VM GUID when available; a VM without a relationship reports null
-    /// replication fields (not replicated — PROTOCOL §7.1).
+    /// VM GUID (InstanceID-embedded) first, then by ElementName — both
+    /// case-insensitive; a VM without a relationship reports null replication
+    /// fields (not replicated — PROTOCOL §7.1).
     /// </summary>
     public static VmFact? ToVmFact(CimInstance summary,
-        IReadOnlyDictionary<string, ReplicationFact>? replicationByGuid = null)
+        IReadOnlyDictionary<string, ReplicationFact>? replicationByGuid = null,
+        IReadOnlyDictionary<string, ReplicationFact>? replicationByName = null)
     {
-        // Name (request ID 0) is the VM GUID — the join key for replication
-        // relationships (SystemName). ElementName is the friendly display name.
+        // Name (request ID 0) is the VM GUID — the precision join key for
+        // replication relationships. ElementName is the friendly display name
+        // (and the relationship-side join key, verified populated).
         string? guid = GetString(summary, "Name");
         string? name = GetString(summary, "ElementName") ?? guid;
         if (string.IsNullOrEmpty(name))
@@ -169,9 +198,10 @@ public static class HyperVQueries
 
         bool? heartbeatOk = state == "on" ? MapHeartbeat(heartbeat ?? 0) : null;
 
-        ReplicationFact? repl = guid is not null && replicationByGuid is not null
-            ? replicationByGuid.GetValueOrDefault(guid)
-            : null;
+        ReplicationFact? repl = null;
+        if (guid is not null && replicationByGuid is not null)
+            repl = replicationByGuid.GetValueOrDefault(guid);
+        repl ??= replicationByName?.GetValueOrDefault(name);
 
         return new VmFact
         {
@@ -196,7 +226,9 @@ public static class HyperVQueries
         switch (v)
         {
             case DateTime dt:
-                return dt.Kind == DateTimeKind.Utc ? dt : dt.ToUniversalTime();
+                // CIM's "never" sentinel (1600-12-31, i.e. DateTime.MinValue)
+                // surfaces as a real date on disabled relationships — null it.
+                return dt.Year < 1900 ? null : dt.Kind == DateTimeKind.Utc ? dt : dt.ToUniversalTime();
             case string s:
                 // Defensive: providers may yield the raw CIM_DATETIME string
                 // ("20240807150211.000000+000") instead of a typed DateTime.
@@ -226,6 +258,10 @@ public static class HyperVQueries
         if (!DateTime.TryParseExact(s.AsSpan(0, 14), "yyyyMMddHHmmss",
                 System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.None, out var dt))
+            return null;
+
+        // CIM's "never" sentinel (1600-01-01) — null, not a real timestamp.
+        if (dt.Year < 1900)
             return null;
 
         // Offset: ±hhh (minutes, 3 digits). "+000" / "-000" are UTC.

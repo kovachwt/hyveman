@@ -1,9 +1,16 @@
 namespace Hyveman.Agent.Wmi;
 
-/// <summary>One Msvm_ReplicationRelationship row, joined to a VM by GUID.</summary>
+/// <summary>One Msvm_ReplicationRelationship row, joined to a VM.</summary>
 public sealed class ReplicationFact
 {
-    public required string VmGuid { get; init; }              // Msvm_ReplicationRelationship.SystemName
+    /// <summary>VM display name (relationship ElementName) — the join key
+    /// verified populated on real hosts (AGENT.md §7).</summary>
+    public string? VmElementName { get; init; }
+
+    /// <summary>VM GUID parsed from InstanceID ("Microsoft:&lt;guid&gt;\HVR\&lt;n&gt;");
+    /// null when unparseable. Precision fallback join key.</summary>
+    public string? VmGuid { get; init; }
+
     public string? State { get; init; }                       // PROTOCOL §7.1 replication_state
     public string? Health { get; init; }                      // PROTOCOL §7.1 replication_health
     public DateTime? LastApplyTimeUtc { get; init; }          // LastApplyTime, UTC
