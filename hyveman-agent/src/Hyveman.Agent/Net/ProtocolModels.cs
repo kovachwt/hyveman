@@ -73,6 +73,8 @@ public sealed class HeartbeatItem
     [JsonPropertyName("os_build")] public string? OsBuild { get; set; }
     [JsonPropertyName("boot_time")] public string? BootTime { get; set; }
     [JsonPropertyName("uptime_s")] public long UptimeS { get; set; }
+    [JsonPropertyName("mem_total_bytes")] public long? MemTotalBytes { get; set; }
+    [JsonPropertyName("mem_available_bytes")] public long? MemAvailableBytes { get; set; }
     [JsonPropertyName("free_disk")] public List<FreeDisk> FreeDisk { get; set; } = new();
     [JsonPropertyName("source_id")] public string? SourceId { get; set; }
     [JsonPropertyName("counters")] public HeartbeatCountersWire Counters { get; set; } = new();

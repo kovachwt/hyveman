@@ -398,6 +398,8 @@ Content-Type: application/json; charset=utf-8
       "os_build": "17763",
       "boot_time": "2024-08-01T00:00:00Z",
       "uptime_s": 123456,
+      "mem_total_bytes": 34359738368,
+      "mem_available_bytes": 8589934592,   // additive-optional; Windows available (free + standby)
       "free_disk": [
         { "path": "C:\\", "bytes": 12345678, "pct": 0.23 }
       ],
@@ -430,7 +432,9 @@ Content-Type: application/json; charset=utf-8
   per-interval (agent may send cumulative counters; the server diffs for
   rates). All fields are informational for the server; the server uses
   `sent_at`, `degraded`, `counters` for alerting (DESIGN §4.4 heartbeat rules).
-  The item may additionally carry `source_id` as corroboration only —
+  `mem_total_bytes`/`mem_available_bytes` are **additive-optional** (§3): an
+  agent that omits them simply contributes no RAM metrics that interval. The
+  item may additionally carry `source_id` as corroboration only —
   identity always comes from the token (§4.2).
 - **`kind:"facts"` `vms[].state`** ∈ `on|off|paused|saved|other|unknown`;
   `heartbeat_ok` ∈ `true|false|null`. `"vms": []` with `stale:false` means the

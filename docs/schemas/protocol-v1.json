@@ -207,6 +207,8 @@
                   "os_build": { "type": "string" },
                   "boot_time": { "$ref": "#/definitions/utcTime", "description": "Used by the server for the §7.4 ordering rule." },
                   "uptime_s": { "type": "integer", "minimum": 0 },
+                  "mem_total_bytes": { "type": "integer", "minimum": 0, "description": "Additive-optional; total physical RAM (AGENT §8)." },
+                  "mem_available_bytes": { "type": "integer", "minimum": 0, "description": "Additive-optional; Windows available RAM = free + standby (AGENT §8)." },
                   "free_disk": {
                     "type": "array",
                     "items": {

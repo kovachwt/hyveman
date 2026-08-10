@@ -48,25 +48,26 @@ public sealed class TelemetryService(
             if (!string.IsNullOrEmpty(hb.Degraded))
                 log.LogInformation("Source {sourceId} reports degraded={degraded}", sourceId, hb.Degraded);
 
-            // Disk free space rides the heartbeat (PROTOCOL §7.1): map it into
-            // the host metrics time series and feed threshold rules (DESIGN
-            // §4.4 rule type 4, §5.2). Same pattern as the Redfish poller —
-            // evaluate before store — and same containment (DEFECTS.md D2):
-            // derived alerting/metrics must never fail an accepted telemetry
-            // request, whose agent_status write already committed above.
+            // Host state rides the heartbeat (PROTOCOL §7.1): free disk per
+            // volume + available RAM are mapped into the host metrics time
+            // series and feed threshold rules (DESIGN §4.4 rule type 4, §5.2).
+            // Same pattern as the Redfish poller — evaluate before store — and
+            // same containment (DEFECTS.md D2): derived alerting/metrics must
+            // never fail an accepted telemetry request, whose agent_status
+            // write already committed above.
             if (stored && host is not null)
             {
-                var diskMetrics = HeartbeatDiskMetrics.FromHeartbeat(host.Id, hb, receivedAt);
-                if (diskMetrics.Count > 0)
+                var hostMetrics = HeartbeatMetrics.FromHeartbeat(host.Id, hb, receivedAt);
+                if (hostMetrics.Count > 0)
                 {
                     try
                     {
-                        await evaluator.OnThresholdsAsync(host.Id, diskMetrics, receivedAt, ct);
-                        await health.AddMetricsAsync(host.Id, receivedAt, diskMetrics, ct);
+                        await evaluator.OnThresholdsAsync(host.Id, hostMetrics, receivedAt, ct);
+                        await health.AddMetricsAsync(host.Id, receivedAt, hostMetrics, ct);
                     }
                     catch (Exception ex)
                     {
-                        log.LogError(ex, "Disk metric evaluation/storage failed for source {sourceId}; heartbeat still accepted", sourceId);
+                        log.LogError(ex, "Heartbeat metric evaluation/storage failed for source {sourceId}; heartbeat still accepted", sourceId);
                     }
                 }
             }

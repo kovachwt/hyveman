@@ -261,6 +261,8 @@ public static class ProtocolValidation
             OsBuild: ReadString(item, "os_build"),
             BootTime: bootTime,
             UptimeS: ReadLong(item, "uptime_s"),
+            MemTotalBytes: ReadLong(item, "mem_total_bytes"),
+            MemAvailableBytes: ReadLong(item, "mem_available_bytes"),
             Degraded: degraded,
             ConfigHash: ReadString(item, "config_hash"),
             CountersJson: ReadRaw(item, "counters"),

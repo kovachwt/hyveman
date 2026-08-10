@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Hyveman.Agent.Net;
 using Hyveman.Agent.Options;
 using Hyveman.Agent.Pipeline;
@@ -15,6 +16,7 @@ public static class HeartbeatFactory
     {
         var opts = snapshot.Active;
         var counters = monitor.Snapshot();
+        var mem = MemInfo();
 
         var (spoolBytes, spoolFiles) = SpoolDirectory.Measure(spoolDir);
 
@@ -26,6 +28,8 @@ public static class HeartbeatFactory
             OsBuild = AgentInfo.OsBuild,
             BootTime = AgentInfo.BootTimeUtc?.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
             UptimeS = AgentInfo.UptimeSeconds,
+            MemTotalBytes = mem.TotalBytes,
+            MemAvailableBytes = mem.AvailableBytes,
             FreeDisk = FreeDiskInfo(),
             SourceId = opts.SourceId,
             Counters = new HeartbeatCountersWire
@@ -44,6 +48,42 @@ public static class HeartbeatFactory
             ConfigHash = snapshot.ConfigHash
         };
     }
+
+    /// <summary>Host RAM (AGENT §8). `GlobalMemoryStatusEx.ullAvailPhys` is the
+    /// Windows "available" number (free + standby cache) — the right signal for
+    /// low-memory alerting. Absent fields on failure; RAM must never break the
+    /// heartbeat.</summary>
+    private static (long? TotalBytes, long? AvailableBytes) MemInfo()
+    {
+        try
+        {
+            var status = new MemoryStatusEx { DwLength = (uint)Marshal.SizeOf<MemoryStatusEx>() };
+            if (!GlobalMemoryStatusEx(ref status)) return (null, null);
+            return ((long)status.UllTotalPhys, (long)status.UllAvailPhys);
+        }
+        catch (Exception)
+        {
+            return (null, null);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryStatusEx
+    {
+        public uint DwLength;
+        public uint DwMemoryLoad;
+        public ulong UllTotalPhys;
+        public ulong UllAvailPhys;
+        public ulong UllTotalPageFile;
+        public ulong UllAvailPageFile;
+        public ulong UllTotalVirtual;
+        public ulong UllAvailVirtual;
+        public ulong UllAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatusEx lpBuffer);
 
     /// <summary>Every fixed volume (AGENT §8), so the backend can alert on any
     /// drive (OS, spool, VHD datastores, ...). USB/optical/network drives are

@@ -337,7 +337,7 @@ public class SqliteIntegrationTests : IDisposable
         await conn.ExecuteAsync("INSERT INTO sources(id, kind, name, created_at) VALUES ('src_1','windows-agent','HOST01','2024-01-01T00:00:00.0000000Z')");
         var store = new AgentStatusStore(_db);
         var boot = DateTimeOffset.Parse("2024-08-01T00:00:00Z");
-        var hb = new HeartbeatPayload(DateTimeOffset.Parse("2024-08-07T10:00:00Z"), "0.1.0", 1, "17763", boot, 100, "", "abc", "{}", null);
+        var hb = new HeartbeatPayload(DateTimeOffset.Parse("2024-08-07T10:00:00Z"), "0.1.0", 1, "17763", boot, 100, null, null, "", "abc", "{}", null);
 
         Assert.True(await store.ApplyHeartbeatAsync("src_1", hb, DateTimeOffset.Parse("2024-08-07T10:00:05Z"), CancellationToken.None));
         var row = await store.GetAsync("src_1", CancellationToken.None);

@@ -433,7 +433,7 @@ public class TelemetryOrderingTests
     }
 
     private static HeartbeatPayload Hb(DateTimeOffset sentAt, DateTimeOffset? bootTime) =>
-        new(sentAt, "0.1.0", 1, "17763", bootTime, 100, "", "abc", null, null);
+        new(sentAt, "0.1.0", 1, "17763", bootTime, 100, null, null, "", "abc", null, null);
 
     [Fact]
     public async Task Heartbeat_NewerSentAt_Stored()
@@ -504,16 +504,16 @@ public class TelemetryOrderingTests
     }
 }
 
-public class HeartbeatDiskMetricsTests
+public class HeartbeatMetricsTests
 {
-    private static HeartbeatPayload Hb(string? freeDiskJson) => new(
+    private static HeartbeatPayload Hb(string? freeDiskJson, long? memTotal = null, long? memAvail = null) => new(
         DateTimeOffset.Parse("2024-08-07T15:00:00Z"), "0.1.0", 1, "17763",
-        DateTimeOffset.Parse("2024-08-01T00:00:00Z"), 100, "", "abc", null, freeDiskJson);
+        DateTimeOffset.Parse("2024-08-01T00:00:00Z"), 100, memTotal, memAvail, "", "abc", null, freeDiskJson);
 
     [Fact]
     public void FromHeartbeat_MapsEveryVolumeToBytesAndPctSeries()
     {
-        var metrics = HeartbeatDiskMetrics.FromHeartbeat("h1", Hb(
+        var metrics = HeartbeatMetrics.FromHeartbeat("h1", Hb(
             """[{"path":"C:\\","bytes":12345678,"pct":0.23},{"path":"D:\\","bytes":999999999,"pct":0.05}]"""),
             DateTimeOffset.Parse("2024-08-07T15:00:30Z"));
 
@@ -526,17 +526,40 @@ public class HeartbeatDiskMetricsTests
     }
 
     [Fact]
-    public void FromHeartbeat_NoFreeDisk_ReturnsEmpty()
+    public void FromHeartbeat_MapsAvailableRamToBytesAndPctSeries()
     {
-        Assert.Empty(HeartbeatDiskMetrics.FromHeartbeat("h1", Hb(null), DateTimeOffset.UtcNow));
-        Assert.Empty(HeartbeatDiskMetrics.FromHeartbeat("h1", Hb("null"), DateTimeOffset.UtcNow));
-        Assert.Empty(HeartbeatDiskMetrics.FromHeartbeat("h1", Hb("{}"), DateTimeOffset.UtcNow));
+        var metrics = HeartbeatMetrics.FromHeartbeat("h1", Hb(null, memTotal: 34_359_738_368, memAvail: 8_589_934_592),
+            DateTimeOffset.Parse("2024-08-07T15:00:30Z"));
+
+        Assert.Equal(2, metrics.Count);
+        Assert.Contains(metrics, m => m.Name == "mem_available" && m.Value == 8_589_934_592 && m.Unit == "B");
+        Assert.Contains(metrics, m => m.Name == "mem_available_pct" && m.Value == 25.0 && m.Unit == "%");
+    }
+
+    [Fact]
+    public void FromHeartbeat_MemWithoutTotal_OnlyAbsoluteSeries()
+    {
+        // No total ⇒ the pct series cannot be derived; the absolute one still ships.
+        var metrics = HeartbeatMetrics.FromHeartbeat("h1", Hb(null, memTotal: null, memAvail: 4_000_000_000),
+            DateTimeOffset.UtcNow);
+
+        var single = Assert.Single(metrics);
+        Assert.Equal("mem_available", single.Name);
+        Assert.Equal(4_000_000_000, single.Value);
+    }
+
+    [Fact]
+    public void FromHeartbeat_NoFreeDiskOrMem_ReturnsEmpty()
+    {
+        Assert.Empty(HeartbeatMetrics.FromHeartbeat("h1", Hb(null), DateTimeOffset.UtcNow));
+        Assert.Empty(HeartbeatMetrics.FromHeartbeat("h1", Hb("null"), DateTimeOffset.UtcNow));
+        Assert.Empty(HeartbeatMetrics.FromHeartbeat("h1", Hb("{}"), DateTimeOffset.UtcNow));
     }
 
     [Fact]
     public void FromHeartbeat_SkipsMalformedEntries()
     {
-        var metrics = HeartbeatDiskMetrics.FromHeartbeat("h1", Hb(
+        var metrics = HeartbeatMetrics.FromHeartbeat("h1", Hb(
             """[{"bytes":1,"pct":0.5},{"path":"","bytes":2,"pct":0.5},{"path":"E:\\"},{"path":"F:\\","bytes":3,"pct":"oops"},42]"""),
             DateTimeOffset.UtcNow);
 
@@ -551,6 +574,7 @@ public class TelemetryServiceTests
 {
     private const string HbWithDisk = """
         {"kind":"heartbeat","sent_at":"2024-08-07T15:00:00Z","boot_time":"2024-08-01T00:00:00Z",
+         "mem_total_bytes":34359738368,"mem_available_bytes":8589934592,
          "free_disk":[{"path":"C:\\","bytes":12345678,"pct":0.23},{"path":"D:\\","bytes":999999999,"pct":0.05}]}
         """;
 
@@ -632,13 +656,15 @@ public class TelemetryServiceTests
         // Thresholds are evaluated before the metrics are stored (poll pattern).
         var call = Assert.Single(evaluator.ThresholdCalls);
         Assert.Equal("h1", call.HostId);
-        Assert.Equal(4, call.Metrics.Count);
+        Assert.Equal(6, call.Metrics.Count); // 4 disk series + 2 RAM series
 
-        Assert.Equal(4, health.StoredMetrics.Count);
+        Assert.Equal(6, health.StoredMetrics.Count);
         Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free:C:\\" && m.Value == 12345678 && m.Unit == "B");
         Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free_pct:C:\\" && m.Value == 23.0 && m.Unit == "%");
         Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free:D:\\" && m.Value == 999999999 && m.Unit == "B");
         Assert.Contains(health.StoredMetrics, m => m.Name == "disk_free_pct:D:\\" && m.Value == 5.0 && m.Unit == "%");
+        Assert.Contains(health.StoredMetrics, m => m.Name == "mem_available" && m.Value == 8_589_934_592 && m.Unit == "B");
+        Assert.Contains(health.StoredMetrics, m => m.Name == "mem_available_pct" && m.Value == 25.0 && m.Unit == "%");
         Assert.All(health.StoredMetrics, m => Assert.Equal(ReceivedAt, m.Time));
     }
 

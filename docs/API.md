@@ -423,6 +423,19 @@ matches exactly the volumes whose path appears in the metric name. Evaluation
 and storage are derived work: a failure is logged and contained, never
 rejecting an accepted telemetry request (DEFECTS.md D2).
 
+**Available RAM (same path):** when the heartbeat carries
+`mem_total_bytes`/`mem_available_bytes` (additive-optional, PROTOCOL §7.1),
+the same mapping adds two host-level series:
+
+| Metric name | Value | Unit |
+|---|---|---|
+| `mem_available` | available RAM bytes (free + standby) | `B` |
+| `mem_available_pct` | available share 0–100 | `%` |
+
+Example rule: `mem_available_pct` `lt 10` (below 10 % available) or
+`mem_available` `lt 4294967296` (below 4 GB). No `mem_total_bytes` on the wire
+⇒ only the absolute series is stored (no pct derivable).
+
 ### 6.5 Health endpoint
 
 `GET /health` is intentionally separate from operational readiness endpoints.

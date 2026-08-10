@@ -87,6 +87,8 @@ public sealed record HeartbeatPayload(
     string? OsBuild,
     DateTimeOffset? BootTime,
     long? UptimeS,
+    long? MemTotalBytes,
+    long? MemAvailableBytes,
     string? Degraded,
     string? ConfigHash,
     string? CountersJson,

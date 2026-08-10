@@ -398,6 +398,8 @@ Envelope fields:
 | `protocol_version` | 1 |
 | `os_build` | `Environment.OSVersion` / WMI `Win32_OperatingSystem` |
 | `boot_time`, `uptime_s` | `GetTickCount64` / WMI |
+| `mem_total_bytes` | `GlobalMemoryStatusEx.ullTotalPhys` (kernel32) |
+| `mem_available_bytes` | `GlobalMemoryStatusEx.ullAvailPhys` — the Windows "available" number (free + standby cache), the right low-memory alert signal |
 | `free_disk` | `DriveInfo` for **every fixed volume** (bytes + pct) — OS, spool, VHD datastores, ...; USB/optical/network drives excluded, non-ready fixed drives skipped |
 | `source_id` | from registration (corroborates token-derived identity) |
 | `counters` | `events_sent`, `events_dropped`, `batches_sent`, `batches_failed`, `spool_bytes`, `spool_files`, `queue_depth`, `wmi_timeouts`, `send_errors_last_min` |
