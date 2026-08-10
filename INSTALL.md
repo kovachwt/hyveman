@@ -278,8 +278,9 @@ This repo ships the site config used on the API VM:
 |---|---|
 | `deploy/nginx/hyveman-linux-vm.conf` | `/etc/nginx/sites-available/hyveman` + symlink into `sites-enabled/` |
 
-It serves the SPA from the configured `root` (this VM: `/home/user/www/hyveman/current`),
-proxies `/api/`,
+It serves the SPA from the configured `root` (set it to wherever you publish
+the vite build — `/var/www/hyveman/current` by default, or `$HOME/www/hyveman/current`
+if you deploy with `tools/deploy-web.sh`), proxies `/api/`,
 `/register`, `/ingest/`, `/health` to `http://127.0.0.1:5080`, and applies
 security headers from FRONTEND.md §3/§13 and API.md
 §12. Replace the `server_name` with your FQDN, then:
