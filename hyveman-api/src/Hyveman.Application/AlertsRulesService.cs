@@ -209,7 +209,16 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
                         errors["match.silenceAfterS"] = ["silenceAfterS (seconds) is required for heartbeat rules."];
                     break;
                 case RuleTypes.Threshold:
-                    if (m.GetValueOrDefault("metric") is not string metric || string.IsNullOrEmpty(metric))
+                    // NOTE: values in a JSON-deserialized Dictionary<string, object?>
+                    // are JsonElement, not CLR strings (the old `is not string` check
+                    // always failed, so every threshold rule was rejected).
+                    var metric = m.GetValueOrDefault("metric") switch
+                    {
+                        string s => s,
+                        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+                        _ => null,
+                    };
+                    if (string.IsNullOrEmpty(metric))
                         errors["match.metric"] = ["metric is required for threshold rules."];
                     if (m.GetValueOrDefault("value") is not JsonElement { ValueKind: JsonValueKind.Number })
                         errors["match.value"] = ["value is required for threshold rules."];

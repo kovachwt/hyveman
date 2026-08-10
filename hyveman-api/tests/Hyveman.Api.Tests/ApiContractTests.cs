@@ -488,6 +488,57 @@ public class AgentContractTests
     }
 
     [Fact]
+    public async Task WebApi_CreateThresholdRule_AcceptsJsonMatchMetric()
+    {
+        // Regression: match values arrive as JsonElement from the JSON body,
+        // so the threshold validator's `is not string` check always rejected
+        // valid rules with "metric is required".
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+
+        // Create a real notification channel so the rule's channelIds
+        // satisfies the rule_channels FK.
+        using var createChannel = new HttpRequestMessage(HttpMethod.Post, "/api/v1/notification-channels");
+        createChannel.Headers.Add("X-CSRF-Token", csrf);
+        createChannel.Headers.Add("Origin", "http://localhost:5173");
+        createChannel.Content = new StringContent(
+            """{"name":"ops-chan","kind":"webhook","enabled":true,"config":{"webhookUrl":"https://example.com/hook"}}""",
+            Encoding.UTF8, "application/json");
+        var channelResp = await client.SendAsync(createChannel);
+        Assert.Equal(HttpStatusCode.OK, channelResp.StatusCode);
+        var channelId = (await ReadJson(channelResp)).GetProperty("id").GetString();
+
+        using var createRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        createRule.Headers.Add("X-CSRF-Token", csrf);
+        createRule.Headers.Add("Origin", "http://localhost:5173");
+        createRule.Content = new StringContent(
+            $"{{\"name\":\"Free Memory < 20%\",\"type\":\"threshold\",\"severity\":\"warning\",\"cooldownS\":300,\"enabled\":true,\"match\":{{\"metric\":\"mem_available_pct\",\"comparator\":\"lt\",\"value\":20}},\"channelIds\":[\"{channelId}\"]}}",
+            Encoding.UTF8, "application/json");
+        var ruleResp = await client.SendAsync(createRule);
+        Assert.Equal(HttpStatusCode.OK, ruleResp.StatusCode);
+        var body = await ReadJson(ruleResp);
+        Assert.Equal("threshold", body.GetProperty("type").GetString());
+        Assert.Equal("mem_available_pct", body.GetProperty("match").GetProperty("metric").GetString());
+        Assert.Equal("lt", body.GetProperty("match").GetProperty("comparator").GetString());
+        Assert.Equal(20, body.GetProperty("match").GetProperty("value").GetDouble());
+
+        // An empty metric must still be rejected.
+        using var empty = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        empty.Headers.Add("X-CSRF-Token", csrf);
+        empty.Headers.Add("Origin", "http://localhost:5173");
+        empty.Content = new StringContent(
+            """{"name":"bad","type":"threshold","severity":"warning","match":{"metric":"","comparator":"lt","value":1}}""",
+            Encoding.UTF8, "application/json");
+        var emptyResp = await client.SendAsync(empty);
+        Assert.Equal(HttpStatusCode.BadRequest, emptyResp.StatusCode);
+        var err = await ReadJson(emptyResp);
+        Assert.Equal("validation_failed", err.GetProperty("code").GetString());
+        Assert.Contains(err.GetProperty("errors").GetProperty("match.metric").EnumerateArray(),
+            e => e.GetString() == "metric is required for threshold rules.");
+    }
+
+    [Fact]
     public async Task WebApi_EventSearch_PagesCoverEveryRow_NoGapsNoDuplicates()
     {
         // DEFECTS.md D5 (API.md §7.2): the +1 probe row must never become the

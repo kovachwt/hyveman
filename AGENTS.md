@@ -26,6 +26,9 @@ The wire protocol and web API are deliberately separate contracts. Don't couple 
 dotnet build Hyveman.Api.sln
 dotnet test  Hyveman.Api.sln
 
+# Linux server only — rebuild API, sync run/api/, restart the user unit. No-op on Windows. Run when finished with server changes
+[ "$(uname -s)" = Linux ] && [ -f ~/.config/systemd/user/hyveman-api.service ] && dotnet build Hyveman.Api.sln && cp -a hyveman-api/src/Hyveman.Api/bin/Debug/net10.0/. run/api/ && systemctl --user restart hyveman-api
+
 # Agent (.NET 10)
 dotnet build Hyveman.Agent.sln
 dotnet test  Hyveman.Agent.sln
