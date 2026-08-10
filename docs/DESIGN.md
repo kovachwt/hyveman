@@ -203,6 +203,21 @@ Three independently built and deployed components:
      loses it (transition on the agent's WMI facts, per host+VM); resolves when
      the heartbeat returns or the VM leaves the running state. Powered-off VMs
      are excluded by design; `stale:true` facts never trigger.
+  6. *Logon rules*: a specific user (or any user) successfully logs in (4624),
+     fails login (4625), or is locked out (4740). Matches the same curated
+     Security classification as `logon_stats` (§4.1/§13 #5) — 4624 restricted
+     to LogonType 2/10 server-side, never trusting the agent's filter alone.
+     Optional `users[]` scope (empty = any user, case-insensitive), optional
+     `logonTypes[]`; event-style fire-and-bump with per-rule cooldown, no
+     resolution phase. Windows-internal console-session accounts (`DWM-x`,
+     `UMFD-x`) are ignored for any-user rules (they are 4624 noise, never
+     human logins); explicitly listed users still match.
+  7. *VM replication rules*: a replicated VM's replication health/state (from
+     the agent's WMI facts, §5.2) enters a configured bad state — default
+     `replication_health` ∈ warning/critical. Threshold-style: fires on a
+     fresh crossing, resolves when replication returns to a non-matching
+     state (ok/not_applicable). Non-replicated VMs (null fields) never
+     trigger; `stale:true` facts are never evaluated.
 - **Behaviors:** deduplication window, escalation levels (info/warn/critical),
   per-rule cooldown, maintenance windows (per host), ack/silence from UI.
 - **Notification channels (per decision):**
@@ -282,9 +297,12 @@ components(id, host_id, type[cpu|memory|disk|controller|psu|fan|temp|...],
            name, state[ok|warning|critical|unknown], detail, last_seen)
 health_snapshots(host_id, time, rollup_state, components_json)  -- history for sparklines
 metrics(host_id, time, name, value, unit)                        -- temps, watts, per-volume disk free
-vms(id, host_id, name, state, heartbeat_ok, last_seen, cpu_pct, mem_mb)
+vms(id, host_id, name, state, heartbeat_ok, last_seen, cpu_pct, mem_mb,
+    replication_state, replication_health, replication_last_apply_time)
   -- latest-wins per (host, name); vm_heartbeat rules detect OK→lost
-  -- transitions against the previous stored facts before the upsert
+  -- transitions against the previous stored facts before the upsert;
+  -- vm_replication rules fire when replication_health/state enters a
+  -- configured bad state (null = not replicated = never matches)
 alerts(id, rule_id, host_id, severity, first_seen, last_seen, count, status, ...)
 rules(id, name, type, match_json, severity, cooldown, enabled)
 rule_channels(rule_id, channel_id)                               -- many-to-many fan-out
@@ -416,7 +434,8 @@ Single admin, internet-exposed UI, minimal friction. Final design:
 7. Daily `VACUUM INTO` backup job + retention ladder (§9).
 
 **Phase 2 — depth**
-- Hyper-V channels + VM inventory/heartbeat via WMI; VM tiles on dashboard.
+- Hyper-V channels + VM inventory/heartbeat/replication health via WMI; VM
+  tiles on dashboard.
 - Full alert rule engine (event-match rules, thresholds, cooldowns, silences).
 - SNMP trap / syslog receiver from iDRAC.
 - Logon stats dashboard (per-user/per-day interactive logon counts per host).

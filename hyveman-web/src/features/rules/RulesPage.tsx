@@ -13,6 +13,7 @@ import {
   DialogTitle,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   IconButton,
   InputLabel,
   MenuItem,
@@ -48,6 +49,10 @@ import {
   COMPONENT_TYPES,
   emptyRuleForm,
   HEALTH_STATES,
+  LOGON_OUTCOME_LABELS,
+  LOGON_OUTCOMES,
+  REPLICATION_HEALTHS,
+  REPLICATION_STATES,
   RULE_SEVERITIES,
   RULE_TYPES,
   ruleFormSchema,
@@ -174,7 +179,7 @@ export default function RulesPage() {
     <Box>
       <PageHeader
         title="Alert rules"
-        subtitle="Health, event, agent-heartbeat, threshold, and VM-heartbeat rules evaluated server-side."
+        subtitle="Health, event, agent-heartbeat, threshold, user-logon, and VM-heartbeat rules evaluated server-side."
         actions={
           <Button variant="contained" startIcon={<Add />} onClick={() => { setEditing(null); setFormOpen(true); }}>
             New rule
@@ -187,7 +192,7 @@ export default function RulesPage() {
       {rules.data && rules.data.length === 0 ? (
         <EmptyState
           title="No rules yet"
-          description="Create rules to raise alerts on hardware health, events, missing agent heartbeats, metric thresholds, and VMs that lose their heartbeat."
+          description="Create rules to raise alerts on hardware health, events, missing agent heartbeats, metric thresholds, user logons, and VMs that lose their heartbeat."
           action={<Button variant="contained" startIcon={<Add />} onClick={() => { setEditing(null); setFormOpen(true); }}>New rule</Button>}
         />
       ) : null}
@@ -446,6 +451,74 @@ export default function RulesPage() {
               </Typography>
             ) : null}
 
+            {type === 'vm_replication' ? (
+              <Stack spacing={1} sx={{ mt: 1 }}>
+                <Controller
+                  name="replicationHealths"
+                  control={control}
+                  render={({ field, fieldState }) => (
+                    <FormControl fullWidth>
+                      <InputLabel>Replication health states</InputLabel>
+                      <Select
+                        label="Replication health states"
+                        multiple
+                        value={field.value}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        disabled={busy}
+                        error={Boolean(fieldState.error)}
+                        renderValue={(selected) => (
+                          <Stack direction="row" spacing={0.5} flexWrap="wrap">
+                            {(selected as string[]).map((s) => <Chip key={s} label={s} size="small" />)}
+                          </Stack>
+                        )}
+                      >
+                        {REPLICATION_HEALTHS.map((s) => (
+                          <MenuItem key={s} value={s}>{s}</MenuItem>
+                        ))}
+                      </Select>
+                      <FormHelperText error={Boolean(fieldState.error)}>
+                        {fieldState.error?.message ?? 'Fires when the VM\'s replication health matches any selected state.'}
+                      </FormHelperText>
+                    </FormControl>
+                  )}
+                />
+                <Controller
+                  name="replicationStates"
+                  control={control}
+                  render={({ field }) => (
+                    <FormControl fullWidth>
+                      <InputLabel>Replication states (optional)</InputLabel>
+                      <Select
+                        label="Replication states (optional)"
+                        multiple
+                        value={field.value}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        disabled={busy}
+                        renderValue={(selected) => (
+                          <Stack direction="row" spacing={0.5} flexWrap="wrap">
+                            {(selected as string[]).length > 0 ? (
+                              (selected as string[]).map((s) => <Chip key={s} label={s} size="small" />)
+                            ) : (
+                              <Typography variant="body2" color="text.secondary">Any state</Typography>
+                            )}
+                          </Stack>
+                        )}
+                      >
+                        {REPLICATION_STATES.map((s) => (
+                          <MenuItem key={s} value={s}>{s}</MenuItem>
+                        ))}
+                      </Select>
+                      <FormHelperText>
+                        Fires when the replication state matches any selected value (e.g. error, discarded);
+                        when empty, only the health selection above applies. Non-replicated VMs never trigger.
+                        Alerts resolve when replication returns to a non-matching state.
+                      </FormHelperText>
+                    </FormControl>
+                  )}
+                />
+              </Stack>
+            ) : null}
+
             {type === 'threshold' ? (
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} sx={{ mt: 1 }}>
                 <Controller
@@ -481,6 +554,37 @@ export default function RulesPage() {
                       helperText={fieldState.error?.message}
                       disabled={busy}
                       sx={{ minWidth: 130 }}
+                    />
+                  )}
+                />
+              </Stack>
+            ) : null}
+
+            {type === 'logon' ? (
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} sx={{ mt: 1 }}>
+                <Controller
+                  name="logonOutcome"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField {...field} select label="Outcome" fullWidth margin="dense" disabled={busy} sx={{ minWidth: 190 }}>
+                      {LOGON_OUTCOMES.map((o) => (
+                        <MenuItem key={o} value={o}>{LOGON_OUTCOME_LABELS[o]}</MenuItem>
+                      ))}
+                    </TextField>
+                  )}
+                />
+                <Controller
+                  name="users"
+                  control={control}
+                  render={({ field }) => (
+                    <TextField
+                      {...field}
+                      label="Users (comma separated, optional)"
+                      fullWidth
+                      margin="dense"
+                      disabled={busy}
+                      placeholder="admin, DOMAIN\jsmith"
+                      helperText="Leave empty for any user. DWM-x / UMFD-x internal accounts are ignored when matching any user."
                     />
                   )}
                 />

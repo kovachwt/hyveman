@@ -124,8 +124,9 @@ public sealed class WmiFactCollector : BackgroundService
         => cim.Message.Contains("namespace", StringComparison.OrdinalIgnoreCase) ||
            (uint)cim.NativeErrorCode is 0x8004100E or 0x80070002;
 
-    /// <summary>One serialized scan: VM list + per-VM summary (AGENT §7).</summary>
-    private static List<VmFact> QueryFacts(CimSession session, AgentOptions opts)
+    /// <summary>One serialized scan: VM list + per-VM summary + replication
+    /// relationships (AGENT §7).</summary>
+    private List<VmFact> QueryFacts(CimSession session, AgentOptions opts)
     {
         var ns = HyperVQueries.Namespace;
         // Budget counts WMI *operations* (provider calls), never result
@@ -146,6 +147,7 @@ public sealed class WmiFactCollector : BackgroundService
 
         // 2. Per-VM summary via GetSummaryInformation (single method call).
         var facts = new List<VmFact>();
+        var summaries = new List<CimInstance>();
         if (!budget.TrySpend())
             return facts;
         var service = session.EnumerateInstances(ns, HyperVQueries.ServiceClass).FirstOrDefault();
@@ -166,26 +168,48 @@ public sealed class WmiFactCollector : BackgroundService
             return facts;
 
         var outVal = result.OutParameters?["SummaryInformation"]?.Value;
-        if (outVal is CimInstance[] summaries)
-        {
-            foreach (var s in summaries)
-            {
-                var fact = HyperVQueries.ToVmFact(s);
-                if (fact is not null)
-                    facts.Add(fact);
-            }
-        }
+        if (outVal is CimInstance[] arr)
+            summaries.AddRange(arr);
         else if (outVal is System.Collections.IEnumerable enumerable)
         {
             foreach (var item in enumerable)
-            {
                 if (item is CimInstance s)
+                    summaries.Add(s);
+        }
+
+        // 3. Replication relationships (AGENT.md §7): one extra operation in
+        // the budget. Joined to the summaries by VM GUID (SystemName = Name).
+        // A host where this class is unavailable (or the query fails) must
+        // not fail the scan: replication facts are best-effort, the rest of
+        // the scan is unaffected.
+        var replicationByGuid = new Dictionary<string, ReplicationFact>();
+        if (budget.TrySpend())
+        {
+            try
+            {
+                foreach (var rel in session.QueryInstances(ns, "WQL", HyperVQueries.ReplicationRelationshipWql))
                 {
-                    var fact = HyperVQueries.ToVmFact(s);
-                    if (fact is not null)
-                        facts.Add(fact);
+                    var repl = HyperVQueries.ToReplicationFact(rel);
+                    if (repl is not null)
+                        replicationByGuid[repl.VmGuid] = repl;
                 }
             }
+            catch (CimException ex) when ((uint)ex.NativeErrorCode is 0x8004100E or 0x80041002 or 0x80041010)
+            {
+                // Class/namespace missing on this host (pre-2012 R2 Hyper-V,
+                // exotic providers): replication facts simply absent.
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Replication relationship scan failed; replication facts omitted for this scan");
+            }
+        }
+
+        foreach (var s in summaries)
+        {
+            var fact = HyperVQueries.ToVmFact(s, replicationByGuid);
+            if (fact is not null)
+                facts.Add(fact);
         }
 
         return facts;
@@ -204,6 +228,11 @@ public sealed class WmiFactCollector : BackgroundService
                 HeartbeatOk = f.HeartbeatOk,
                 CpuPct = f.CpuPct,
                 MemMb = f.MemMb,
+                ReplicationState = f.ReplicationState,
+                ReplicationHealth = f.ReplicationHealth,
+                ReplicationLastApplyTime = f.LastApplyTimeUtc is { } lat
+                    ? lat.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)
+                    : null,
                 LastSeen = f.LastSeenUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)
             }).ToList()
         };

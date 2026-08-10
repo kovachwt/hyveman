@@ -304,13 +304,47 @@ public static class ProtocolValidation
                 long? mem = null;
                 if (vm.TryGetProperty("mem_mb", out var memProp) && memProp.ValueKind is JsonValueKind.Number)
                     mem = memProp.GetInt64();
+                // Replication facts are additive-optional (PROTOCOL §7.1):
+                // null/absent = not replicated. Enums are validated against the
+                // wire contract; an unknown value is rejected (a typo'd enum
+                // must not silently become "not replicated").
+                string? replState = null;
+                if (vm.TryGetProperty("replication_state", out var rsProp))
+                {
+                    if (rsProp.ValueKind != JsonValueKind.Null)
+                    {
+                        if (rsProp.ValueKind != JsonValueKind.String || !ReplicationStates.Known.Contains(rsProp.GetString()!))
+                            return Fail<FactsPayload>($"facts vm '{nameProp.GetString()}' has invalid replication_state", out error);
+                        replState = rsProp.GetString();
+                    }
+                }
+                string? replHealth = null;
+                if (vm.TryGetProperty("replication_health", out var rhProp))
+                {
+                    if (rhProp.ValueKind != JsonValueKind.Null)
+                    {
+                        if (rhProp.ValueKind != JsonValueKind.String || !ReplicationHealths.Known.Contains(rhProp.GetString()!))
+                            return Fail<FactsPayload>($"facts vm '{nameProp.GetString()}' has invalid replication_health", out error);
+                        replHealth = rhProp.GetString();
+                    }
+                }
+                DateTimeOffset? replLastApply = null;
+                if (vm.TryGetProperty("replication_last_apply_time", out var rlProp))
+                {
+                    if (rlProp.ValueKind != JsonValueKind.Null)
+                    {
+                        if (rlProp.ValueKind != JsonValueKind.String || !TryParseUtcTime(rlProp.GetString(), out var rl))
+                            return Fail<FactsPayload>("facts vm invalid replication_last_apply_time", out error);
+                        replLastApply = rl;
+                    }
+                }
                 DateTimeOffset? lastSeen = null;
                 if (vm.TryGetProperty("last_seen", out var lsProp) && lsProp.ValueKind == JsonValueKind.String)
                 {
                     if (!TryParseUtcTime(lsProp.GetString(), out var ls)) return Fail<FactsPayload>("facts vm invalid last_seen", out error);
                     lastSeen = ls;
                 }
-                vms.Add(new VmFact(nameProp.GetString()!, state, hb, cpu, mem, lastSeen));
+                vms.Add(new VmFact(nameProp.GetString()!, state, hb, cpu, mem, lastSeen, replState, replHealth, replLastApply));
             }
         }
 

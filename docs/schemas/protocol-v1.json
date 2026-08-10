@@ -273,6 +273,20 @@
                         "heartbeat_ok": { "type": ["boolean", "null"] },
                         "cpu_pct": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
                         "mem_mb": { "type": ["integer", "null"], "minimum": 0 },
+                        "replication_state": {
+                          "type": ["string", "null"],
+                          "enum": [null, "disabled", "error", "enabled", "replication_in_progress", "planned_failover_in_progress", "snapshot_in_progress", "initial_replication_in_progress", "initial_replication_pending", "recovery_in_progress", "failback_in_progress", "failback_complete", "discarded"],
+                          "description": "Hyper-V Msvm_ReplicationRelationship.ReplicationState; null when the VM is not replicated (PROTOCOL §7.1). Additive-optional. (enum includes null: the SchemaValidator applies enum to JSON null instances.)"
+                        },
+                        "replication_health": {
+                          "type": ["string", "null"],
+                          "enum": [null, "not_applicable", "ok", "warning", "critical"],
+                          "description": "Hyper-V Msvm_ReplicationRelationship.ReplicationHealth; null when the VM is not replicated (PROTOCOL §7.1). Additive-optional. (enum includes null: the SchemaValidator applies enum to JSON null instances.)"
+                        },
+                        "replication_last_apply_time": {
+                          "oneOf": [{ "$ref": "#/definitions/utcTime" }, { "type": "null" }],
+                          "description": "Replication relationship LastApplyTime, UTC (PROTOCOL §7.1). Additive-optional."
+                        },
                         "last_seen": { "$ref": "#/definitions/utcTime" }
                       },
                       "additionalProperties": true

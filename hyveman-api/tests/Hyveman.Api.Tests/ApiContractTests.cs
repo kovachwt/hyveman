@@ -409,7 +409,10 @@ public class AgentContractTests
 
         // 4624 type 10 → success; 4624 type 3 (curated out) → no row;
         // 4625 type 3 → failure; 4740 (no logon type) → failure with null type.
-        var items = json.GetProperty("items").EnumerateArray().ToList();
+        // Scoped to this agent: the fixture DB is shared by the collection and
+        // the endpoint is cross-source.
+        var items = json.GetProperty("items").EnumerateArray()
+            .Where(i => i.GetProperty("sourceName").GetString() == "LOGON-01").ToList();
         Assert.Equal(3, items.Count);
         var admin = Assert.Single(items, i => i.GetProperty("user").GetString() == "admin");
         Assert.Equal(1, admin.GetProperty("successCount").GetInt32());
@@ -536,6 +539,161 @@ public class AgentContractTests
         Assert.Equal("validation_failed", err.GetProperty("code").GetString());
         Assert.Contains(err.GetProperty("errors").GetProperty("match.metric").EnumerateArray(),
             e => e.GetString() == "metric is required for threshold rules.");
+    }
+
+    [Fact]
+    public async Task WebApi_LogonRule_FiresOnFailedLogon_AndRejectsBadOutcome()
+    {
+        // End-to-end: a user-logon rule created via the web API fires on an
+        // accepted 4625 for the listed user, and a rule without an outcome is
+        // rejected at CRUD time.
+        var token = await _fx.RegisterAgentAsync("LOGON-RULE-1");
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+
+        using var createRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        createRule.Headers.Add("X-CSRF-Token", csrf);
+        createRule.Headers.Add("Origin", "http://localhost:5173");
+        createRule.Content = new StringContent(
+            """{"name":"bob failures","type":"logon","severity":"warning","cooldownS":0,"enabled":true,"match":{"outcome":"failure","users":["bob"]}}""",
+            Encoding.UTF8, "application/json");
+        var ruleResp = await client.SendAsync(createRule);
+        Assert.Equal(HttpStatusCode.OK, ruleResp.StatusCode);
+        Assert.Equal("logon", (await ReadJson(ruleResp)).GetProperty("type").GetString());
+
+        // An outcome-less logon rule is invalid.
+        using var badRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        badRule.Headers.Add("X-CSRF-Token", csrf);
+        badRule.Headers.Add("Origin", "http://localhost:5173");
+        badRule.Content = new StringContent(
+            """{"name":"bad","type":"logon","severity":"warning","match":{"users":["bob"]}}""",
+            Encoding.UTF8, "application/json");
+        var badResp = await client.SendAsync(badRule);
+        Assert.Equal(HttpStatusCode.BadRequest, badResp.StatusCode);
+        var badBody = await ReadJson(badResp);
+        Assert.Equal("validation_failed", badBody.GetProperty("code").GetString());
+        Assert.Contains(badBody.GetProperty("errors").GetProperty("match.outcome").EnumerateArray(),
+            e => e.GetString()!.Contains("outcome"));
+
+        // A failed logon for the listed user fires; a success for the same
+        // user (different outcome) and an unlisted user do not.
+        var failed = """
+            {"kind":"log","record_id":"l-1","dedup_scope":"Security","time":"2024-08-07T10:00:00Z","severity":4,"message":"failed logon","fields":{"channel":"Security","event_id":4625,"event_data":{"LogonType":"3","TargetUserName":"bob"}}}
+            """;
+        var success = """
+            {"kind":"log","record_id":"l-2","dedup_scope":"Security","time":"2024-08-07T10:00:01Z","severity":4,"message":"successful logon","fields":{"channel":"Security","event_id":4624,"event_data":{"LogonType":"2","TargetUserName":"bob"}}}
+            """;
+        var other = """
+            {"kind":"log","record_id":"l-3","dedup_scope":"Security","time":"2024-08-07T10:00:02Z","severity":4,"message":"failed logon","fields":{"channel":"Security","event_id":4625,"event_data":{"LogonType":"3","TargetUserName":"carol"}}}
+            """;
+        var resp = await PostAsync("/ingest/logs", token, "{\"v\":1,\"items\":[" + failed + "," + success + "," + other + "]}");
+        Assert.Equal(3, (await ReadJson(resp)).GetProperty("accepted").GetInt32());
+
+        var alerts = await ReadJson(await client.GetAsync("/api/v1/alerts?limit=50"));
+        var fired = alerts.GetProperty("items").EnumerateArray()
+            .Where(a => a.GetProperty("ruleName").GetString() == "bob failures").ToList();
+        var alert = Assert.Single(fired);
+        Assert.Equal("active", alert.GetProperty("status").GetString());
+        Assert.Contains("bob", alert.GetProperty("title").GetString());
+        Assert.Contains("Failed", alert.GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task WebApi_VmReplicationRule_FiresOnDegradedReplication_AndResolves()
+    {
+        // End-to-end: a vm_replication rule created via the web API fires on
+        // agent facts with replication_health=warning (default match), resolves
+        // when replication returns to ok, and never fires for non-replicated
+        // VMs. A bogus replication enum is rejected at CRUD time.
+        var (token, sourceId) = await _fx.RegisterAgentWithSourceAsync("REPL-RULE-1");
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+
+        // Facts evaluation is host-scoped (TelemetryService requires a host
+        // row), so bind the source to a host like the UI does.
+        using var createHost = new HttpRequestMessage(HttpMethod.Post, "/api/v1/hosts");
+        createHost.Headers.Add("X-CSRF-Token", csrf);
+        createHost.Headers.Add("Origin", "http://localhost:5173");
+        createHost.Content = new StringContent("{\"name\":\"REPL-HOST\",\"sourceId\":\"" + sourceId + "\"}", Encoding.UTF8, "application/json");
+        var createdHost = await client.SendAsync(createHost);
+        Assert.Equal(HttpStatusCode.OK, createdHost.StatusCode);
+        var hostId = (await ReadJson(createdHost)).GetProperty("id").GetString();
+
+        using var createRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        createRule.Headers.Add("X-CSRF-Token", csrf);
+        createRule.Headers.Add("Origin", "http://localhost:5173");
+        createRule.Content = new StringContent(
+            """{"name":"repl degraded","type":"vm_replication","severity":"warning","cooldownS":0,"enabled":true,"match":{}}""",
+            Encoding.UTF8, "application/json");
+        var ruleResp = await client.SendAsync(createRule);
+        Assert.Equal(HttpStatusCode.OK, ruleResp.StatusCode);
+        Assert.Equal("vm_replication", (await ReadJson(ruleResp)).GetProperty("type").GetString());
+
+        // An unknown replication state is rejected at CRUD time.
+        using var badRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        badRule.Headers.Add("X-CSRF-Token", csrf);
+        badRule.Headers.Add("Origin", "http://localhost:5173");
+        badRule.Content = new StringContent(
+            """{"name":"bad","type":"vm_replication","severity":"warning","match":{"states":["bogus"]}}""",
+            Encoding.UTF8, "application/json");
+        var badResp = await client.SendAsync(badRule);
+        Assert.Equal(HttpStatusCode.BadRequest, badResp.StatusCode);
+        var badBody = await ReadJson(badResp);
+        Assert.Contains(badBody.GetProperty("errors").GetProperty("match.states").EnumerateArray(),
+            e => e.GetString()!.Contains("states"));
+
+        // Facts with replication_health=warning fire the default-match rule.
+        var degraded = """
+            {"kind":"facts","collected_at":"2024-08-07T15:00:00Z","stale":false,"vms":[
+              {"name":"vm-a","state":"on","replication_state":"replication_in_progress","replication_health":"warning","replication_last_apply_time":"2024-08-07T14:59:00Z"}]}
+            """;
+        var resp = await PostAsync("/ingest/telemetry", token, "{\"v\":1,\"items\":[" + degraded + "]}");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        // The VM endpoint round-trips the replication fields (feeds the UI column).
+        var vms = await ReadJson(await client.GetAsync($"/api/v1/hosts/{hostId}/vms"));
+        var vmRow = Assert.Single(vms.EnumerateArray());
+        Assert.Equal("vm-a", vmRow.GetProperty("name").GetString());
+        Assert.Equal("warning", vmRow.GetProperty("replicationHealth").GetString());
+        Assert.Equal("replication_in_progress", vmRow.GetProperty("replicationState").GetString());
+        // Web DTOs serialize DateTimeOffset with an explicit +00:00 offset
+        // (no converter; the Z-format contract is wire-protocol only).
+        Assert.Equal("2024-08-07T14:59:00+00:00", vmRow.GetProperty("replicationLastApplyTime").GetString());
+
+        var alerts = await ReadJson(await client.GetAsync("/api/v1/alerts?limit=50"));
+        var fired = alerts.GetProperty("items").EnumerateArray()
+            .Where(a => a.GetProperty("ruleName").GetString() == "repl degraded").ToList();
+        var alert = Assert.Single(fired);
+        Assert.Equal("active", alert.GetProperty("status").GetString());
+        Assert.Contains("vm-a", alert.GetProperty("title").GetString());
+
+        // Healthy replication resolves it.
+        var healthy = """
+            {"kind":"facts","collected_at":"2024-08-07T15:01:00Z","stale":false,"vms":[
+              {"name":"vm-a","state":"on","replication_state":"enabled","replication_health":"ok"}]}
+            """;
+        var resp2 = await PostAsync("/ingest/telemetry", token, "{\"v\":1,\"items\":[" + healthy + "]}");
+        Assert.Equal(HttpStatusCode.OK, resp2.StatusCode);
+
+        alerts = await ReadJson(await client.GetAsync("/api/v1/alerts?limit=50"));
+        fired = alerts.GetProperty("items").EnumerateArray()
+            .Where(a => a.GetProperty("ruleName").GetString() == "repl degraded").ToList();
+        var resolved = Assert.Single(fired);
+        Assert.Equal("resolved", resolved.GetProperty("status").GetString());
+
+        // Non-replicated VM (null replication fields) never fires.
+        var plain = """
+            {"kind":"facts","collected_at":"2024-08-07T15:02:00Z","stale":false,"vms":[
+              {"name":"vm-b","state":"on","replication_state":null,"replication_health":null}]}
+            """;
+        var resp3 = await PostAsync("/ingest/telemetry", token, "{\"v\":1,\"items\":[" + plain + "]}");
+        Assert.Equal(HttpStatusCode.OK, resp3.StatusCode);
+        alerts = await ReadJson(await client.GetAsync("/api/v1/alerts?limit=50"));
+        fired = alerts.GetProperty("items").EnumerateArray()
+            .Where(a => a.GetProperty("ruleName").GetString() == "repl degraded" && a.GetProperty("status").GetString() != "resolved").ToList();
+        Assert.Empty(fired);
     }
 
     [Fact]

@@ -57,6 +57,58 @@ public sealed class AlertEvaluatorService(
         }
     }
 
+    /// <summary>Logon rules (DESIGN §4.4 type 6): fires when a Security logon
+    /// event matches the rule's outcome (success/failure/lockout), user list
+    /// (empty = any user) and optional logon-type list. The classification is
+    /// shared with `logon_stats` (LogonStatsService.TryClassify) so the two
+    /// derived consumers can never disagree about what a logon event is.
+    /// DWM-x/UMFD-x internal console-session accounts (4624 noise on hosts)
+    /// are ignored for any-user rules; a rule that explicitly lists one still
+    /// matches. Event-style semantics: fire and bump per occurrence with the
+    /// rule's cooldown; no resolution phase.</summary>
+    public async Task OnLogonEventsAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct)
+    {
+        var ruleList = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.Logon).ToList();
+        if (ruleList.Count == 0) return;
+        var source = await sources.GetByIdAsync(sourceId, ct);
+        if (source is null) return;
+        var host = await hosts.GetBySourceAsync(sourceId, ct);
+
+        var at = clock.UtcNow;
+        foreach (var rule in ruleList)
+        {
+            var match = RuleMatch.ParseLogon(rule.MatchJson);
+            if (match is null || !MatchSourceKind(match, source.Kind)) continue;
+            var anyUser = match.Users.Count == 0;
+            foreach (var item in items)
+            {
+                var info = LogonStatsService.TryClassify(item);
+                if (info is null || info.Outcome != match.Outcome) continue;
+                // Internal console/desktop-session accounts are never human
+                // logins; keep them out of any-user rules (an explicit user
+                // list still matches, e.g. to debug session oddities).
+                if (anyUser && NoiseAccount.IsMatch(info.User)) continue;
+                if (!anyUser && !match.Users.Any(u => string.Equals(u, info.User, StringComparison.OrdinalIgnoreCase))) continue;
+                if (match.LogonTypes.Count > 0 && (info.LogonType is null || !match.LogonTypes.Contains(info.LogonType.Value))) continue;
+
+                var user = info.User;
+                // Windows account names are case-insensitive; a stable
+                // fingerprint avoids per-case alert churn.
+                var fingerprint = $"logon:{info.Outcome}:{user.ToLowerInvariant()}";
+                var title = info.Outcome switch
+                {
+                    LogonOutcomes.Success => $"Successful logon: {user}",
+                    LogonOutcomes.Failure => $"Failed logon: {user}",
+                    _ => $"Account lockout: {user}",
+                };
+                var detail = info.LogonType is { } lt
+                    ? $"{user} on {source.Name} (logon type {lt})"
+                    : $"{user} on {source.Name}";
+                await FireAsync(rule, host?.Id, sourceId, fingerprint, title, detail, at, bump: true, ct);
+            }
+        }
+    }
+
     public async Task OnHealthStateChangedAsync(string hostId, string rollupState,
         IReadOnlyList<ComponentRecord> components, DateTimeOffset at, CancellationToken ct)
     {
@@ -239,6 +291,47 @@ public sealed class AlertEvaluatorService(
         }
     }
 
+    /// <summary>VM replication crossings (DESIGN §4.4 rule type 7): fires
+    /// when a VM's replication health/state enters the rule's bad set and
+    /// resolves when it no longer matches. Threshold-style (like
+    /// OnThresholdsAsync): the live alert itself is the crossing state (D3),
+    /// so a fresh evaluator enforces it identically and restarts lose
+    /// nothing. Non-replicated VMs report null fields — never a match.
+    /// stale:true facts are filtered by the caller (TelemetryService).</summary>
+    public async Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
+        DateTimeOffset at, CancellationToken ct)
+    {
+        var ruleList = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.VmReplication).ToList();
+        if (ruleList.Count == 0) return;
+
+        var parsed = ruleList
+            .Select(r => (Rule: r, Match: RuleMatch.ParseVmReplication(r.MatchJson)))
+            .Where(x => x.Match is not null && MatchSourceKind(x.Match!, "windows-agent"))
+            .ToList();
+        if (parsed.Count == 0) return;
+
+        foreach (var vm in vms)
+        {
+            foreach (var (rule, match) in parsed)
+            {
+                var crossing = match.Matches(vm);
+                var key = AlertKey(rule, hostId, null, $"vmreplication:{vm.Name}");
+                var live = await alerts.FindLiveAsync(key, ct);
+                if (crossing && live is null)
+                {
+                    var detail = $"VM {vm.Name} replication health: {vm.ReplicationHealth ?? "—"}, state: {vm.ReplicationState ?? "—"}"
+                        + (vm.ReplicationLastApplyTime is { } la ? $", last apply: {la:yyyy-MM-dd HH:mm:ss}Z" : "");
+                    await FireAsync(rule, hostId, null, $"vmreplication:{vm.Name}",
+                        $"VM replication degraded: {vm.Name}", detail, at, bump: true, ct);
+                }
+                else if (!crossing && live is not null)
+                {
+                    await ResolveAsync(rule, hostId, null, $"vmreplication:{vm.Name}", at, ct);
+                }
+            }
+        }
+    }
+
     /// <summary>Reconciliation pass (API.md §9.3): re-evaluates current
     /// heartbeat and hardware state after restart; repairs alerts without
     /// inflating counts.</summary>
@@ -372,6 +465,11 @@ public sealed class AlertEvaluatorService(
     private static string AlertKey(RuleRecord rule, string? hostId, string? sourceId, string fingerprint)
         => $"{rule.Id}|{hostId ?? "-"}|{sourceId ?? "-"}|{fingerprint}";
 
+    /// <summary>Internal Windows console/desktop-session accounts (DWM-1,
+    /// UMFD-0, ...) that appear in 4624 LogonType-2 noise; never human logins.
+    /// Ignored by any-user logon rules; explicitly listed users still match.</summary>
+    private static readonly Regex NoiseAccount = new(@"^(?:dwm|umfd)(?:-\d+)+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     internal static string EffectiveStatus(AlertRecord alert, DateTimeOffset at)
     {
         if (alert.Status == AlertStatuses.Resolved) return AlertStatuses.Resolved;
@@ -420,6 +518,11 @@ public sealed class RuleMatch
     public string? Metric { get; private set; }
     public string Comparator { get; private set; } = "gt";
     public double Value { get; private set; }
+    public List<string> Users { get; } = [];
+    public string? Outcome { get; private set; }
+    public List<int> LogonTypes { get; } = [];
+    public List<string> ReplicationHealths { get; } = [];
+    public List<string> ReplicationStates { get; } = [];
 
     public static RuleMatch? ParseEvent(string json) => Parse(json, m =>
     {
@@ -455,6 +558,18 @@ public sealed class RuleMatch
         m.SourceKinds.AddRange(ReadStrings(m, json, "sourceKinds"));
     });
 
+    public static RuleMatch? ParseVmReplication(string json) => Parse(json, m =>
+    {
+        m.SourceKinds.AddRange(ReadStrings(m, json, "sourceKinds"));
+        m.ReplicationHealths.AddRange(ReadStrings(m, json, "healths"));
+        m.ReplicationStates.AddRange(ReadStrings(m, json, "states"));
+        // Default matches the health-rule convention: empty selection = the
+        // two alert-worthy health states. Fully qualified: the instance
+        // property ReplicationHealths shadows the Domain static class.
+        if (m.ReplicationHealths.Count == 0 && m.ReplicationStates.Count == 0)
+            m.ReplicationHealths.AddRange([Hyveman.Domain.ReplicationHealths.Warning, Hyveman.Domain.ReplicationHealths.Critical]);
+    });
+
     public static RuleMatch? ParseThreshold(string json) => Parse(json, m =>
     {
         m.SourceKinds.AddRange(ReadStrings(m, json, "sourceKinds"));
@@ -462,6 +577,32 @@ public sealed class RuleMatch
         m.Comparator = ReadString(m, json, "comparator") ?? "gt";
         m.Value = ReadDouble(m, json, "value") ?? 0;
     });
+
+    public static RuleMatch? ParseLogon(string json) => Parse(json, m =>
+    {
+        m.SourceKinds.AddRange(ReadStrings(m, json, "sourceKinds"));
+        m.Outcome = ReadString(m, json, "outcome");
+        m.Users.AddRange(ReadStrings(m, json, "users"));
+        var types = Read(json, "logonTypes");
+        if (types is JsonArray arr)
+            m.LogonTypes.AddRange(arr.Select(x => x is JsonValue v && v.TryGetValue<int>(out var i) ? i : (int?)null)
+                .Where(i => i is not null).Select(i => i!.Value));
+    });
+
+    /// <summary>vm_replication crossing test: health ∈ healths (when set) AND
+    /// state ∈ states (when set). Null fields (VM not replicated) never
+    /// match — a null health can't be warning/critical, and a null state
+    /// can't be in any configured state list.</summary>
+    public bool Matches(VmRecord vm)
+    {
+        if (ReplicationHealths.Count > 0
+            && (vm.ReplicationHealth is null || !ReplicationHealths.Contains(vm.ReplicationHealth)))
+            return false;
+        if (ReplicationStates.Count > 0
+            && (vm.ReplicationState is null || !ReplicationStates.Contains(vm.ReplicationState)))
+            return false;
+        return ReplicationHealths.Count > 0 || ReplicationStates.Count > 0;
+    }
 
     private static RuleMatch? Parse(string json, Action<RuleMatch> apply)
     {

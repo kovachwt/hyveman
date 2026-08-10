@@ -13,6 +13,7 @@ public static class Migrations
         (3, V3),
         (4, V4),
         (5, V5),
+        (6, V6),
     ];
 
     private const string V1 = """
@@ -368,5 +369,14 @@ public static class Migrations
         CREATE INDEX idx_alerts_status ON alerts(status);
         CREATE INDEX idx_alerts_host ON alerts(host_id);
         CREATE INDEX idx_alerts_last_seen ON alerts(last_seen);
+        """;
+
+    private const string V6 = """
+        -- Per-VM Hyper-V Replica facts (PROTOCOL §7.1, additive-optional):
+        -- null/absent = VM not replicated. The vms table is delete+reinsert
+        -- per scan (latest-wins), so new columns need no backfill.
+        ALTER TABLE vms ADD COLUMN replication_state TEXT NULL;
+        ALTER TABLE vms ADD COLUMN replication_health TEXT NULL;
+        ALTER TABLE vms ADD COLUMN replication_last_apply_time TEXT NULL;
         """;
 }

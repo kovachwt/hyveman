@@ -106,6 +106,114 @@ describe('vm_heartbeat rule', () => {
   });
 });
 
+describe('vm_replication rule', () => {
+  it('submits the default warning/critical health selection', () => {
+    const values = ruleFormSchema.parse({ ...base, name: 'repl', type: 'vm_replication' as const });
+    expect(values.replicationHealths).toEqual(['warning', 'critical']);
+    expect(ruleFormToMatch(values)).toEqual({ healths: ['warning', 'critical'] });
+  });
+
+  it('submits an explicit state list alongside healths', () => {
+    const values = ruleFormSchema.parse({
+      ...base,
+      name: 'repl error',
+      type: 'vm_replication' as const,
+      replicationHealths: ['critical'],
+      replicationStates: ['error', 'discarded'],
+    });
+    expect(ruleFormToMatch(values)).toEqual({ healths: ['critical'], states: ['error', 'discarded'] });
+  });
+
+  it('submits a state-only rule when healths are cleared', () => {
+    const values = ruleFormSchema.parse({
+      ...base,
+      name: 'repl state',
+      type: 'vm_replication' as const,
+      replicationHealths: [],
+      replicationStates: ['recovery_in_progress'],
+    });
+    expect(ruleFormToMatch(values)).toEqual({ states: ['recovery_in_progress'] });
+  });
+
+  it('rejects an empty selection', () => {
+    const result = ruleFormSchema.safeParse({
+      ...base,
+      name: 'empty',
+      type: 'vm_replication' as const,
+      replicationHealths: [],
+      replicationStates: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('round-trips through the edit form, mirroring the backend default', () => {
+    // A stored rule with an empty match defaults to warning/critical at
+    // evaluation; the form must present that selection on edit.
+    const emptyMatch = ruleToForm({
+      id: 'r1',
+      name: 'repl',
+      type: 'vm_replication',
+      severity: 'warning',
+      cooldownS: 0,
+      enabled: true,
+      channelIds: [],
+      match: {},
+    } as never);
+    expect(emptyMatch.replicationHealths).toEqual(['warning', 'critical']);
+    expect(emptyMatch.replicationStates).toEqual([]);
+
+    const explicit = ruleToForm({
+      id: 'r2',
+      name: 'repl2',
+      type: 'vm_replication',
+      severity: 'critical',
+      cooldownS: 0,
+      enabled: true,
+      channelIds: [],
+      match: { healths: ['critical'], states: ['error'] },
+    } as never);
+    expect(explicit.replicationHealths).toEqual(['critical']);
+    expect(explicit.replicationStates).toEqual(['error']);
+  });
+});
+
+describe('logon rule match transformation', () => {
+  it('submits outcome and users (any user when empty)', () => {
+    const anyUser = ruleFormSchema.parse({ ...base, name: 'any failure', type: 'logon' as const, logonOutcome: 'failure', users: '' });
+    expect(ruleFormToMatch(anyUser)).toEqual({ outcome: 'failure' });
+
+    const specific = ruleFormSchema.parse({
+      ...base,
+      name: 'admin success',
+      type: 'logon' as const,
+      logonOutcome: 'success',
+      users: 'admin,  DOMAIN\\jsmith, admin',
+      sourceKinds: ['windows-agent'],
+    });
+    expect(ruleFormToMatch(specific)).toEqual({
+      outcome: 'success',
+      users: ['admin', 'DOMAIN\\jsmith'],
+      sourceKinds: ['windows-agent'],
+    });
+  });
+
+  it('round-trips through the edit form', () => {
+    const form = ruleToForm({
+      id: 'r1',
+      name: 'lockouts',
+      type: 'logon',
+      severity: 'critical',
+      cooldownS: 0,
+      enabled: true,
+      channelIds: [],
+      match: { outcome: 'lockout', users: ['admin', 'bob'] },
+    } as never);
+    expect(form.type).toBe('logon');
+    expect(form.logonOutcome).toBe('lockout');
+    expect(form.users).toBe('admin, bob');
+  });
+});
+
 describe('parseEventIds', () => {
   it('parses comma-separated positive integers', () => {
     expect(parseEventIds('4624, 4625,6008')).toEqual([4624, 4625, 6008]);
@@ -156,6 +264,11 @@ describe('ruleSummary (human-readable)', () => {
     expect(ruleSummary({ type: 'event', match: { channel: 'Security', eventIds: [4625] } })).toContain('Security');
     expect(ruleSummary({ type: 'heartbeat', match: { silenceAfterS: 300 } })).toContain('300');
     expect(ruleSummary({ type: 'vm_heartbeat', match: {} })).toContain('prior OK heartbeat');
+    expect(ruleSummary({ type: 'vm_replication', match: {} })).toContain('warning, critical');
+    expect(ruleSummary({ type: 'vm_replication', match: { healths: ['critical'], states: ['error'] } })).toBe('Replication: critical in state error');
+    expect(ruleSummary({ type: 'vm_replication', match: { states: ['discarded'] } })).toBe('Replication: any health in state discarded');
     expect(ruleSummary({ type: 'threshold', match: { metric: 'power_watts', comparator: 'gt', value: 500 } })).toContain('500');
+    expect(ruleSummary({ type: 'logon', match: { outcome: 'failure', users: ['admin'] } })).toBe('Logon: Failed logon for admin');
+    expect(ruleSummary({ type: 'logon', match: { outcome: 'success' } })).toBe('Logon: Successful logon for any user');
   });
 });

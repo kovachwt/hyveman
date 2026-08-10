@@ -387,4 +387,43 @@ public class ProtocolValidationTests
         Assert.False(f.Vms[1].HeartbeatOk); // the D7 regression
         Assert.Null(f.Vms[2].HeartbeatOk);
     }
+
+    [Fact]
+    public void ParseTelemetryItem_Facts_ReplicationFields_SurviveParsing()
+    {
+        // PROTOCOL §7.1: replication facts are additive-optional; null/absent
+        // means the VM is not replicated. Valid enums parse; unknown enum
+        // values are rejected, not silently coerced to null.
+        var json = """
+            {"kind":"facts","collected_at":"2024-08-07T15:02:10Z","stale":false,"vms":[
+              {"name":"VM-REPL","state":"on","replication_state":"replication_in_progress","replication_health":"warning","replication_last_apply_time":"2024-08-07T15:01:00Z"},
+              {"name":"VM-PLAIN","state":"on","replication_state":null,"replication_health":null,"replication_last_apply_time":null},
+              {"name":"VM-LEGACY","state":"on"}]}
+            """;
+        var el = JsonSerializer.Deserialize<JsonElement>(json);
+        var parsed = ProtocolValidation.ParseTelemetryItem(el, out var error);
+        Assert.Null(error);
+        var f = Assert.IsType<FactsPayload>(parsed);
+        Assert.Equal(3, f.Vms.Count);
+        Assert.Equal("replication_in_progress", f.Vms[0].ReplicationState);
+        Assert.Equal("warning", f.Vms[0].ReplicationHealth);
+        Assert.Equal(DateTimeOffset.Parse("2024-08-07T15:01:00Z"), f.Vms[0].ReplicationLastApplyTime);
+        Assert.Null(f.Vms[1].ReplicationState);   // explicit null = not replicated
+        Assert.Null(f.Vms[1].ReplicationHealth);
+        Assert.Null(f.Vms[1].ReplicationLastApplyTime);
+        Assert.Null(f.Vms[2].ReplicationState);   // absent = not replicated
+    }
+
+    [Theory]
+    [InlineData("replication_state", "\"bogus\"")]
+    [InlineData("replication_health", "\"degraded\"")]
+    [InlineData("replication_last_apply_time", "\"not-a-time\"")]
+    public void ParseTelemetryItem_Facts_InvalidReplicationValues_Rejected(string prop, string badValue)
+    {
+        var json = $$"""{"kind":"facts","collected_at":"2024-08-07T15:02:10Z","stale":false,"vms":[{"name":"V","state":"on","{{prop}}":{{badValue}}}]}""";
+        var el = JsonSerializer.Deserialize<JsonElement>(json);
+        var parsed = ProtocolValidation.ParseTelemetryItem(el, out var error);
+        Assert.Null(parsed);
+        Assert.NotNull(error);
+    }
 }

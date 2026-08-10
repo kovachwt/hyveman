@@ -71,7 +71,9 @@ public sealed class HostsController(
         return vms.Select(v => new VmDto
         {
             Name = v.Name, State = v.State, HeartbeatOk = v.HeartbeatOk, CpuPct = v.CpuPct,
-            MemMb = v.MemMb, LastSeen = v.LastSeen, Stale = v.Stale,
+            MemMb = v.MemMb, ReplicationState = v.ReplicationState,
+            ReplicationHealth = v.ReplicationHealth, ReplicationLastApplyTime = v.ReplicationLastApplyTime,
+            LastSeen = v.LastSeen, Stale = v.Stale,
         }).ToList();
     }
 

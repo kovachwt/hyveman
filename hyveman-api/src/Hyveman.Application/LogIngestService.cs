@@ -64,12 +64,13 @@ public sealed class LogIngestService(
             try
             {
                 await evaluator.OnEventsAcceptedAsync(sourceId, acceptedItems, ct);
+                await evaluator.OnLogonEventsAsync(sourceId, acceptedItems, ct);
             }
             catch (Exception ex)
             {
                 // Alert evaluation must never break ingest durability; the
                 // reconciliation pass repairs state after a crash (API.md §9.3).
-                log.LogError(ex, "Event rule evaluation failed for source {sourceId}; will reconcile later", sourceId);
+                log.LogError(ex, "Alert rule evaluation failed for source {sourceId}; will reconcile later", sourceId);
             }
 
             try

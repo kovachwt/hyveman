@@ -902,6 +902,12 @@ export type VmDtoCpuPct = null | number | string;
  */
 export type VmDtoMemMb = null | number | string;
 
+export type VmDtoReplicationState = null | string;
+
+export type VmDtoReplicationHealth = null | string;
+
+export type VmDtoReplicationLastApplyTime = null | string;
+
 export type VmDtoLastSeen = null | string;
 
 export interface VmDto {
@@ -912,6 +918,9 @@ export interface VmDto {
   cpuPct?: VmDtoCpuPct;
   /** @pattern ^-?(?:0|[1-9]\d*)$ */
   memMb?: VmDtoMemMb;
+  replicationState?: VmDtoReplicationState;
+  replicationHealth?: VmDtoReplicationHealth;
+  replicationLastApplyTime?: VmDtoReplicationLastApplyTime;
   lastSeen?: VmDtoLastSeen;
   stale?: boolean;
 }

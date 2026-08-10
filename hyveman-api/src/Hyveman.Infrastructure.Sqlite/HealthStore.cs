@@ -116,13 +116,20 @@ public sealed class HealthStore(SqliteDb db) : IHealthStore
         foreach (var v in vms)
         {
             await conn.ExecuteAsync(new CommandDefinition("""
-                INSERT INTO vms(host_id, name, state, heartbeat_ok, cpu_pct, mem_mb, last_seen, stale, collected_at, updated_at)
-                VALUES (@HostId, @Name, @State, @HeartbeatOk, @CpuPct, @MemMb, @LastSeen, @Stale, @CollectedAt, @UpdatedAt)
+                INSERT INTO vms(host_id, name, state, heartbeat_ok, cpu_pct, mem_mb, last_seen,
+                                replication_state, replication_health, replication_last_apply_time,
+                                stale, collected_at, updated_at)
+                VALUES (@HostId, @Name, @State, @HeartbeatOk, @CpuPct, @MemMb, @LastSeen,
+                        @ReplicationState, @ReplicationHealth, @ReplicationLastApplyTime,
+                        @Stale, @CollectedAt, @UpdatedAt)
                 """, new
             {
                 HostId = hostId, v.Name, v.State, v.HeartbeatOk,
                 CpuPct = v.CpuPct, MemMb = v.MemMb,
                 LastSeen = v.LastSeen is { } ls ? StoreHelpers.Fmt(ls) : null,
+                ReplicationState = v.ReplicationState,
+                ReplicationHealth = v.ReplicationHealth,
+                ReplicationLastApplyTime = v.ReplicationLastApplyTime is { } rl ? StoreHelpers.Fmt(rl) : null,
                 Stale = v.Stale ? 1 : 0, CollectedAt = StoreHelpers.Fmt(collectedAt),
                 UpdatedAt = StoreHelpers.Fmt(DateTimeOffset.UtcNow),
             }, tx, cancellationToken: ct));
@@ -141,7 +148,9 @@ public sealed class HealthStore(SqliteDb db) : IHealthStore
             r.cpu_pct is null ? null : (double?)StoreHelpers.ToDouble(r.cpu_pct),
             r.mem_mb is null ? null : (long?)StoreHelpers.ToLong(r.mem_mb),
             StoreHelpers.ParseOpt((string?)r.last_seen),
-            (long)r.stale == 1, StoreHelpers.Parse((string)r.collected_at))).ToList();
+            (long)r.stale == 1, StoreHelpers.Parse((string)r.collected_at),
+            (string?)r.replication_state, (string?)r.replication_health,
+            StoreHelpers.ParseOpt((string?)r.replication_last_apply_time))).ToList();
     }
 
     public async Task<long> PurgeMetricsOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct)

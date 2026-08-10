@@ -379,7 +379,8 @@ The host page is tabbed or sectioned into:
 - component health table for CPUs, DIMMs, disks, controllers, PSUs, fans, and
   temperatures;
 - health-history charts using server-bucketed snapshots/metrics;
-- VM list with state, heartbeat, CPU, memory, and last-seen time;
+- VM list with state, heartbeat, replication health, CPU, memory, and
+  last-seen time;
 - recent critical events; and
 - host-scoped alerts and maintenance windows.
 
@@ -433,9 +434,15 @@ Rule forms are type-specific:
 - health state rules expose component/state selectors;
 - event rules expose source/channel/event ID/severity/message matching;
 - heartbeat rules expose duration and source scope;
-- threshold rules expose metric, comparator, value, and duration; and
+- threshold rules expose metric, comparator, value, and duration;
 - VM-heartbeat rules have no options: they fire when a running VM with a
-  prior OK heartbeat goes lost, and resolve on recovery or power-off.
+  prior OK heartbeat goes lost, and resolve on recovery or power-off;
+- VM-replication rules expose replication-health and replication-state
+  selectors (default: fire when `replication_health` is warning or critical),
+  and resolve when replication returns to a non-matching state; and
+- user-logon rules expose an outcome (success/failure/lockout) and an
+  optional comma-separated user list (empty = any user); the UI notes that
+  `DWM-x`/`UMFD-x` internal accounts are ignored for any-user rules.
 
 The UI provides human-readable summaries but submits the typed match document
 expected by the API. Client-side schemas improve feedback; the backend remains

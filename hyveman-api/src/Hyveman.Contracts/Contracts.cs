@@ -200,6 +200,9 @@ public sealed class VmDto
     public bool? HeartbeatOk { get; set; }
     public double? CpuPct { get; set; }
     public long? MemMb { get; set; }
+    public string? ReplicationState { get; set; }
+    public string? ReplicationHealth { get; set; }
+    public DateTimeOffset? ReplicationLastApplyTime { get; set; }
     public DateTimeOffset? LastSeen { get; set; }
     public bool Stale { get; set; }
 }

@@ -265,6 +265,14 @@ public class AlertEvaluatorTests
         "System", "1", DateTimeOffset.UtcNow, severity, "Microsoft-Windows-Kernel-Power", message,
         "{}", null, channel, eventId, 0, 0, null);
 
+    private static ValidatedLogItem LogonItem(string user, long eventId, string? logonType = null, string channel = "Security") => new(
+        "Security", $"e{eventId}:{user}", DateTimeOffset.Parse("2024-08-07T15:00:00Z"), 4,
+        "Microsoft-Windows-Security-Auditing", "logon",
+        logonType is null
+            ? $"{{\"channel\":\"Security\",\"event_data\":{{\"TargetUserName\":\"{user}\"}}}}"
+            : $"{{\"channel\":\"Security\",\"event_data\":{{\"TargetUserName\":\"{user}\",\"LogonType\":\"{logonType}\"}}}}",
+        null, channel, eventId, 0, 0, null);
+
     [Fact]
     public async Task EventRule_Fires_Deduplicates_ThenResolves()
     {
@@ -391,6 +399,12 @@ public class AlertEvaluatorTests
     private static VmRecord Vm(string name, string state, bool? heartbeatOk) =>
         new("h1", name, state, heartbeatOk, null, null, LastSeen: DateTimeOffset.Parse("2024-08-07T15:00:00Z"), Stale: false, CollectedAt: DateTimeOffset.Parse("2024-08-07T15:00:00Z"));
 
+    private static VmRecord ReplVm(string name, string? health, string? state) =>
+        new("h1", name, "on", true, null, null, LastSeen: DateTimeOffset.Parse("2024-08-07T15:00:00Z"), Stale: false,
+            CollectedAt: DateTimeOffset.Parse("2024-08-07T15:00:00Z"),
+            ReplicationState: state, ReplicationHealth: health,
+            ReplicationLastApplyTime: DateTimeOffset.Parse("2024-08-07T15:00:00Z"));
+
     [Fact]
     public async Task VmHeartbeatRule_OkToLost_FiresAndResolves()
     {
@@ -451,6 +465,206 @@ public class AlertEvaluatorTests
         // Graceful shutdown: heartbeat loss is moot, alert resolves.
         await eval.OnVmsChangedAsync("h1", [Vm("web01", "off", null)], now.AddMinutes(1), CancellationToken.None);
         Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task VmReplicationRule_Default_HealthWarningFiresAndResolves()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        // Default match ({}): healths defaults to warning+critical.
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, true, now, now));
+
+        // Healthy replication: no fire.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "ok", "enabled")], now, CancellationToken.None);
+        Assert.Empty(alerts.Alerts);
+
+        // Health drops to warning: fires once.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "warning", "replication_in_progress")], now.AddSeconds(30), CancellationToken.None);
+        var alert = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal("h1", alert.HostId);
+        Assert.Contains("web01", alert.Title);
+        Assert.Contains("warning", alert.Detail);
+
+        // Still warning on the next scan: count stays one per episode.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "warning", "replication_in_progress")], now.AddSeconds(60), CancellationToken.None);
+        Assert.Equal(1, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal(1, alerts.Alerts.Single().Count);
+
+        // Back to ok: resolved.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "ok", "enabled")], now.AddMinutes(2), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task VmReplicationRule_CriticalHealth_FiresAndResolves_WhenRecovered()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "repl down", RuleTypes.VmReplication,
+            """{"healths":["critical"]}""", "critical", 0, true, now, now));
+
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "critical", "error")], now, CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+
+        // Warning is not in the rule's set: resolves.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "warning", "enabled")], now.AddMinutes(1), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task VmReplicationRule_StateOnlyRule_FiresOnConfiguredState()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        // healths empty, states=[error]: fires only when the state matches.
+        rules.Rules.Add(new RuleRecord("r1", "repl error", RuleTypes.VmReplication,
+            """{"healths":[],"states":["error"]}""", "warning", 0, true, now, now));
+
+        // State error with healthy-looking health: fires (healths empty = don't care).
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "ok", "error")], now, CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+
+        // Different VM, enabled state: no fire.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "ok", "enabled")], now.AddSeconds(30), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task VmReplicationRule_NonReplicatedVms_NeverFire()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, true, now, now));
+
+        // Null replication fields (not replicated / no relationship): never a match.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", null, null)], now, CancellationToken.None);
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web02", "not_applicable", "disabled")], now, CancellationToken.None);
+        Assert.Empty(alerts.Alerts);
+    }
+
+    [Fact]
+    public async Task VmReplicationRule_HealthAndState_MustBothMatch()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "repl fail", RuleTypes.VmReplication,
+            """{"healths":["critical"],"states":["error","discarded"]}""", "critical", 0, true, now, now));
+
+        // Health critical but state not in the set: no fire.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "critical", "enabled")], now, CancellationToken.None);
+        Assert.Empty(alerts.Alerts);
+
+        // Both match: fires.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "critical", "discarded")], now.AddSeconds(30), CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+    }
+
+    [Fact]
+    public async Task LogonRule_AnyUserSuccess_FiresPerUserAndBumps()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "human logon", RuleTypes.Logon,
+            """{"outcome":"success"}""", "info", 0, true, now, now));
+
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4624, "2")], CancellationToken.None);
+        var admin = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal("r1", admin.RuleId);
+        Assert.Equal("src_1", admin.SourceId);
+        Assert.Contains("admin", admin.Title);
+        Assert.Contains("logon type 2", admin.Detail);
+
+        // A second user is a separate alert (per-user fingerprint)…
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("bob", 4624, "10")], CancellationToken.None);
+        Assert.Equal(2, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
+
+        // …and the same user again bumps the existing occurrence.
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4624, "2")], CancellationToken.None);
+        Assert.Equal(2, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal(2, alerts.Alerts.Single(a => a.Title.Contains("admin")).Count);
+    }
+
+    [Fact]
+    public async Task LogonRule_UserSpecific_CaseInsensitive_AndOutcomeScoped()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "admin logon", RuleTypes.Logon,
+            """{"outcome":"success","users":["ADMIN"]}""", "critical", 0, true, now, now));
+
+        // Case-insensitive account match (Windows names are case-insensitive).
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4624, "2")], CancellationToken.None);
+        Assert.Single(alerts.Alerts);
+
+        // Same user failing is a different outcome: no fire.
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4625, "3")], CancellationToken.None);
+        // Unlisted user: no fire.
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("bob", 4624, "2")], CancellationToken.None);
+        Assert.Single(alerts.Alerts);
+    }
+
+    [Fact]
+    public async Task LogonRule_IgnoresDwmUmfdForAnyUser_ButMatchesWhenExplicit()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "any logon", RuleTypes.Logon,
+            """{"outcome":"success"}""", "info", 0, true, now, now));
+
+        // Internal console-session noise accounts never fire any-user rules.
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("DWM-1", 4624, "2"), LogonItem("umfd-0", 4624, "2")], CancellationToken.None);
+        Assert.Empty(alerts.Alerts);
+
+        // A real user still fires.
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4624, "2")], CancellationToken.None);
+        Assert.Single(alerts.Alerts);
+
+        // An explicitly listed noise account matches (deliberate opt-in).
+        var explicitRule = new RuleRecord("r2", "dwm watch", RuleTypes.Logon,
+            """{"outcome":"success","users":["DWM-1"]}""", "info", 0, true, now, now);
+        rules.Rules.Add(explicitRule);
+        await eval.OnLogonEventsAsync("src_1", [LogonItem("DWM-1", 4624, "2")], CancellationToken.None);
+        Assert.Equal(2, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
+    }
+
+    [Fact]
+    public async Task LogonRule_LogonTypesAndLockout_Scope()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "network failures", RuleTypes.Logon,
+            """{"outcome":"failure","logonTypes":[3]}""", "warning", 0, true, now, now));
+        rules.Rules.Add(new RuleRecord("r2", "lockouts", RuleTypes.Logon,
+            """{"outcome":"lockout"}""", "critical", 0, true, now, now));
+
+        await eval.OnLogonEventsAsync("src_1",
+            [LogonItem("bob", 4625, "3"), LogonItem("carol", 4625, "10"), LogonItem("dave", 4740)],
+            CancellationToken.None);
+
+        // r1 fires only for logon type 3; r2 fires only for the lockout.
+        var live = alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved).ToList();
+        Assert.Equal(2, live.Count);
+        Assert.Contains(live, a => a.RuleId == "r1" && a.Title.Contains("bob"));
+        Assert.Contains(live, a => a.RuleId == "r2" && a.Title.Contains("dave"));
+        Assert.DoesNotContain(live, a => a.Title.Contains("carol"));
+    }
+
+    [Fact]
+    public async Task LogonRule_NonLogonItems_Ignored()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "any failure", RuleTypes.Logon,
+            """{"outcome":"failure"}""", "warning", 0, true, now, now));
+
+        // Service logon type 3 on 4624 is not a curated success; a 6008 on the
+        // Security channel is not a logon event at all; only the 4625 fires.
+        await eval.OnLogonEventsAsync("src_1",
+            [LogonItem("svc", 4624, "3"), LogonItem("x", 6008, null), LogonItem("x", 4625, null)],
+            CancellationToken.None);
+        Assert.Single(alerts.Alerts);
+        Assert.Contains("x", alerts.Alerts.Single().Title);
     }
 
     [Fact]
@@ -704,7 +918,9 @@ public class TelemetryServiceTests
         public Exception? ThrowOnThresholds { get; set; }
         public List<(string HostId, IReadOnlyList<MetricRecord> Metrics)> ThresholdCalls { get; } = [];
         public List<(string HostId, IReadOnlyList<VmRecord> Vms)> VmCalls { get; } = [];
+        public List<(string HostId, IReadOnlyList<VmRecord> Vms)> ReplicationCalls { get; } = [];
         public Task OnEventsAcceptedAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct) => Task.CompletedTask;
+        public Task OnLogonEventsAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct) => Task.CompletedTask;
         public Task OnHealthStateChangedAsync(string hostId, string rollupState, IReadOnlyList<ComponentRecord> components, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
         public Task OnHeartbeatSilenceChangedAsync(string? ruleId, string sourceId, bool silent, DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
         public Task OnThresholdsAsync(string hostId, IReadOnlyList<MetricRecord> metrics, DateTimeOffset at, CancellationToken ct)
@@ -715,6 +931,11 @@ public class TelemetryServiceTests
         public Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct)
         {
             VmCalls.Add((hostId, vms));
+            return Task.CompletedTask;
+        }
+        public Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct)
+        {
+            ReplicationCalls.Add((hostId, vms));
             return Task.CompletedTask;
         }
         public Task ReconcileAsync(CancellationToken ct) => Task.CompletedTask;
@@ -773,12 +994,14 @@ public class TelemetryServiceTests
         var staleFacts = Item("""{"kind":"facts","collected_at":"2024-08-07T15:00:00Z","stale":true,"vms":[{"name":"web01","state":"on","heartbeat_ok":false}]}""");
         await svc.ProcessAsync("src_1", [staleFacts], CancellationToken.None);
         Assert.Empty(evaluator.VmCalls);
+        Assert.Empty(evaluator.ReplicationCalls);
 
         var freshFacts = Item("""{"kind":"facts","collected_at":"2024-08-07T15:01:00Z","stale":false,"vms":[{"name":"web01","state":"on","heartbeat_ok":false}]}""");
         await svc.ProcessAsync("src_1", [freshFacts], CancellationToken.None);
         var call = Assert.Single(evaluator.VmCalls);
         Assert.Equal("h1", call.HostId);
         Assert.Equal("web01", Assert.Single(call.Vms).Name);
+        Assert.Single(evaluator.ReplicationCalls);
     }
 
     [Fact]

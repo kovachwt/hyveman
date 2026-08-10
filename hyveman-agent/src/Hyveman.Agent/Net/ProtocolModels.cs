@@ -117,6 +117,9 @@ public sealed class VmFactWire
     [JsonPropertyName("heartbeat_ok")] public bool? HeartbeatOk { get; set; }
     [JsonPropertyName("cpu_pct")] public double? CpuPct { get; set; }
     [JsonPropertyName("mem_mb")] public long? MemMb { get; set; }
+    [JsonPropertyName("replication_state")] public string? ReplicationState { get; set; } // PROTOCOL §7.1; null = not replicated
+    [JsonPropertyName("replication_health")] public string? ReplicationHealth { get; set; } // PROTOCOL §7.1; null = not replicated
+    [JsonPropertyName("replication_last_apply_time")] public string? ReplicationLastApplyTime { get; set; } // UTC; null = not replicated
     [JsonPropertyName("last_seen")] public string LastSeen { get; set; } = "";
 }
 

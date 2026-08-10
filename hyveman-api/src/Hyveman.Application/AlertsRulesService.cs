@@ -212,6 +212,17 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
                     // No required match fields: the rule fires on any OK→lost
                     // transition for running VMs (optional sourceKinds scope).
                     break;
+                case RuleTypes.VmReplication:
+                    // Optional healths[]/states[]; both empty defaults to
+                    // healths=["warning","critical"] server-side. Validate
+                    // enum membership so a typo is rejected at CRUD time.
+                    if (m.GetValueOrDefault("healths") is JsonElement { ValueKind: JsonValueKind.Array } healths
+                        && healths.EnumerateArray().Any(h => h.ValueKind != JsonValueKind.String || !ReplicationHealths.Known.Contains(h.GetString()!)))
+                        errors["match.healths"] = [$"healths must be strings from: {string.Join(", ", ReplicationHealths.Known)}."];
+                    if (m.GetValueOrDefault("states") is JsonElement { ValueKind: JsonValueKind.Array } states
+                        && states.EnumerateArray().Any(s => s.ValueKind != JsonValueKind.String || !ReplicationStates.Known.Contains(s.GetString()!)))
+                        errors["match.states"] = [$"states must be strings from: {string.Join(", ", ReplicationStates.Known)}."];
+                    break;
                 case RuleTypes.Threshold:
                     // NOTE: values in a JSON-deserialized Dictionary<string, object?>
                     // are JsonElement, not CLR strings (the old `is not string` check
@@ -229,6 +240,22 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
                     if (m.GetValueOrDefault("comparator") is JsonElement { ValueKind: JsonValueKind.String } cmp
                         && !new[] { "gt", "gte", "lt", "lte", "eq" }.Contains(cmp.GetString()))
                         errors["match.comparator"] = ["comparator must be gt, gte, lt, lte or eq."];
+                    break;
+                case RuleTypes.Logon:
+                    var outcome = m.GetValueOrDefault("outcome") switch
+                    {
+                        string s2 => s2,
+                        JsonElement { ValueKind: JsonValueKind.String } je2 => je2.GetString(),
+                        _ => null,
+                    };
+                    if (outcome is null || !LogonOutcomes.Known.Contains(outcome))
+                        errors["match.outcome"] = ["outcome (success, failure or lockout) is required for logon rules."];
+                    if (m.GetValueOrDefault("users") is JsonElement { ValueKind: JsonValueKind.Array } users
+                        && users.EnumerateArray().Any(u => u.ValueKind != JsonValueKind.String))
+                        errors["match.users"] = ["users must be an array of account names."];
+                    if (m.GetValueOrDefault("logonTypes") is JsonElement { ValueKind: JsonValueKind.Array } types
+                        && types.EnumerateArray().Any(t => t.ValueKind != JsonValueKind.Number))
+                        errors["match.logonTypes"] = ["logonTypes must be an array of numbers."];
                     break;
             }
         }

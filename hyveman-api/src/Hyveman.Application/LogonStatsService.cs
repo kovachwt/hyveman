@@ -35,37 +35,14 @@ public sealed class LogonStatsService(ILogonStatsStore store)
         var merged = new Dictionary<(string Day, string User, int? Type), (long S, long F)>();
         foreach (var item in items)
         {
-            // The curated channel is "Security"; everything else is not logon
-            // tracking (channel names are case-insensitive on Windows).
-            if (!string.Equals(item.Channel, "Security", StringComparison.OrdinalIgnoreCase)) continue;
+            var info = TryClassify(item);
+            if (info is null) continue;
 
-            long success = 0, failure = 0;
-            int? logonType = null;
-            switch (item.EventId)
-            {
-                case 4624:
-                    // Curated policy (DESIGN §4.1): only interactive/RDP logons.
-                    var lt = ReadLogonType(item.FieldsJson);
-                    if (lt is not (2 or 10)) continue;
-                    logonType = lt;
-                    success = 1;
-                    break;
-                case 4625:
-                    logonType = ReadLogonType(item.FieldsJson);
-                    failure = 1;
-                    break;
-                case 4740:
-                    failure = 1; // lockout carries no logon type (NULL column)
-                    break;
-                default:
-                    continue;
-            }
-
-            var user = ReadTargetUser(item.FieldsJson);
-            if (string.IsNullOrEmpty(user)) continue;
+            var success = info.Outcome == LogonOutcomes.Success ? 1L : 0L;
+            var failure = info.Outcome == LogonOutcomes.Failure || info.Outcome == LogonOutcomes.Lockout ? 1L : 0L;
 
             var day = item.Time.ToUniversalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            var key = (day, user, logonType);
+            var key = (day, info.User, info.LogonType);
             merged[key] = merged.TryGetValue(key, out var cur)
                 ? (cur.S + success, cur.F + failure)
                 : (success, failure);
@@ -73,6 +50,46 @@ public sealed class LogonStatsService(ILogonStatsStore store)
         return merged
             .Select(kv => new LogonStatEntry(kv.Key.Day, kv.Key.User, kv.Key.Type, kv.Value.S, kv.Value.F))
             .ToList();
+    }
+
+    /// <summary>Classifies one item as a security-logon event, or null when it
+    /// is not one. Single curation site for the logon_stats aggregate and the
+    /// logon alert rules (DESIGN §4.4 type 6): the server does not blindly
+    /// trust the agent's filter — 4624 counts only when LogonType is 2
+    /// (interactive) or 10 (RDP), 4625 fails for any type, 4740 is a lockout
+    /// and carries no logon type, and TargetUserName must be present.</summary>
+    public static LogonEventInfo? TryClassify(ValidatedLogItem item)
+    {
+        // The curated channel is "Security"; everything else is not logon
+        // tracking (channel names are case-insensitive on Windows).
+        if (!string.Equals(item.Channel, "Security", StringComparison.OrdinalIgnoreCase)) return null;
+
+        string? outcome = null;
+        int? logonType = null;
+        switch (item.EventId)
+        {
+            case 4624:
+                // Curated policy (DESIGN §4.1): only interactive/RDP logons.
+                var lt = ReadLogonType(item.FieldsJson);
+                if (lt is not (2 or 10)) return null;
+                logonType = lt;
+                outcome = LogonOutcomes.Success;
+                break;
+            case 4625:
+                logonType = ReadLogonType(item.FieldsJson);
+                outcome = LogonOutcomes.Failure;
+                break;
+            case 4740:
+                outcome = LogonOutcomes.Lockout; // lockout carries no logon type (NULL column)
+                break;
+            default:
+                return null;
+        }
+
+        var user = ReadTargetUser(item.FieldsJson);
+        if (string.IsNullOrEmpty(user)) return null;
+
+        return new LogonEventInfo(user, outcome, logonType);
     }
 
     public async Task<LogonStatsResponse> QueryAsync(DateTimeOffset? from, DateTimeOffset? to,

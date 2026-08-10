@@ -541,7 +541,7 @@ resource surface is:
 | Saved searches | CRUD under `/api/v1/saved-searches` | Single-admin configuration |
 | Sources/tokens | `GET /api/v1/sources`, `POST /api/v1/registration-tokens`, revoke actions | Raw registration token returned once |
 | Alerts | CRUD/list/action endpoints under `/api/v1/alerts` | Acknowledge and silence actions |
-| Rules | CRUD under `/api/v1/rules` | Health, event, heartbeat, threshold, and VM-heartbeat rules |
+| Rules | CRUD under `/api/v1/rules` | Health, event, heartbeat, threshold, VM-heartbeat, and user-logon rules |
 | Notifications | CRUD/test under `/api/v1/notification-channels` | Secrets write-only and redacted |
 | Maintenance | CRUD under `/api/v1/maintenance-windows` | Host-scoped suppression windows |
 | Settings | `GET/PATCH /api/v1/settings/retention` | Retention policy and safe operational settings |
@@ -630,6 +630,26 @@ Rule types and their match documents:
   are never evaluated. Because the `vms` table is latest-wins, the transition
   cannot be replayed after a restart — a rule created while a VM is already
   lost fires only after the VM recovers and loses its heartbeat again.
+- `vm_replication` — optional `healths[]` (`ok|warning|critical|
+  not_applicable`), optional `states[]` (the PROTOCOL §7.1
+  `replication_state` enum), optional `sourceKinds[]`. Fires when a VM's
+  agent-reported replication facts (PROTOCOL §7.1) match — `replication_health`
+  ∈ `healths` (when set) AND `replication_state` ∈ `states` (when set); when
+  both are empty the default is `healths: ["warning", "critical"]`.
+  Threshold-style: fires on a fresh crossing, resolves when the VM's
+  replication no longer matches. Non-replicated VMs (all three fields null)
+  never match; `stale:true` facts are never evaluated.
+- `logon` — `outcome` (`success`|`failure`|`lockout`), optional `users[]`
+  (account names; empty = any user, matched case-insensitively), optional
+  `logonTypes[]`, optional `sourceKinds[]`. Fires on each accepted Security
+  logon event whose server-side classification (PROTOCOL §6.6 — the same
+  curation that feeds `logon_stats`) matches: 4624 successes are restricted
+  to LogonType 2/10, 4625 failures to the rule's logon types when set, 4740
+  lockouts. Windows-internal console-session accounts (`DWM-x`, `UMFD-x`)
+  are ignored for any-user rules; a rule that explicitly lists one still
+  matches. Event-style semantics: fire and bump per occurrence under the
+  rule's cooldown, no resolution phase. The alert title carries the user
+  and outcome; per-user occurrences are distinct alerts.
 
 Alert actions are explicit:
 
@@ -792,9 +812,13 @@ The evaluator handles:
 - health-state transitions;
 - event matches by source/host, channel, event ID, severity, and message
   expression;
+- logon outcomes (success/failure/lockout) by user, sharing the §7.5
+  curation;
 - heartbeat silence;
 - threshold crossings;
-- VM heartbeat transitions (OK→lost for running VMs, from Hyper-V facts); and
+- VM heartbeat transitions (OK→lost for running VMs, from Hyper-V facts);
+- VM replication health/state crossings (`vm_replication` rules, from the
+  Hyper-V Replica facts — threshold-style, never on `stale:true` facts); and
 - deduplication, cooldown, escalation, acknowledgement, and maintenance
   suppression.
 

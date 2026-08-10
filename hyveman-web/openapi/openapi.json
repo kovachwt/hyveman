@@ -4186,6 +4186,25 @@
             ],
             "format": "int64"
           },
+          "replicationState": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "replicationHealth": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "replicationLastApplyTime": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
           "lastSeen": {
             "type": [
               "null",

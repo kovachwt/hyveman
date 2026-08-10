@@ -100,7 +100,8 @@ public sealed record FactsPayload(
     bool Stale,
     IReadOnlyList<VmFact> Vms);
 
-public sealed record VmFact(string Name, string State, bool? HeartbeatOk, double? CpuPct, long? MemMb, DateTimeOffset? LastSeen);
+public sealed record VmFact(string Name, string State, bool? HeartbeatOk, double? CpuPct, long? MemMb, DateTimeOffset? LastSeen,
+    string? ReplicationState = null, string? ReplicationHealth = null, DateTimeOffset? ReplicationLastApplyTime = null);
 
 /// <summary>Agent status row (API.md §10 agent_status).</summary>
 public sealed record AgentStatusRow(
@@ -149,7 +150,10 @@ public sealed record VmRecord(
     long? MemMb,
     DateTimeOffset? LastSeen,
     bool Stale,
-    DateTimeOffset CollectedAt);
+    DateTimeOffset CollectedAt,
+    string? ReplicationState = null,
+    string? ReplicationHealth = null,
+    DateTimeOffset? ReplicationLastApplyTime = null);
 
 /// <summary>Alert record (DESIGN §5.2, API.md §9.3).</summary>
 public sealed record AlertRecord(
@@ -258,6 +262,15 @@ public sealed record SavedSearchRecord(
     string FilterJson,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
+
+/// <summary>One classified security-logon event (DESIGN §4.4 type 6, PROTOCOL
+/// §6.6): the shared per-item curation that feeds both `logon_stats`
+/// aggregation and logon alert rules. Outcome is one of LogonOutcomes;
+/// LogonType is null for lockouts (4740).</summary>
+public sealed record LogonEventInfo(
+    string User,
+    string Outcome,
+    int? LogonType);
 
 /// <summary>One aggregated security-logon delta (DESIGN §4.1/§13 #5).
 /// Day is the UTC event day (yyyy-MM-dd). LogonType is null for account

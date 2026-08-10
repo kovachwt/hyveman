@@ -30,6 +30,14 @@ public static class HyperVQueries
     /// <summary>WQL for the VM list (Msvm_ComputerSystem, filtered to VMs).</summary>
     public const string VmListWql = "SELECT * FROM Msvm_ComputerSystem WHERE Caption = 'Virtual Machine'";
 
+    /// <summary>
+    /// WQL for Hyper-V Replica relationships (AGENT.md §7). One instance per
+    /// VM replication relationship (primary side on the replicating host,
+    /// inbound on the replica host); the WMI behind Get-VMReplication.
+    /// Joined to the VM list via SystemName = VM GUID.
+    /// </summary>
+    public const string ReplicationRelationshipWql = "SELECT * FROM Msvm_ReplicationRelationship";
+
     // Msvm_VirtualSystemManagementService is a singleton class — enumerate by class name.
     public const string ServiceClass = "Msvm_VirtualSystemManagementService";
 
@@ -74,16 +82,83 @@ public static class HyperVQueries
     };
 
     /// <summary>
+    /// Msvm_ReplicationRelationship.ReplicationState → wire value (PROTOCOL
+    /// §7.1). Same enum Get-VMReplication surfaces: 0 Disabled · 1 Error ·
+    /// 2 Enabled · 3 ReplicationInProgress · 4 PlannedFailoverInProgress ·
+    /// 5 SnapshotInProgress · 6 InitialReplicationInProgress ·
+    /// 7 InitialReplicationPendingForCompletion · 8 RecoveryInProgress ·
+    /// 9 FailbackInProgress · 10 FailbackComplete · 11 Discarded. Out-of-range
+    /// → null (never a literal "unknown").
+    /// </summary>
+    public static string? MapReplicationState(ushort state) => state switch
+    {
+        0 => "disabled",
+        1 => "error",
+        2 => "enabled",
+        3 => "replication_in_progress",
+        4 => "planned_failover_in_progress",
+        5 => "snapshot_in_progress",
+        6 => "initial_replication_in_progress",
+        7 => "initial_replication_pending",
+        8 => "recovery_in_progress",
+        9 => "failback_in_progress",
+        10 => "failback_complete",
+        11 => "discarded",
+        _ => null
+    };
+
+    /// <summary>
+    /// Msvm_ReplicationRelationship.ReplicationHealth → wire value (PROTOCOL
+    /// §7.1): 0 NotApplicable · 1 Ok · 2 Warning · 3 Critical. Out-of-range →
+    /// null.
+    /// </summary>
+    public static string? MapReplicationHealth(ushort health) => health switch
+    {
+        0 => "not_applicable",
+        1 => "ok",
+        2 => "warning",
+        3 => "critical",
+        _ => null
+    };
+
+    /// <summary>
+    /// Reads the replication-facts CimInstances returned by the
+    /// Msvm_ReplicationRelationship enumeration. SystemName is the key
+    /// property holding the VM GUID (matches Msvm_ComputerSystem.Name /
+    /// Msvm_SummaryInformation.Name request ID 0). Extended-replica hosts
+    /// expose two relationships per VM; no reliable primary discriminator
+    /// exists in WMI, so the last enumerated wins (documented simplification,
+    /// AGENT.md §7).
+    /// </summary>
+    public static ReplicationFact? ToReplicationFact(CimInstance rel)
+    {
+        string? guid = GetString(rel, "SystemName");
+        if (string.IsNullOrEmpty(guid))
+            return null;
+
+        return new ReplicationFact
+        {
+            VmGuid = guid,
+            State = MapReplicationState(GetUInt16(rel, "ReplicationState") ?? 0),
+            Health = MapReplicationHealth(GetUInt16(rel, "ReplicationHealth") ?? 0),
+            LastApplyTimeUtc = GetDateTime(rel, "LastApplyTime")
+        };
+    }
+
+    /// <summary>
     /// Reads the summary-info CimInstances returned by GetSummaryInformation.
     /// Property values are null when not requested / unavailable.
+    /// Replication facts (from Msvm_ReplicationRelationship) are attached by
+    /// VM GUID when available; a VM without a relationship reports null
+    /// replication fields (not replicated — PROTOCOL §7.1).
     /// </summary>
-    public static VmFact? ToVmFact(CimInstance summary)
+    public static VmFact? ToVmFact(CimInstance summary,
+        IReadOnlyDictionary<string, ReplicationFact>? replicationByGuid = null)
     {
-        // ElementName is the friendly display name; Name is the VM's GUID
-        // (MS-WIN32 docs, Msvm_SummaryInformation). Prefer ElementName, fall
-        // back to the GUID so a VM is still identifiable when the display
-        // name is unavailable.
-        string? name = GetString(summary, "ElementName") ?? GetString(summary, "Name");
+        // Name (request ID 0) is the VM GUID — the join key for replication
+        // relationships (SystemName). ElementName is the friendly display name.
+        string? guid = GetString(summary, "Name");
+        string? name = GetString(summary, "ElementName") ?? guid;
         if (string.IsNullOrEmpty(name))
             return null; // entry for a VM that could not be found
 
@@ -94,6 +169,10 @@ public static class HyperVQueries
 
         bool? heartbeatOk = state == "on" ? MapHeartbeat(heartbeat ?? 0) : null;
 
+        ReplicationFact? repl = guid is not null && replicationByGuid is not null
+            ? replicationByGuid.GetValueOrDefault(guid)
+            : null;
+
         return new VmFact
         {
             Name = name,
@@ -101,12 +180,64 @@ public static class HyperVQueries
             HeartbeatOk = heartbeatOk,
             CpuPct = cpu is null ? null : Math.Round(cpu.Value / 100.0, 2),
             MemMb = mem is null ? null : (long?)mem.Value,
+            ReplicationState = repl?.State,
+            ReplicationHealth = repl?.Health,
+            LastApplyTimeUtc = repl?.LastApplyTimeUtc,
             LastSeenUtc = DateTime.UtcNow
         };
     }
 
     private static string? GetString(CimInstance instance, string prop)
         => instance.CimInstanceProperties[prop]?.Value as string;
+
+    private static DateTime? GetDateTime(CimInstance instance, string prop)
+    {
+        var v = instance.CimInstanceProperties[prop]?.Value;
+        switch (v)
+        {
+            case DateTime dt:
+                return dt.Kind == DateTimeKind.Utc ? dt : dt.ToUniversalTime();
+            case string s:
+                // Defensive: providers may yield the raw CIM_DATETIME string
+                // ("20240807150211.000000+000") instead of a typed DateTime.
+                return TryParseWmiDateTime(s);
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Parses the CIM_DATETIME string form ("yyyyMMddHHmmss.ffffff±ooo", with
+    /// an optional "*" wildcard segment) into UTC. Returns null on anything
+    /// unparseable — a replication last-apply time is nice-to-have, never
+    /// worth failing a scan over.
+    /// </summary>
+    public static DateTime? TryParseWmiDateTime(string raw)
+    {
+        var s = raw.Trim();
+        // CIM_DATETIME: yyyymmddHHMMSS.ffffff±ooo (25 chars, 6 fraction digits).
+        if (s.Length != 25 || s[14] != '.')
+            return null;
+
+        // Wildcard fields ("********...") appear on unused/unknown timestamps.
+        if (s.Contains('*'))
+            return null;
+
+        if (!DateTime.TryParseExact(s.AsSpan(0, 14), "yyyyMMddHHmmss",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var dt))
+            return null;
+
+        // Offset: ±hhh (minutes, 3 digits). "+000" / "-000" are UTC.
+        var sign = s[21];
+        if (sign is not ('+' or '-'))
+            return null;
+        if (!int.TryParse(s.AsSpan(22, 3), out var offsetMin))
+            return null;
+
+        var offset = TimeSpan.FromMinutes(sign == '-' ? -offsetMin : offsetMin);
+        return new DateTimeOffset(dt, offset).UtcDateTime;
+    }
 
     private static ushort? GetUInt16(CimInstance instance, string prop)
     {

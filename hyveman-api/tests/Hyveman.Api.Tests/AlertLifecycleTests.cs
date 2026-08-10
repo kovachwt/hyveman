@@ -161,6 +161,9 @@ public sealed class ThrowingEvaluator : IAlertEvaluator
     public Task OnEventsAcceptedAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct)
         => Task.CompletedTask;
 
+    public Task OnLogonEventsAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct)
+        => Task.CompletedTask;
+
     public Task OnHealthStateChangedAsync(string hostId, string rollupState,
         IReadOnlyList<ComponentRecord> components, DateTimeOffset at, CancellationToken ct)
         => Task.CompletedTask;
@@ -174,6 +177,10 @@ public sealed class ThrowingEvaluator : IAlertEvaluator
         => Task.CompletedTask;
 
     public Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
+        DateTimeOffset at, CancellationToken ct)
+        => Task.CompletedTask;
+
+    public Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
         DateTimeOffset at, CancellationToken ct)
         => Task.CompletedTask;
 

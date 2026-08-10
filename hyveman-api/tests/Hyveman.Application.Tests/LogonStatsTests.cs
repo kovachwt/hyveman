@@ -112,6 +112,30 @@ public class LogonStatsTests
         Assert.Equal("2024-08-07", Assert.Single(entries).Day);
     }
 
+    [Fact]
+    public void TryClassify_ClassifiesOutcomes_SharedWithLogonRules()
+    {
+        // The classifier is the single curation site for logon_stats AND the
+        // logon alert rules; assert the exact outcome vocabulary here.
+        var success = LogonStatsService.TryClassify(Item(4624, "admin", "2"));
+        Assert.NotNull(success);
+        Assert.Equal(LogonOutcomes.Success, success.Outcome);
+        Assert.Equal(2, success.LogonType);
+
+        var failed = LogonStatsService.TryClassify(Item(4625, "bob", "3"));
+        Assert.NotNull(failed);
+        Assert.Equal(LogonOutcomes.Failure, failed.Outcome);
+        Assert.Equal(3, failed.LogonType);
+
+        var locked = LogonStatsService.TryClassify(Item(4740, "bob"));
+        Assert.NotNull(locked);
+        Assert.Equal(LogonOutcomes.Lockout, locked.Outcome);
+        Assert.Null(locked.LogonType);
+
+        Assert.Null(LogonStatsService.TryClassify(Item(4624, "svc", "3"))); // non-curated 4624
+        Assert.Null(LogonStatsService.TryClassify(Item(6008, "x", "2")));   // not a logon event
+    }
+
     private sealed class FakeLogonStatsStore(List<LogonStatEntry> sink) : ILogonStatsStore
     {
         public Task IncrementAsync(string sourceId, IReadOnlyList<LogonStatEntry> entries, CancellationToken ct)

@@ -7,19 +7,42 @@
 import { z } from 'zod';
 import type { RuleDto } from '@/api/generated/endpoints';
 
-export const RULE_TYPES = ['health', 'event', 'heartbeat', 'threshold', 'vm_heartbeat'] as const;
+export const RULE_TYPES = ['health', 'event', 'heartbeat', 'threshold', 'vm_heartbeat', 'vm_replication', 'logon'] as const;
 export const RULE_TYPE_LABELS: Record<(typeof RULE_TYPES)[number], string> = {
   health: 'Health state',
   event: 'Event match',
   heartbeat: 'Agent heartbeat',
   threshold: 'Metric threshold',
   vm_heartbeat: 'VM heartbeat lost',
+  vm_replication: 'VM replication degraded',
+  logon: 'User logon',
 };
 export const RULE_SEVERITIES = ['info', 'warning', 'critical'] as const;
 export const SOURCE_KINDS = ['windows-agent', 'linux-agent', 'syslog-feed'] as const;
 export const COMPONENT_TYPES = ['cpu', 'memory', 'disk', 'controller', 'psu', 'fan', 'temp', 'chassis', 'system', 'other'] as const;
 export const HEALTH_STATES = ['ok', 'warning', 'critical', 'unknown'] as const;
+export const REPLICATION_HEALTHS = ['ok', 'warning', 'critical', 'not_applicable'] as const;
+export const REPLICATION_STATES = [
+  'disabled',
+  'error',
+  'enabled',
+  'replication_in_progress',
+  'planned_failover_in_progress',
+  'snapshot_in_progress',
+  'initial_replication_in_progress',
+  'initial_replication_pending',
+  'recovery_in_progress',
+  'failback_in_progress',
+  'failback_complete',
+  'discarded',
+] as const;
 export const COMPARATORS = ['gt', 'gte', 'lt', 'lte', 'eq'] as const;
+export const LOGON_OUTCOMES = ['success', 'failure', 'lockout'] as const;
+export const LOGON_OUTCOME_LABELS: Record<(typeof LOGON_OUTCOMES)[number], string> = {
+  success: 'Successful logon',
+  failure: 'Failed logon',
+  lockout: 'Account lockout',
+};
 
 export interface RuleFormValues {
   name: string;
@@ -44,6 +67,12 @@ export interface RuleFormValues {
   metric: string;
   comparator: (typeof COMPARATORS)[number];
   value: number | '';
+  // vm_heartbeat / vm_replication
+  replicationHealths: string[];
+  replicationStates: string[];
+  // logon
+  logonOutcome: (typeof LOGON_OUTCOMES)[number];
+  users: string;
 }
 
 export function emptyRuleForm(): RuleFormValues {
@@ -63,9 +92,13 @@ export function emptyRuleForm(): RuleFormValues {
     messagePattern: '',
     sourceKinds: [],
     silenceAfterS: 300,
+    replicationHealths: ['warning', 'critical'],
+    replicationStates: [],
     metric: '',
     comparator: 'gt',
     value: '',
+    logonOutcome: 'failure',
+    users: '',
   };
 }
 
@@ -89,9 +122,13 @@ export const ruleFormSchema = z
     messagePattern: z.string().trim(),
     sourceKinds: z.array(z.string()),
     silenceAfterS: nonNegInt,
+    replicationHealths: z.array(z.string()),
+    replicationStates: z.array(z.string()),
     metric: z.string().trim(),
     comparator: z.enum(COMPARATORS),
     value: intOrEmpty,
+    logonOutcome: z.enum(LOGON_OUTCOMES),
+    users: z.string().trim(),
   })
   .superRefine((v, ctx) => {
     if (v.type === 'health' && v.componentTypes.length === 0) {
@@ -108,6 +145,13 @@ export const ruleFormSchema = z
       if (!v.metric) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['metric'], message: 'Metric is required.' });
       if (v.value === '') ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['value'], message: 'Threshold value is required.' });
     }
+    if (v.type === 'vm_replication' && v.replicationHealths.length === 0 && v.replicationStates.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['replicationHealths'],
+        message: 'Select at least one replication health or state.',
+      });
+    }
   });
 
 export type RuleFormValuesValidated = z.infer<typeof ruleFormSchema>;
@@ -120,6 +164,12 @@ export function parseEventIds(raw: string): number[] | null {
     .map(Number);
   if (ids.length === 0) return null;
   return ids.every((n) => Number.isInteger(n) && n > 0) ? ids : null;
+}
+
+/** Comma-separated account names -> unique list; null when empty. */
+export function parseUsers(raw: string): string[] | null {
+  const users = [...new Set(raw.split(',').map((s) => s.trim()).filter(Boolean))];
+  return users.length === 0 ? null : users;
 }
 
 /** Form values -> typed match document (only the fields for the rule type). */
@@ -146,11 +196,23 @@ export function ruleFormToMatch(values: RuleFormValuesValidated): Record<string,
     case 'vm_heartbeat':
       // No options: fires when a running VM whose heartbeat was OK goes lost.
       break;
+    case 'vm_replication':
+      // Backend default (both empty) is healths=["warning","critical"]; the
+      // form pre-selects that default, so healths is sent explicitly.
+      if (values.replicationHealths.length > 0) match.healths = values.replicationHealths;
+      if (values.replicationStates.length > 0) match.states = values.replicationStates;
+      break;
     case 'threshold':
       match.metric = values.metric;
       match.comparator = values.comparator;
       match.value = Number(values.value);
       break;
+    case 'logon': {
+      match.outcome = values.logonOutcome;
+      const users = parseUsers(values.users);
+      if (users) match.users = users;
+      break;
+    }
   }
   return match;
 }
@@ -168,6 +230,15 @@ export function ruleToForm(rule: RuleDto): RuleFormValues {
     const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
     return Number.isFinite(n) ? n : '';
   };
+  // Backend default for vm_replication (both keys absent ⇒ healths =
+  // warning/critical at evaluation time); the form mirrors it so an
+  // untouched edit round-trips without inventing match fields.
+  const replicationHealths = strings('healths');
+  const replicationStates = strings('states');
+  const effectiveHealths =
+    replicationHealths.length > 0 || replicationStates.length > 0
+      ? replicationHealths
+      : ['warning', 'critical'];
   return {
     ...base,
     name: rule.name ?? '',
@@ -185,9 +256,15 @@ export function ruleToForm(rule: RuleDto): RuleFormValues {
     messagePattern: typeof m.messagePattern === 'string' ? m.messagePattern : '',
     sourceKinds: strings('sourceKinds'),
     silenceAfterS: num('silenceAfterS') === '' ? 300 : Number(num('silenceAfterS')),
+    replicationHealths: effectiveHealths,
+    replicationStates,
     metric: typeof m.metric === 'string' ? m.metric : '',
     comparator: (typeof m.comparator === 'string' ? m.comparator : 'gt') as RuleFormValues['comparator'],
     value: num('value'),
+    logonOutcome: (LOGON_OUTCOMES as readonly string[]).includes(String(m.outcome))
+      ? (m.outcome as RuleFormValues['logonOutcome'])
+      : 'failure',
+    users: Array.isArray(m.users) ? (m.users as unknown[]).filter((x): x is string => typeof x === 'string').join(', ') : '',
   };
 }
 
@@ -212,8 +289,26 @@ export function ruleSummary(rule: Pick<RuleDto, 'type' | 'match'>): string {
       return `Heartbeat: silent for ${m.silenceAfterS ?? 300}s`;
     case 'vm_heartbeat':
       return 'VM heartbeat: fires when a running VM with a prior OK heartbeat goes lost';
+    case 'vm_replication': {
+      // Mirrors the backend default: a match with neither key alerts on
+      // warning/critical replication health.
+      const healths = Array.isArray(m.healths) && (m.healths as unknown[]).length > 0
+        ? (m.healths as string[]).join(', ')
+        : Array.isArray(m.states) && (m.states as unknown[]).length > 0 ? null : 'warning, critical';
+      const states = Array.isArray(m.states) && (m.states as unknown[]).length > 0
+        ? (m.states as string[]).join(', ')
+        : null;
+      return `Replication: ${healths ?? 'any health'}${states ? ` in state ${states}` : ''}`;
+    }
     case 'threshold':
       return `Threshold: ${m.metric ?? '?'} ${m.comparator ?? 'gt'} ${m.value ?? '?'}`;
+    case 'logon': {
+      const outcome = (LOGON_OUTCOME_LABELS as Record<string, string>)[String(m.outcome)] ?? String(m.outcome ?? '?');
+      const users = Array.isArray(m.users) && (m.users as unknown[]).length > 0
+        ? (m.users as unknown[]).join(', ')
+        : 'any user';
+      return `Logon: ${outcome} for ${users}`;
+    }
     default:
       return rule.type ?? 'unknown';
   }

@@ -78,8 +78,21 @@ public static class RuleTypes
     public const string Heartbeat = "heartbeat";
     public const string Threshold = "threshold";
     public const string VmHeartbeat = "vm_heartbeat";
+    public const string VmReplication = "vm_replication";
+    public const string Logon = "logon";
 
-    public static readonly string[] Known = [Health, Event, Heartbeat, Threshold, VmHeartbeat];
+    public static readonly string[] Known = [Health, Event, Heartbeat, Threshold, VmHeartbeat, VmReplication, Logon];
+}
+
+/// <summary>Logon-rule outcomes (DESIGN §4.4 type 6): the curated Security
+/// classifications shared with `logon_stats` (PROTOCOL §6.6).</summary>
+public static class LogonOutcomes
+{
+    public const string Success = "success";
+    public const string Failure = "failure";
+    public const string Lockout = "lockout";
+
+    public static readonly string[] Known = [Success, Failure, Lockout];
 }
 
 /// <summary>Notification channel kinds (DESIGN §4.4).</summary>
@@ -130,6 +143,42 @@ public static class VmStates
     public const string Unknown = "unknown";
 
     public static readonly string[] Known = [On, Off, Paused, Saved, Other, Unknown];
+}
+
+/// <summary>VM replication health per PROTOCOL.md §7.1.</summary>
+public static class ReplicationHealths
+{
+    public const string NotApplicable = "not_applicable";
+    public const string Ok = "ok";
+    public const string Warning = "warning";
+    public const string Critical = "critical";
+
+    public static readonly string[] Known = [NotApplicable, Ok, Warning, Critical];
+}
+
+/// <summary>VM replication states per PROTOCOL.md §7.1 (Hyper-V
+/// Msvm_ReplicationRelationship.ReplicationState).</summary>
+public static class ReplicationStates
+{
+    public const string Disabled = "disabled";
+    public const string Error = "error";
+    public const string Enabled = "enabled";
+    public const string ReplicationInProgress = "replication_in_progress";
+    public const string PlannedFailoverInProgress = "planned_failover_in_progress";
+    public const string SnapshotInProgress = "snapshot_in_progress";
+    public const string InitialReplicationInProgress = "initial_replication_in_progress";
+    public const string InitialReplicationPending = "initial_replication_pending";
+    public const string RecoveryInProgress = "recovery_in_progress";
+    public const string FailbackInProgress = "failback_in_progress";
+    public const string FailbackComplete = "failback_complete";
+    public const string Discarded = "discarded";
+
+    public static readonly string[] Known =
+    [
+        Disabled, Error, Enabled, ReplicationInProgress, PlannedFailoverInProgress,
+        SnapshotInProgress, InitialReplicationInProgress, InitialReplicationPending,
+        RecoveryInProgress, FailbackInProgress, FailbackComplete, Discarded
+    ];
 }
 
 /// <summary>Agent degraded states per PROTOCOL.md §7.1.</summary>

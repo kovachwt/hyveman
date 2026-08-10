@@ -137,6 +137,11 @@ export default function HostDetailPage() {
       render: (v) =>
         v.heartbeatOk == null ? '—' : v.heartbeatOk ? 'OK' : 'Lost',
     },
+    {
+      id: 'replication',
+      label: 'Replication',
+      render: (v) => <ReplicationCell vm={v} />,
+    },
     { id: 'cpu', label: 'CPU', align: 'right', render: (v) => formatPercent(v.cpuPct) },
     { id: 'mem', label: 'Memory', align: 'right', render: (v) => (v.memMb != null ? formatBytes(Number(v.memMb) * 1024 * 1024) : '—') },
     { id: 'seen', label: 'Last seen', render: (v) => <TimeDisplay time={v.lastSeen} variant="full" /> },
@@ -473,6 +478,23 @@ function severityToState(severity: number | string | null | undefined): string {
   if (n <= 2) return 'critical';
   if (n === 3) return 'warning';
   return 'ok';
+}
+
+/** Replication health cell (FRONTEND.md §8.2): a health badge when the VM is
+ *  replicated, "—" when not. The tooltip carries the Hyper-V replication
+ *  state and the last apply time. */
+function ReplicationCell({ vm }: { vm: VmDto }) {
+  const health = vm.replicationHealth;
+  if (health == null || health === 'not_applicable') return <span aria-label="Not replicated">—</span>;
+  const state = vm.replicationState ?? '';
+  const lastApply = vm.replicationLastApplyTime
+    ? new Date(vm.replicationLastApplyTime).toLocaleString()
+    : null;
+  const title = [
+    state ? `state: ${state.replaceAll('_', ' ')}` : null,
+    lastApply ? `last apply: ${lastApply}` : null,
+  ].filter(Boolean).join(' · ');
+  return <HealthBadge state={health} size="small" title={title || undefined} />;
 }
 
 // Host-scoped maintenance windows: the API has no host filter, so the list is

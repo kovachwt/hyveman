@@ -365,7 +365,11 @@ Semantics:
 - An aggregation failure never rejects or affects the already-committed batch
   (derived data).
 - The aggregate is read-only to agents and is exposed to the frontend through
-  the web admin API (API.md §7.5).
+  the web admin API (API.md §7.5). The same classification also feeds the
+  `logon` alert rule type (API.md §7.3): the two consumers share one
+  classifier, so an alert rule and the stats can never disagree about what a
+  logon event is. Logon-rule evaluation is likewise derived data — a failure
+  never rejects the committed batch.
 
 ---
 
@@ -422,6 +426,8 @@ Content-Type: application/json; charset=utf-8
       "vms": [
         { "name": "VM1", "state": "on", "heartbeat_ok": true,
           "cpu_pct": 12.3, "mem_mb": 4096,
+          "replication_state": "enabled", "replication_health": "ok",
+          "replication_last_apply_time": "2024-08-07T15:02:09Z",
           "last_seen": "2024-08-07T15:02:09Z" }
       ]
     }
@@ -440,6 +446,23 @@ Content-Type: application/json; charset=utf-8
   `heartbeat_ok` ∈ `true|false|null`. `"vms": []` with `stale:false` means the
   host has **no VMs** (scan succeeded); a failed scan never yields an empty
   list — prior facts are re-emitted with `stale:true` (§7.4).
+- **Replication facts (additive-optional, §3):** `replication_state`,
+  `replication_health`, `replication_last_apply_time` are per-VM Hyper-V
+  Replica facts from the agent's WMI scan (AGENT §7). All three are
+  `null` when the VM is **not replicated** (no `Msvm_ReplicationRelationship`
+  instance, or the host has no Hyper-V Replica). Enums:
+  - `replication_state` ∈ `disabled|error|enabled|replication_in_progress|
+    planned_failover_in_progress|snapshot_in_progress|
+    initial_replication_in_progress|initial_replication_pending|
+    recovery_in_progress|failback_in_progress|failback_complete|discarded`
+    (Hyper-V `ReplicationState`, same values `Get-VMReplication` surfaces).
+  - `replication_health` ∈ `not_applicable|ok|warning|critical` (Hyper-V
+    `ReplicationHealth`).
+  - `replication_last_apply_time` is the relationship's `LastApplyTime`
+    (UTC), i.e. when the replica last applied a change from the primary.
+  An agent that omits the fields (older agent, or the relationship query is
+  unavailable) contributes no replication facts — the server must treat
+  absence and `null` identically.
 - No `record_id`/`dedup_scope` on telemetry items — not idempotent.
 
 ### 7.2 Server behavior
@@ -905,6 +928,8 @@ envelope. Provisional (finalized with the syslog spec):
 | 2024-08-07 | v1 (draft) | Initial: registration, two ingest endpoints, health, idempotency+epoch, command reservation |
 | 2026-08-09 | v1 (rev) | Clarity-only revision (no wire changes): `commands: []` in §5.3/§8.2 examples; version-mismatch response + validation precedence (§3); `(kind, hostname)` identity rule and `boot_id` semantics (§5); response-loss recovery procedure (§5.4); telemetry latest-wins ordering rule + facts empty/stale semantics (§7.4); size-limit semantics for gzip/chunked/encoding (§12); stable codes for 408/502/503/504 and proxy-error note (§13.3); machine-readable schema reference (§13.5); per-stream retry limits + split special case (§14); new open items (§19) |
 | 2026-08-09 | v1 (rev) | Documentation-only: added §6.6 — server-side `logon_stats` aggregate: curated Security items (4624 LogonType 2/10, 4625, 4740, `TargetUserName`) are load-bearing; dedup-safe counting |
+| (next) | v1 (rev) | Documentation-only: §6.6 now notes the same classification feeds the `logon` alert rule type (API.md §7.3) — still server-derived, no wire changes |
+| (next) | v1 (rev) | **Additive-optional wire fields** (no change to existing fields; schema + §7.1 updated): per-VM `replication_state`, `replication_health`, `replication_last_apply_time` in `kind:"facts"` `vms[]` — Hyper-V Replica state/health from the agent WMI scan; `null`/absent when the VM is not replicated. Drives the `vm_replication` alert rule type (API.md §7.3) |
 
 ---
 

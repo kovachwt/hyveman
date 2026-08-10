@@ -446,6 +446,11 @@ public sealed record NotificationResult(bool Ok, string? Error, string ProviderC
 public interface IAlertEvaluator
 {
     Task OnEventsAcceptedAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct);
+
+    /// <summary>Logon-rule evaluation (DESIGN §4.4 type 6): fires logon rules
+    /// against the same classified Security items that feed `logon_stats`.
+    /// Called alongside OnEventsAcceptedAsync from the ingest path.</summary>
+    Task OnLogonEventsAsync(string sourceId, IReadOnlyList<ValidatedLogItem> items, CancellationToken ct);
     Task OnHealthStateChangedAsync(string hostId, string rollupState, IReadOnlyList<ComponentRecord> components, DateTimeOffset at, CancellationToken ct);
 
     /// <summary>silent=true carries the evaluated rule (per-rule threshold from
@@ -454,6 +459,12 @@ public interface IAlertEvaluator
     Task OnHeartbeatSilenceChangedAsync(string? ruleId, string sourceId, bool silent, DateTimeOffset at, CancellationToken ct);
     Task OnThresholdsAsync(string hostId, IReadOnlyList<MetricRecord> metrics, DateTimeOffset at, CancellationToken ct);
     Task OnVmsChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct);
+
+    /// <summary>VM replication-rule evaluation (DESIGN §4.4 type 7): fires
+    /// vm_replication rules when a VM's replication health/state enters the
+    /// rule's bad set, resolves when it no longer matches. Threshold-style;
+    /// called from the facts ingest path before the latest-wins upsert (D3).</summary>
+    Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct);
     Task ReconcileAsync(CancellationToken ct);
 }
 

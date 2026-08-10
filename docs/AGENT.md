@@ -27,7 +27,8 @@ agent emits and consumes.
    host** (a Hyper-V host running up to ~50 VMs) — see §3.
 3. Be a **well-behaved guest** in the WMI namespace Hyper-V and Failover
    Clustering also use — never stall or starve them (see §4.4, §3).
-4. Report Hyper-V inventory + per-VM heartbeat/CPU/RAM as structured facts.
+4. Report Hyper-V inventory + per-VM heartbeat/CPU/RAM + **Hyper-V Replica
+   state/health** as structured facts.
 5. Heartbeat with self-status so the backend can raise an "agent silent"
    alert and graph degradation (dropped events, spool saturation, WMI timeouts).
 6. ~10 s install, single-file exe, one config file, idempotent reinstall.
@@ -378,6 +379,31 @@ serialized scan per `wmi.scan_interval_s` (default 60 s).
 - **VM name:** `vms[].name` = `ElementName` (request ID 1, the friendly display
   name), falling back to `Name` (request ID 0, the VM GUID) when empty — the
   GUID is never sent as the display name.
+- **Replication status:** `SELECT * FROM Msvm_ReplicationRelationship` — one
+  instance per VM replication relationship (this is the WMI behind
+  `Get-VMReplication`). One extra query per scan, counted in the
+  `max_queries_per_scan` budget (operations, not instances — §4.4 rule 2).
+  Join to the VM list by `SystemName` (relationship key = VM GUID) against
+  `Msvm_SummaryInformation.Name` (request ID 0, always returned). Mapped per
+  PROTOCOL §7.1:
+  - `ReplicationState` (uint16): 0 `disabled` · 1 `error` · 2 `enabled` ·
+    3 `replication_in_progress` · 4 `planned_failover_in_progress` ·
+    5 `snapshot_in_progress` · 6 `initial_replication_in_progress` ·
+    7 `initial_replication_pending` · 8 `recovery_in_progress` ·
+    9 `failback_in_progress` · 10 `failback_complete` · 11 `discarded`;
+    out-of-range → `null`.
+  - `ReplicationHealth` (uint16): 0 `not_applicable` · 1 `ok` · 2 `warning` ·
+    3 `critical`; out-of-range → `null`.
+  - `LastApplyTime` (CIM datetime, UTC) → `replication_last_apply_time`;
+    parsed defensively (a provider that yields the raw WMI datetime string is
+    handled; unparseable → `null`).
+  A VM with **no** relationship (not replicated) reports all three fields
+  `null` — the backend must not distinguish "not replicated" from "field
+  absent" (PROTOCOL §7.1). A host where the class is unavailable (pre-2012 R2
+  Hyper-V, exotic providers) fails **only** this query: the rest of the scan
+  still succeeds and replication fields are simply omitted. Extended-replica
+  hosts expose two relationships per VM; v1 surfaces one (the last enumerated
+  wins — documented simplification, no reliable primary discriminator in WMI).
 - **Output:** a single `facts` envelope per scan, sent best-effort via
   TelemetrySender. If a query times out, the prior facts are re-sent with
   `stale=true` and `wmi_timeouts++`; a "wmi_degraded" hint appears in the
@@ -470,7 +496,8 @@ Two item kinds in one body (or a single `kind:heartbeat` / `kind:facts`):
 ```jsonc
 { "v":1, "items":[
   { "kind":"heartbeat", /* §8 fields */ },
-  { "kind":"facts", "vms":[ {name,state,heartbeat_ok,cpu_pct,mem_mb,...} ], "stale":false }
+  { "kind":"facts", "vms":[ {name,state,heartbeat_ok,cpu_pct,mem_mb,
+    replication_state,replication_health,replication_last_apply_time} ], "stale":false }
 ]}
 ```
 Facts/heartbeat are **not idempotent by record_id** (latest-wins on backend);

@@ -61,4 +61,73 @@ public class HyperVQueriesTests
     {
         Assert.Equal(expected, HyperVQueries.MapState(enabledState));
     }
+
+    [Theory]
+    [InlineData(0, "disabled")]
+    [InlineData(1, "error")]
+    [InlineData(2, "enabled")]
+    [InlineData(3, "replication_in_progress")]
+    [InlineData(4, "planned_failover_in_progress")]
+    [InlineData(5, "snapshot_in_progress")]
+    [InlineData(6, "initial_replication_in_progress")]
+    [InlineData(7, "initial_replication_pending")]
+    [InlineData(8, "recovery_in_progress")]
+    [InlineData(9, "failback_in_progress")]
+    [InlineData(10, "failback_complete")]
+    [InlineData(11, "discarded")]
+    public void MapReplicationState_Covers_ReplicationState_Enum(ushort wmiValue, string expected)
+    {
+        Assert.Equal(expected, HyperVQueries.MapReplicationState(wmiValue));
+    }
+
+    [Theory]
+    [InlineData(255)] // out-of-range garbage
+    public void MapReplicationState_Unknown_Is_Null(ushort wmiValue)
+    {
+        Assert.Null(HyperVQueries.MapReplicationState(wmiValue));
+    }
+
+    [Theory]
+    [InlineData(0, "not_applicable")]
+    [InlineData(1, "ok")]
+    [InlineData(2, "warning")]
+    [InlineData(3, "critical")]
+    public void MapReplicationHealth_Covers_ReplicationHealth_Enum(ushort wmiValue, string expected)
+    {
+        Assert.Equal(expected, HyperVQueries.MapReplicationHealth(wmiValue));
+    }
+
+    [Theory]
+    [InlineData(255)]
+    public void MapReplicationHealth_Unknown_Is_Null(ushort wmiValue)
+    {
+        Assert.Null(HyperVQueries.MapReplicationHealth(wmiValue));
+    }
+
+    [Theory]
+    // UTC form (what the Hyper-V provider yields via MMI as DateTime, and the
+    // raw CIM_DATETIME string as a defensive fallback).
+    [InlineData("20240807150211.000000+000", "2024-08-07T15:02:11Z")]
+    [InlineData("20240807150211.123456+000", "2024-08-07T15:02:11Z")]
+    // Local-offset form: normalized to UTC.
+    [InlineData("20240807150211.000000-300", "2024-08-07T20:02:11Z")]
+    [InlineData("20240807150211.000000+045", "2024-08-07T14:17:11Z")]
+    public void TryParseWmiDateTime_Parses_CimDateTimeString(string raw, string expectedUtc)
+    {
+        var parsed = HyperVQueries.TryParseWmiDateTime(raw);
+        Assert.NotNull(parsed);
+        Assert.Equal(DateTimeOffset.Parse(expectedUtc).UtcDateTime, parsed!.Value);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-date")]
+    [InlineData("20240807150211.000000")]      // missing offset sign
+    [InlineData("20240807150211.000000Z")]     // ISO form, not CIM form
+    [InlineData("************************")]   // wildcard (unused timestamp)
+    [InlineData("20240807150211.000000+00")]   // truncated offset
+    public void TryParseWmiDateTime_Unparseable_Is_Null(string raw)
+    {
+        Assert.Null(HyperVQueries.TryParseWmiDateTime(raw));
+    }
 }
