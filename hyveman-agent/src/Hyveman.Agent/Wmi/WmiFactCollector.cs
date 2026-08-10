@@ -128,23 +128,31 @@ public sealed class WmiFactCollector : BackgroundService
     private static List<VmFact> QueryFacts(CimSession session, AgentOptions opts)
     {
         var ns = HyperVQueries.Namespace;
-        var queries = 0;
-        var maxQueries = opts.Wmi.MaxQueriesPerScan;
+        // Budget counts WMI *operations* (provider calls), never result
+        // instances: one QueryInstances returns any number of VMs. Counting
+        // instances here meant hosts with >= max_queries_per_scan VMs silently
+        // reported zero VMs (see QueryBudget).
+        var budget = new QueryBudget(opts.Wmi.MaxQueriesPerScan);
 
         // 1. VM list (Msvm_ComputerSystem) — also the SettingData refs source.
         //    NOTE: WQL must go through QueryInstances — EnumerateInstances treats
         //    its second argument as a class NAME, not a query.
         var vms = new List<CimInstance>();
-        foreach (var instance in session.QueryInstances(ns, "WQL", HyperVQueries.VmListWql))
+        if (budget.TrySpend())
         {
-            if (++queries > maxQueries) break;
-            vms.Add(instance);
+            foreach (var instance in session.QueryInstances(ns, "WQL", HyperVQueries.VmListWql))
+                vms.Add(instance);
         }
 
         // 2. Per-VM summary via GetSummaryInformation (single method call).
         var facts = new List<VmFact>();
+        if (!budget.TrySpend())
+            return facts;
         var service = session.EnumerateInstances(ns, HyperVQueries.ServiceClass).FirstOrDefault();
-        if (service is null || ++queries > maxQueries)
+        if (service is null)
+            return facts;
+
+        if (!budget.TrySpend())
             return facts;
 
         var inParams = new CimMethodParametersCollection
