@@ -64,6 +64,7 @@ public sealed class TelegramNotifier(IHttpClientFactory http, ILogger<TelegramNo
         var sb = new StringBuilder();
         sb.AppendLine($"⚠️ Hyveman: {m.Title}");
         if (!string.IsNullOrEmpty(m.Text)) sb.AppendLine(m.Text);
+        if (!string.IsNullOrEmpty(m.HostName)) sb.AppendLine($"🖥️ Host: {m.HostName}");
         sb.Append($"Severity: {m.Severity}");
         return sb.ToString();
     }
@@ -123,6 +124,7 @@ public sealed class WebhookNotifier(IHttpClientFactory http, ILogger<WebhookNoti
                 title = message.Title,
                 text = message.Text,
                 severity = message.Severity,
+                host = message.HostName,
                 channel = message.ChannelName,
                 source = "hyveman",
             }), Encoding.UTF8, "application/json");
@@ -173,7 +175,7 @@ public sealed class SmtpNotifier : INotifier
             {
                 EnableSsl = useTls,
             };
-            var mail = new System.Net.Mail.MailMessage(from, to, $"Hyveman: {message.Title}", $"{message.Text}\n\nSeverity: {message.Severity}")
+            var mail = new System.Net.Mail.MailMessage(from, to, $"Hyveman: {message.Title}", $"{message.Text}{(string.IsNullOrEmpty(message.HostName) ? "" : $"\n\nHost: {message.HostName}")}\n\nSeverity: {message.Severity}")
             {
                 IsBodyHtml = false,
             };

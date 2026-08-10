@@ -438,6 +438,35 @@ public class SqliteIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task TelegramNotifier_IncludesHostName()
+    {
+        var handler = new CapturingHandler();
+        var notifier = new TelegramNotifier(new FakeHttpClientFactory(handler), NullLogger<TelegramNotifier>.Instance);
+        var msg = new NotificationMessage("Disk full", "C: is at 99%", "critical", "tg", "WEB-01");
+
+        var result = await notifier.SendAsync(msg, """{"botToken":"123:abc","chatId":"-100123"}""", CancellationToken.None);
+
+        Assert.True(result.Ok);
+        using var doc = JsonDocument.Parse(handler.LastBody);
+        var text = doc.RootElement.GetProperty("text").GetString();
+        Assert.Contains("🖥️ Host: WEB-01", text);
+    }
+
+    [Fact]
+    public async Task WebhookNotifier_IncludesHostField()
+    {
+        var handler = new CapturingHandler();
+        var notifier = new WebhookNotifier(new FakeHttpClientFactory(handler), NullLogger<WebhookNotifier>.Instance);
+        var msg = new NotificationMessage("Disk full", "C: is at 99%", "critical", "ops", "WEB-01");
+
+        var result = await notifier.SendAsync(msg, """{"url":"https://hooks.example.com/in"}""", CancellationToken.None);
+
+        Assert.True(result.Ok);
+        using var doc = JsonDocument.Parse(handler.LastBody);
+        Assert.Equal("WEB-01", doc.RootElement.GetProperty("host").GetString());
+    }
+
+    [Fact]
     public async Task TelegramNotifier_MissingKeys_ReturnsCleanError()
     {
         var notifier = new TelegramNotifier(new FakeHttpClientFactory(new FailHandler()), NullLogger<TelegramNotifier>.Instance);
@@ -883,6 +912,20 @@ internal sealed class OkHandler : HttpMessageHandler
             Content = new StringContent("""{"ok":true,"result":{"message_id":1}}""",
                 System.Text.Encoding.UTF8, "application/json"),
         });
+    }
+}
+
+internal sealed class CapturingHandler : HttpMessageHandler
+{
+    public string? LastBody { get; private set; }
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+        return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"ok":true,"result":{"message_id":1}}""",
+                System.Text.Encoding.UTF8, "application/json"),
+        };
     }
 }
 

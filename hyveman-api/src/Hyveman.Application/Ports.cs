@@ -437,7 +437,7 @@ public interface INotifier
     Task<NotificationResult> SendAsync(NotificationMessage message, string configJson, CancellationToken ct);
 }
 
-public sealed record NotificationMessage(string Title, string Text, string Severity, string? ChannelName);
+public sealed record NotificationMessage(string Title, string Text, string Severity, string? ChannelName, string? HostName = null);
 
 public sealed record NotificationResult(bool Ok, string? Error, string ProviderClass);
 

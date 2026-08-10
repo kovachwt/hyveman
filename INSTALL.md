@@ -54,16 +54,13 @@ cd hyveman
 dotnet publish hyveman-api/src/Hyveman.Api -c Release -r win-x64 --self-contained -o C:\deploy\hyveman-api
 # Linux target instead: -r linux-x64 (same binary runs as console/systemd)
 
+# Optionally run the test suites first (both must be green):
+dotnet test Hyveman.Api.sln
+dotnet test Hyveman.Agent.sln
+
 # Agent — single-file exe (AGENT §11.1)
 cd hyveman-agent
 ./build.ps1            # → hyveman-agent\out\hyveman-agent.exe (~68 MB)
-```
-
-Optionally run the test suites first (both must be green):
-
-```powershell
-dotnet test Hyveman.Api.sln
-dotnet test Hyveman.Agent.sln
 ```
 
 ---

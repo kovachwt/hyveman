@@ -236,6 +236,7 @@ public sealed class NotificationDispatchService(
                 var outbox = scope.ServiceProvider.GetRequiredService<IOutboxStore>();
                 var sender = scope.ServiceProvider.GetRequiredService<INotificationSender>();
                 var alerts = scope.ServiceProvider.GetRequiredService<IAlertStore>();
+                var hosts = scope.ServiceProvider.GetRequiredService<IHostStore>();
                 var now = DateTimeOffset.UtcNow;
 
                 foreach (var item in await outbox.DequeueDueAsync(max: 20, now, ct))
@@ -243,11 +244,13 @@ public sealed class NotificationDispatchService(
                     try
                     {
                         var alert = item.AlertId is null ? null : await alerts.GetAsync(item.AlertId, ct);
+                        var hostName = alert?.HostId is null ? null : (await hosts.GetAsync(alert.HostId, ct))?.Name;
                         var message = new NotificationMessage(
                             alert?.Title ?? "Hyveman notification",
                             alert?.Detail ?? "",
                             alert?.Severity ?? "info",
-                            null);
+                            null,
+                            hostName);
                         var result = await sender.SendToChannelAsync(item.ChannelId, message, ct);
                         await outbox.MarkResultAsync(item.Id, result.Ok, result.Error, DateTimeOffset.UtcNow, ct);
                     }
