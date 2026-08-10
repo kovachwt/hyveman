@@ -20,7 +20,7 @@ hardware polling, SQLite storage), and a React **web** operations console.
 |---|---|---|
 | [`hyveman-agent/`](hyveman-agent/) | Windows service (.NET 10, C#): event-log collection (`EvtSubscribe`, bookmarks), curated Security logon IDs, durable disk spool, heartbeat + Hyper-V WMI facts, HTTPS ingest with backoff/retry | [`docs/AGENT.md`](docs/AGENT.md) |
 | [`hyveman-api/`](hyveman-api/) | Backend (.NET 10, ASP.NET Core): agent ingest, web/admin API, alert engine, Dell iDRAC Redfish poller, notification outbox (Telegram/webhook/SMTP), SQLite (WAL + FTS5), AES-GCM credential vault | [`docs/API.md`](docs/API.md) |
-| [`hyveman-web/`](hyveman-web/) | Operations console (React 19 + TypeScript + Vite): fleet overview, event search, alerts/rules/channels, passkey-only login (WebAuthn) | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
+| [`hyveman-web/`](hyveman-web/) | Operations console (React 19 + TypeScript + Vite): fleet overview, host detail + health history + VM list, event search with saved searches, alerts/rules/channels, maintenance windows, logon stats, sources & registration tokens, audit log, retention settings, passkey-only login (WebAuthn) + passkey management | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
 
 The agent↔server wire contract is fixed by
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) (v1, with an embedded JSON schema at
@@ -31,10 +31,12 @@ web API are deliberately separate contracts.
 ## Repository layout
 
 ```text
-docs/                 DESIGN, PROTOCOL, API, AGENT, FRONTEND + wire schema
+docs/                 DESIGN, PROTOCOL, API, AGENT, FRONTEND + wire schema,
+                      REDFISH-MAPPING, SECURITY-AUDIT, DEFECTS
 hyveman-agent/        agent source (src/Hyveman.Agent), tests, build/install scripts
 hyveman-api/          backend source (src/Hyveman.*), tests
 hyveman-web/          React SPA, generated OpenAPI client, e2e tests
+tools/                ops tools (query-db.ps1, mint-reg-token.ps1, deploy-web.sh) — see tools/README.md
 Hyveman.Api.sln       API + test solution (repo root)
 Hyveman.Agent.sln     agent + test solution (repo root)
 deploy/nginx/         single-file production nginx site for the API VM (TLS terminates at proxy)
@@ -91,9 +93,11 @@ loopback.
 dotnet build Hyveman.Api.sln
 dotnet test  Hyveman.Api.sln        # protocol/contract/application/infrastructure/api suites
 dotnet build Hyveman.Agent.sln
-dotnet test  Hyveman.Agent.sln    # 97 unit/property tests
+dotnet test  Hyveman.Agent.sln    # 99 unit/property tests
 (cd hyveman-web && npm run lint && npm run typecheck && npm run test -- --run)
+(cd hyveman-web && npm run api:check)           # generated OpenAPI client is up to date
 (cd hyveman-web && npm run build)               # static artifact in dist/
+(cd hyveman-web && npm run e2e)                 # Playwright e2e (needs a running stack)
 ```
 
 ## Security highlights
@@ -113,11 +117,20 @@ dotnet test  Hyveman.Agent.sln    # 97 unit/property tests
 
 ## Status & roadmap
 
-Phase 1 (MVP) is largely implemented across the three repos. See
-[`docs/DESIGN.md`](docs/DESIGN.md) §10 for the roadmap; phases 2–3 add
-Hyper-V depth, full rule/threshold engines, iDRAC SNMP/syslog receive,
-in-guest agents, and non-Dell providers. The wire protocol already reserves
-the future command channel (DESIGN §12).
+Phase 1 (MVP) is implemented across the three components, and most of Phase 2
+with it. See [`docs/DESIGN.md`](docs/DESIGN.md) §10 for the full roadmap.
+
+Implemented beyond the MVP: Hyper-V VM inventory (`/api/v1/hosts/{id}/vms`,
+shown on host detail), the full alert rule engine (health / event-match /
+heartbeat / threshold rules with cooldowns, silences and maintenance
+windows), the logon-stats dashboard, and an SMTP notifier alongside Telegram
+and webhook.
+
+Still open: iDRAC SNMP-trap / syslog receive, VM tiles on the fleet overview,
+iSM install guidance in [`INSTALL.md`](INSTALL.md) (the agent already
+auto-detects the iSM/iDRAC channel), and the Phase 3 items — in-guest agents,
+non-Dell providers, firmware drift reports, agent auto-update. The wire
+protocol already reserves the future command channel (DESIGN §12).
 
 ---
 
