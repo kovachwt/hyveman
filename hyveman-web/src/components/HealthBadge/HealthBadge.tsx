@@ -46,7 +46,7 @@ export function HealthBadge({ state, title, size = 'medium', label }: HealthBadg
           height: size === 'small' ? 24 : 28,
           color,
           borderColor: color,
-          backgroundColor: `${color}14`,
+          backgroundColor: `${color}${theme.palette.mode === 'dark' ? '29' : '1A'}`,
           '& .MuiChip-icon': { color },
           fontWeight: 600,
         }}

@@ -60,6 +60,22 @@ export function buildTheme(mode: 'light' | 'dark'): Theme {
       },
     },
     typography: {
+      // System font stack: no web font is bundled (the production CSP keeps
+      // font-src to 'self'), so the console renders in each platform's native
+      // UI face — Segoe UI on the Windows admin workstations, the system face
+      // elsewhere. ECharts inherits this via the Chart wrapper's defaults.
+      fontFamily: [
+        '-apple-system',
+        'BlinkMacSystemFont',
+        '"Segoe UI"',
+        'Roboto',
+        '"Helvetica Neue"',
+        'Arial',
+        '"Noto Sans"',
+        'sans-serif',
+        '"Apple Color Emoji"',
+        '"Segoe UI Emoji"',
+      ].join(','),
       fontSize: 14,
       h4: { fontWeight: 600 },
       h5: { fontWeight: 600 },

@@ -2,10 +2,11 @@
  *  Hardware/OS breakdown, agent heartbeat age, iDRAC poll state, and active
  *  alert count. Clicking navigates to /hosts/:id. (Hyper-V health has no
  *  state on the overview; VM health lives on the host detail VMs tab.) */
-import { Card, CardActionArea, CardContent, Chip, Stack, Tooltip, Typography, useTheme } from '@mui/material';
+import { Box, Card, CardActionArea, CardContent, Chip, Stack, Tooltip, Typography, useTheme } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
 import CheckCircleOutline from '@mui/icons-material/CheckCircleOutline';
 import NotificationsActive from '@mui/icons-material/NotificationsActive';
+import Schedule from '@mui/icons-material/Schedule';
 import type { HostTileDto } from '@/api/generated/endpoints';
 import { numOr } from '@/api/dto';
 import { HealthBadge } from '@/components/HealthBadge/HealthBadge';
@@ -44,6 +45,14 @@ export function HealthTile({ host, showKind = true }: HealthTileProps) {
   // scanning eye lands on red instantly.
   const isProblem = rollup === 'critical' || rollup === 'warning';
   const alertCount = numOr(host.activeAlertCount, 0);
+
+  // Surface staleness on the tile itself: the rollup-evaluated time is the
+  // strongest "is this current?" signal, so it should not be the lowest-
+  // emphasis caption (text.disabled) as it previously was. Tint it red once a
+  // few poll cycles have passed without a fresh evaluation.
+  const rollupAgeMs = host.rollupAt ? Date.now() - new Date(host.rollupAt).getTime() : Number.POSITIVE_INFINITY;
+  const rollupStale = rollupAgeMs > 10 * 60_000;
+  const rollupCaptionColor = rollupStale ? 'error.main' : 'text.secondary';
 
   return (
     <Card
@@ -149,9 +158,21 @@ export function HealthTile({ host, showKind = true }: HealthTileProps) {
                 No active alerts
               </Typography>
             )}
-            <Typography variant="caption" color="text.disabled" sx={{ ml: 'auto' }}>
-              {host.rollupAt ? <>Last evaluated <TimeDisplay time={host.rollupAt} variant="relative" /></> : 'Not yet evaluated'}
-            </Typography>
+            <Box component="span" sx={{ ml: 'auto', display: 'inline-flex', alignItems: 'center', gap: 0.5, color: rollupCaptionColor }}>
+              <Schedule fontSize="inherit" />
+              {host.rollupAt ? (
+                <>
+                  <Typography component="span" variant="caption" sx={{ lineHeight: 'inherit' }}>Last evaluated</Typography>
+                  <TimeDisplay
+                    time={host.rollupAt}
+                    variant="relative"
+                    typographyProps={{ variant: 'caption', sx: { fontVariantNumeric: 'tabular-nums' } }}
+                  />
+                </>
+              ) : (
+                <Typography component="span" variant="caption" sx={{ lineHeight: 'inherit' }}>Not yet evaluated</Typography>
+              )}
+            </Box>
           </Stack>
         </CardContent>
       </CardActionArea>

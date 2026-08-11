@@ -4,7 +4,8 @@
  * the browser never re-aggregates events. Works globally (/logon-stats via
  * route-less access) and host-scoped (/hosts/:hostId/logons): the host page
  * resolves the host's source before querying (a host without a source yields
- * no rows, by design).
+ * no rows, by design). LogonStatsContent is also embedded as a "Logons" tab
+ * on the host detail page (showHeader=false there).
  */
 import { useEffect, useMemo } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
@@ -22,6 +23,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import { useGetApiV1HostsId, useGetApiV1LogonStats } from '@/api';
 import { DataTable, type Column } from '@/components/DataTable/DataTable';
 import { LoadingState } from '@/components/LoadingState/LoadingState';
@@ -30,6 +32,7 @@ import { ErrorState } from '@/components/ErrorState/ErrorState';
 import { PageHeader } from '@/components/PageHeader/PageHeader';
 import { Chart } from '@/components/Chart/Chart';
 import { formatCount, utcDayLabel } from '@/lib/format';
+import { healthPalette } from '@/lib/health';
 import type { LogonStatDto } from '@/api/generated/endpoints';
 import {
   emptyLogonStatsFilters,
@@ -43,8 +46,15 @@ import {
   type LogonStatsFilters,
 } from './logonStats';
 
-export default function LogonStatsPage() {
-  const { hostId } = useParams();
+export interface LogonStatsContentProps {
+  /** Host id for host-scoped mode; omit for the global /logon-stats view. */
+  hostId?: string;
+  /** Render the PageHeader (standalone route). Embedded tab usage passes
+   *  false so the host detail page owns the header. */
+  showHeader?: boolean;
+}
+
+export function LogonStatsContent({ hostId, showHeader = false }: LogonStatsContentProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Host-scoped mode: resolve the host's associated source first. Without a
@@ -77,6 +87,12 @@ export default function LogonStatsPage() {
   const totals = useMemo(() => logonTotals(stats.data?.items ?? []), [stats.data]);
   const series = useMemo(() => perDaySeries(stats.data?.items ?? []), [stats.data]);
 
+  // Chart colors ride the documented health palette so the bar chart matches
+  // the OK / critical accents used everywhere else (and stays legible in dark
+  // mode) instead of hard-coded light-only hex values.
+  const theme = useTheme();
+  const palette = healthPalette(theme.palette.mode);
+
   function commit(patch: Partial<LogonStatsFilters>) {
     const next = normalizeLogonStatsFilters({ ...filters, ...patch });
     setSearchParams(logonStatsToSearchParams(next), { replace: true });
@@ -106,7 +122,9 @@ export default function LogonStatsPage() {
     { id: 'failure', label: 'Failures', align: 'right', render: (r) => formatCount(r.failureCount) },
   ];
 
-  const header = hostId ? (
+  // PageHeader only on the standalone route; the embedded host-detail tab
+  // passes showHeader={false} so the host page's own header isn't duplicated.
+  const header = !showHeader ? null : hostId ? (
     <PageHeader
       title={`Logon stats — ${host.data?.name ?? hostId}`}
       subtitle="Per-user/per-day security logons (4624 interactive/RDP, 4625 failures, 4740 lockouts), derived server-side from curated Security events. Days are UTC."
@@ -221,8 +239,8 @@ export default function LogonStatsPage() {
                       },
                       yAxis: { type: 'value', minInterval: 1 },
                       series: [
-                        { name: 'Successes', type: 'bar', stack: 'logons', data: series.successes, color: '#2e7d32' },
-                        { name: 'Failures', type: 'bar', stack: 'logons', data: series.failures, color: '#b71c1c' },
+                        { name: 'Successes', type: 'bar', stack: 'logons', data: series.successes, color: palette.ok },
+                        { name: 'Failures', type: 'bar', stack: 'logons', data: series.failures, color: palette.critical },
                       ],
                     }}
                   />
@@ -277,4 +295,13 @@ function SeedDefaults({ onSeed }: { onSeed: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return null;
+}
+
+/** Route component (FRONTEND.md §5 — global logon stats and
+ *  /hosts/:hostId/logons): delegates to LogonStatsContent with the header
+ *  enabled. The same content is embedded as a "Logons" tab on the host
+ *  detail page, where the header is suppressed. */
+export default function LogonStatsPage() {
+  const { hostId } = useParams();
+  return <LogonStatsContent hostId={hostId} showHeader />;
 }

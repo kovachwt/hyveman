@@ -31,6 +31,9 @@ export interface DataTableProps<T> {
   emptyText?: string;
   getRowProps?: (row: T) => React.HTMLAttributes<HTMLTableRowElement>;
   'aria-label'?: string;
+  /** Drop the container border so a wrapping Paper can own the edge instead
+   *  of producing a nested double border. Default keeps the border. */
+  disableBorder?: boolean;
 }
 
 export function DataTable<T>({
@@ -43,6 +46,7 @@ export function DataTable<T>({
   rowHeight = dense ? 38 : 52,
   emptyText = 'No rows to display.',
   getRowProps,
+  disableBorder = false,
   'aria-label': ariaLabel,
 }: DataTableProps<T>) {
   const parentRef = useRef<HTMLDivElement>(null);
@@ -106,7 +110,12 @@ export function DataTable<T>({
     <TableContainer
       ref={parentRef}
       aria-label={ariaLabel}
-      sx={{ maxHeight, overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
+      sx={{
+        maxHeight,
+        overflow: 'auto',
+        borderRadius: 1,
+        ...(disableBorder ? {} : { border: '1px solid', borderColor: 'divider' }),
+      }}
     >
       <Table
         stickyHeader

@@ -1,6 +1,6 @@
 /** Host details (FRONTEND.md §8.2): rollup summary, component health table,
- *  server-bucketed health history charts, VM list, recent events, and
- *  host-scoped alerts/maintenance. Charts request bounded ranges only. */
+ *  server-bucketed health history charts, VM list, recent events, host-scoped
+ *  logon stats, and alerts/maintenance. Charts request bounded ranges only. */
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
@@ -9,12 +9,12 @@ import {
   Button,
   Chip,
   Grid,
-  MenuItem,
   Paper,
   Stack,
   Tab,
   Tabs,
-  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -34,8 +34,9 @@ import { PageHeader } from '@/components/PageHeader/PageHeader';
 import { DataTable, type Column } from '@/components/DataTable/DataTable';
 import { TimeDisplay } from '@/components/TimeDisplay/TimeDisplay';
 import { Chart } from '@/components/Chart/Chart';
+import { LogonStatsContent } from '@/features/logons/LogonStatsPage';
 import { formatBytes, formatCount, formatDuration, formatPercent } from '@/lib/format';
-import { healthPalette } from '@/lib/health';
+import { healthPalette, normalizeHealthState } from '@/lib/health';
 import { useTheme } from '@mui/material/styles';
 import type {
   AlertDto,
@@ -53,25 +54,22 @@ const RANGES = [
   { label: '1 year', hours: 24 * 365 },
 ] as const;
 
-type TabId = 'summary' | 'components' | 'history' | 'vms' | 'events' | 'maintenance';
+type TabId = 'summary' | 'components' | 'history' | 'vms' | 'events' | 'logons' | 'maintenance';
 
-function rollupStateValue(state: string | null | undefined): number {
-  switch ((state ?? '').toLowerCase()) {
-    case 'ok':
-      return 1;
-    case 'warning':
-      return 2;
-    case 'critical':
-      return 3;
-    default:
-      return 0;
-  }
-}
+/** State ranks used to color the rollup heatmap band timeline. Critical is at
+ *  rank 0 so it can be colored independently of any perceived "severity ladder";
+ *  the heatmap visualMap maps each rank to its accent so each bucket is a
+ *  single solid color with no gradient between states. */
+const ROLLUP_RANK_LABELS = ['Critical', 'Warning', 'OK', 'Unknown'] as const;
 
 export default function HostDetailPage() {
   const { hostId = '' } = useParams();
   const theme = useTheme();
   const palette = healthPalette(theme.palette.mode);
+  // Semantic accents for the temp/power chart: warm for heat, cool for energy.
+  // Resolved from the theme palette so they follow light/dark automatically.
+  const tempColor = theme.palette.warning.main;
+  const powerColor = theme.palette.info.main;
   const [tab, setTab] = useState<TabId>('summary');
   const [range, setRange] = useState<(typeof RANGES)[number]>(RANGES[0]);
   const queryClient = useQueryClient();
@@ -175,10 +173,19 @@ export default function HostDetailPage() {
   ];
 
   const points = history.data?.points ?? [];
-  const stateSeries = points.map((p) => ({
-    value: [p.time ? new Date(p.time).getTime() : 0, rollupStateValue(p.rollupState)],
-    itemStyle: { color: palette[rollupStateColorKey(p.rollupState)] },
-  }));
+  // Discrete-state band timeline: each server-bucketed snapshot becomes one
+  // colored cell in a single-row heatmap, so "how long was it critical?" reads
+  // at a glance and never inverts intuition the way the bar chart did (there,
+  // the critical bar grew tallest, reading as "more = worse"). Each bucket is
+  // a solid color — no gradient between critical and ok — and 'unknown'
+  // renders as its own neutral cell rather than a spurious severity step.
+  const rollupBuckets = points.map((p) => {
+    const s = normalizeHealthState(p.rollupState);
+    const rank: 0 | 1 | 2 | 3 = s === 'critical' ? 0 : s === 'warning' ? 1 : s === 'ok' ? 2 : 3;
+    return { label: p.time ? new Date(p.time).toLocaleString() : '—', rank };
+  });
+  const rollupXLabels = rollupBuckets.map((b) => b.label);
+  const rollupData = rollupBuckets.map((_, i) => [i, 0, rollupBuckets[i]!.rank]);
 
   const tempPowerSeries = {
     xData: points.map((p) => (p.time ? new Date(p.time).getTime() : 0)),
@@ -203,7 +210,6 @@ export default function HostDetailPage() {
         }
         actions={
           <Stack direction="row" spacing={1}>
-            <Button component={Link} to={`/hosts/${h.id ?? ''}/logons`}>Logon stats</Button>
             <Button component={Link} to={`/logs?hostId=${encodeURIComponent(h.id ?? '')}`} variant="outlined">
               Search events
             </Button>
@@ -224,6 +230,7 @@ export default function HostDetailPage() {
         <Tab label="Health history" value="history" />
         <Tab label="VMs" value="vms" />
         <Tab label="Events" value="events" />
+        <Tab label="Logons" value="logons" />
         <Tab label="Maintenance" value="maintenance" />
       </Tabs>
 
@@ -315,7 +322,7 @@ export default function HostDetailPage() {
             <Paper variant="outlined" sx={{ p: 2 }}>
               <Typography variant="overline" color="text.secondary">Latest metrics</Typography>
               {(health.data?.latestMetrics ?? []).length > 0 ? (
-                <DataTable columns={metricColumns} rows={health.data?.latestMetrics ?? []} rowKey={(m) => `${m.name}-${m.time}`} maxHeight={260} aria-label="Latest metrics" />
+                <DataTable columns={metricColumns} rows={health.data?.latestMetrics ?? []} rowKey={(m) => `${m.name}-${m.time}`} maxHeight={260} aria-label="Latest metrics" disableBorder />
               ) : (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                   No metrics yet.
@@ -327,7 +334,7 @@ export default function HostDetailPage() {
             <Paper variant="outlined" sx={{ p: 2 }}>
               <Typography variant="overline" color="text.secondary">Recent alerts</Typography>
               {(h.recentAlerts ?? []).length > 0 ? (
-                <DataTable columns={alertColumns} rows={(h.recentAlerts ?? []).slice(0, 5)} rowKey={(a) => a.id ?? ''} maxHeight={260} aria-label="Recent alerts" getRowProps={() => ({ style: { cursor: 'default' } })} />
+                <DataTable columns={alertColumns} rows={(h.recentAlerts ?? []).slice(0, 5)} rowKey={(a) => a.id ?? ''} maxHeight={260} aria-label="Recent alerts" getRowProps={() => ({ style: { cursor: 'default' } })} disableBorder />
               ) : (
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                   No recent alerts.
@@ -350,18 +357,21 @@ export default function HostDetailPage() {
 
       {tab === 'history' ? (
         <Stack spacing={2}>
-          <TextField
-            select
-            label="Range"
+          <ToggleButtonGroup
             size="small"
+            exclusive
             value={range.label}
-            onChange={(e) => setRange(RANGES.find((r) => r.label === e.target.value) ?? RANGES[0])}
-            sx={{ width: 180 }}
+            aria-label="Health history range"
+            onChange={(_, v) => {
+              const r = RANGES.find((x) => x.label === v);
+              if (r) setRange(r);
+            }}
+            sx={{ flexWrap: 'wrap' }}
           >
             {RANGES.map((r) => (
-              <MenuItem key={r.label} value={r.label}>{r.label}</MenuItem>
+              <ToggleButton key={r.label} value={r.label} aria-label={r.label}>{r.label}</ToggleButton>
             ))}
-          </TextField>
+          </ToggleButtonGroup>
           {history.isPending ? <LoadingState label="Loading health history…" /> : null}
           {history.isError && !history.data ? <ErrorState error={history.error} onRetry={() => void history.refetch()} /> : null}
           {history.data && (history.data.points ?? []).length === 0 ? (
@@ -373,18 +383,46 @@ export default function HostDetailPage() {
                 <Typography variant="overline" color="text.secondary">Rollup state (server-bucketed)</Typography>
                 <Chart
                   ariaLabel="Health rollup state over time"
-                  height={220}
+                  height={140}
                   option={{
-                    grid: { left: 48, right: 16, top: 24, bottom: 28 },
-                    tooltip: { trigger: 'axis' },
-                    xAxis: { type: 'time' },
-                    yAxis: {
+                    grid: { left: 8, right: 12, top: 12, bottom: 36 },
+                    tooltip: {
+                      trigger: 'item',
+                      formatter: (params: unknown) => {
+                        const p = (Array.isArray(params) ? params[0] : params) as
+                          | { dataIndex?: number }
+                          | undefined;
+                        const b = p?.dataIndex != null ? rollupBuckets[p.dataIndex] : undefined;
+                        return b ? `${b.label}<br/>${ROLLUP_RANK_LABELS[b.rank]}` : '';
+                      },
+                    },
+                    xAxis: {
                       type: 'category',
-                      data: ['unknown', 'ok', 'warning', 'critical'],
+                      data: rollupXLabels,
+                      axisTick: { show: false },
+                      splitArea: { show: false },
+                      axisLabel: { hideOverlap: true },
+                    },
+                    yAxis: { type: 'category', data: ['State'], show: false },
+                    visualMap: {
+                      show: false,
+                      type: 'piecewise',
                       min: 0,
                       max: 3,
+                      pieces: [
+                        { value: 0, color: palette.critical },
+                        { value: 1, color: palette.warning },
+                        { value: 2, color: palette.ok },
+                        { value: 3, color: palette.neutral },
+                      ],
                     },
-                    series: [{ type: 'bar', data: stateSeries, barWidth: '70%' }],
+                    series: [
+                      {
+                        type: 'heatmap',
+                        data: rollupData,
+                        itemStyle: { borderColor: theme.palette.background.paper, borderWidth: 1 },
+                      },
+                    ],
                   }}
                 />
               </Paper>
@@ -399,21 +437,29 @@ export default function HostDetailPage() {
                     legend: { top: 4, data: ['Temperature max (°C)', 'Power (W)'] },
                     xAxis: { type: 'time' },
                     yAxis: [
-                      { type: 'value', name: '°C' },
-                      { type: 'value', name: 'W' },
+                      { type: 'value', name: '°C', nameTextStyle: { color: tempColor }, axisLine: { lineStyle: { color: tempColor } } },
+                      { type: 'value', name: 'W', nameTextStyle: { color: powerColor }, axisLine: { lineStyle: { color: powerColor } } },
                     ],
                     series: [
                       {
                         name: 'Temperature max (°C)',
                         type: 'line',
                         showSymbol: false,
+                        color: tempColor,
                         data: tempPowerSeries.xData.map((t, i) => [t, tempPowerSeries.temp[i]]),
+                        markLine: {
+                          silent: true,
+                          symbol: ['none', 'none'],
+                          lineStyle: { type: 'dashed', color: theme.palette.error.main },
+                          data: [{ yAxis: 80, label: { formatter: '80°C' } }],
+                        },
                       },
                       {
                         name: 'Power (W)',
                         type: 'line',
                         yAxisIndex: 1,
                         showSymbol: false,
+                        color: powerColor,
                         data: tempPowerSeries.xData.map((t, i) => [t, tempPowerSeries.power[i]]),
                       },
                     ],
@@ -443,6 +489,10 @@ export default function HostDetailPage() {
         )
       ) : null}
 
+      {tab === 'logons' ? (
+        <LogonStatsContent hostId={h.id} />
+      ) : null}
+
       {tab === 'maintenance' ? (
         <MaintenanceSection hostId={h.id} hostName={h.name} />
       ) : null}
@@ -456,19 +506,6 @@ export default function HostDetailPage() {
         <Typography variant="body2" component="span" sx={{ textAlign: 'right' }}>{value}</Typography>
       </Stack>
     );
-  }
-}
-
-function rollupStateColorKey(state: string | null | undefined): 'ok' | 'warning' | 'critical' | 'neutral' {
-  switch ((state ?? '').toLowerCase()) {
-    case 'ok':
-      return 'ok';
-    case 'warning':
-      return 'warning';
-    case 'critical':
-      return 'critical';
-    default:
-      return 'neutral';
   }
 }
 

@@ -22,9 +22,10 @@ import {
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import Refresh from '@mui/icons-material/Refresh';
+import ArrowForward from '@mui/icons-material/ArrowForward';
 import { useGetApiV1Overview } from '@/api';
 import { numOr } from '@/api/dto';
-import { useTheme } from '@mui/material/styles';
+import { useTheme, type Theme } from '@mui/material/styles';
 import type { HostTileDto } from '@/api/generated/endpoints';
 import { HealthTile } from '@/components/HealthTile/HealthTile';
 import { LoadingState } from '@/components/LoadingState/LoadingState';
@@ -74,6 +75,7 @@ function SummaryCard({
   onClick,
   active,
   to,
+  navigate,
 }: {
   label: string;
   value: number;
@@ -81,16 +83,33 @@ function SummaryCard({
   onClick?: () => void;
   active?: boolean;
   to?: string;
+  /** Distinguish navigation cards (e.g. "Unacked alerts" → /alerts) from
+   *  filter-toggle cards so the two affordances don't look identical. */
+  navigate?: boolean;
 }) {
-  const accessible = `${label}: ${value}`;
+  const theme = useTheme();
+  const accessible = navigate ? `View ${label.toLowerCase()} (${value})` : `${label}: ${value}`;
   const interactive = Boolean(to || onClick);
+  // One soft shadow tier for the KPI strip so summary cards read above the
+  // flat outlined tiles/tables below (the theme keeps cards shadowless by
+  // default). Dark surfaces need a stronger drop to register.
+  const softShadow =
+    theme.palette.mode === 'dark' ? '0 2px 6px rgba(0,0,0,0.35)' : '0 1px 2px rgba(0,0,0,0.06)';
+  // MUI resolves palette tokens ('error.main') for sx `color`/`outlineColor`,
+  // but a tinted fill needs a real hex — concatenating alpha onto a token
+  // string would not be valid CSS. Resolve the small set we use here.
+  const hex = resolveHex(color, theme);
+
   const content = (
-    <CardContent sx={{ py: 1.5, px: 2, '&:last-child': { pb: 1.5 } }}>
-      <Typography variant="h4" component="div" sx={{ color, fontWeight: 700 }} aria-label={interactive ? undefined : accessible}>
+    <CardContent sx={{ py: 1.5, px: 1.5, '&:last-child': { pb: 1.5 } }}>
+      <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 0.25 }}>
+        <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.6 }}>
+          {label}
+        </Typography>
+        {navigate ? <ArrowForward fontSize="small" color="disabled" /> : null}
+      </Stack>
+      <Typography variant="h5" component="div" sx={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }} aria-label={interactive ? undefined : accessible}>
         {value}
-      </Typography>
-      <Typography variant="body2" color="text.secondary">
-        {label}
       </Typography>
     </CardContent>
   );
@@ -99,7 +118,9 @@ function SummaryCard({
     <Card
       sx={{
         height: '100%',
+        boxShadow: softShadow,
         ...(active ? { outline: '2px solid', outlineColor: color ?? 'primary.main', outlineOffset: -2 } : {}),
+        ...(active && color ? { backgroundColor: `${hex}14` } : {}),
       }}
     >
       {to ? (
@@ -107,7 +128,7 @@ function SummaryCard({
           {content}
         </CardActionArea>
       ) : onClick ? (
-        <CardActionArea onClick={onClick} aria-label={accessible}>
+        <CardActionArea onClick={onClick} aria-label={accessible} aria-pressed={active ? 'true' : 'false'}>
           {content}
         </CardActionArea>
       ) : (
@@ -115,6 +136,24 @@ function SummaryCard({
       )}
     </Card>
   );
+}
+
+/** Maps the few MUI palette tokens used by the summary cards to real hex
+ *  values so an alpha-tinted background fill can be computed. */
+function resolveHex(token: string | undefined, theme: Theme): string {
+  if (!token) return theme.palette.primary.main;
+  switch (token) {
+    case 'error.main':
+      return theme.palette.error.main;
+    case 'warning.main':
+      return theme.palette.warning.main;
+    case 'success.main':
+      return theme.palette.success.main;
+    case 'primary.main':
+      return theme.palette.primary.main;
+    default:
+      return token;
+  }
 }
 
 export default function OverviewPage() {
@@ -231,10 +270,10 @@ export default function OverviewPage() {
           <SummaryCard label="Warning" value={n(summary.warning)} color="warning.main" onClick={() => toggleFilter('warning')} active={tileFilter === 'warning'} />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-          <SummaryCard label="Unacked alerts" value={unacked} color={unacked > 0 ? 'warning.main' : undefined} to="/alerts?status=active" />
+          <SummaryCard label="Unacked alerts" value={unacked} color={unacked > 0 ? 'warning.main' : undefined} to="/alerts?status=active" navigate />
         </Grid>
         <Grid size={{ xs: 6, sm: 4, md: 2 }}>
-          <SummaryCard label="OK" value={n(summary.ok)} onClick={() => toggleFilter('ok')} active={tileFilter === 'ok'} />
+          <SummaryCard label="OK" value={n(summary.ok)} color="success.main" onClick={() => toggleFilter('ok')} active={tileFilter === 'ok'} />
         </Grid>
       </Grid>
 

@@ -3,7 +3,7 @@
  * top bar with theme toggle and admin menu, connection banner, and a build
  * identifier in the drawer footer (FRONTEND.md §13).
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   AppBar,
@@ -20,6 +20,8 @@ import {
   Menu,
   MenuItem,
   Stack,
+  ToggleButton,
+  ToggleButtonGroup,
   Toolbar,
   Tooltip,
   Typography,
@@ -33,6 +35,7 @@ import Dns from '@mui/icons-material/Dns';
 import History from '@mui/icons-material/History';
 import Key from '@mui/icons-material/Key';
 import LightMode from '@mui/icons-material/LightMode';
+import SettingsBrightness from '@mui/icons-material/SettingsBrightness';
 import ListAlt from '@mui/icons-material/ListAlt';
 import Logout from '@mui/icons-material/Logout';
 import MenuIcon from '@mui/icons-material/Menu';
@@ -159,8 +162,18 @@ export function AppShell() {
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const { session, logout } = useAuth();
-  const { mode, toggleMode } = useThemeMode();
+  const { mode, setMode } = useThemeMode();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // De-duplicate the brand: the drawer owns "Hyveman", the app bar shows the
+  // active section instead of repeating a fixed string (previously the brand
+  // appeared three times — drawer, bar, footer).
+  const routeLabel = useMemo(() => {
+    const all = [...MAIN_NAV, ...ADMIN_NAV];
+    const match = all.find((n) => (n.end ? location.pathname === n.to : location.pathname.startsWith(n.to)));
+    return match?.label ?? 'Operations';
+  }, [location.pathname]);
 
   // Poll the fleet summary for the Alerts nav badge (unacknowledged count).
   // Shares the overview query cache with the dashboard; cheap for a small fleet. */
@@ -205,13 +218,38 @@ export function AppShell() {
             </IconButton>
           ) : null}
           <Typography variant="subtitle1" sx={{ fontWeight: 600, flexGrow: 1 }} noWrap>
-            Hyveman operations console
+            {routeLabel}
           </Typography>
-          <Tooltip title={mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
-            <IconButton onClick={toggleMode} aria-label="Toggle color theme">
-              {mode === 'dark' ? <LightMode fontSize="small" /> : <DarkMode fontSize="small" />}
-            </IconButton>
-          </Tooltip>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={mode}
+            aria-label="Color theme"
+            onChange={(_, v) => {
+              // null only happens on click of the already-selected button (the
+              // group becomes deselectable with exclusive); ignore it so a mode
+              // never clears to nothing.
+              if (v) setMode(v as 'light' | 'dark' | 'system');
+            }}
+            sx={{
+              '& .MuiToggleButton-root': {
+                px: 0.75,
+                py: 0.5,
+                border: 0,
+                borderRadius: '50% !important',
+              },
+            }}
+          >
+            <ToggleButton value="light" aria-label="Light theme" title="Light theme">
+              <LightMode fontSize="small" />
+            </ToggleButton>
+            <ToggleButton value="system" aria-label="System theme" title="System theme">
+              <SettingsBrightness fontSize="small" />
+            </ToggleButton>
+            <ToggleButton value="dark" aria-label="Dark theme" title="Dark theme">
+              <DarkMode fontSize="small" />
+            </ToggleButton>
+          </ToggleButtonGroup>
           <Tooltip title="Admin menu">
             <IconButton
               aria-label="Admin menu"
