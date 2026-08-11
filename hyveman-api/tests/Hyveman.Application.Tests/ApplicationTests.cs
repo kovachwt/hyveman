@@ -621,6 +621,150 @@ public class AlertEvaluatorTests
     }
 
     [Fact]
+    public async Task VmReplicationRule_LiveMigration_VmLeavesHost_ResolvesOpenAlert()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, health) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, null, true, now, now));
+
+        // Pre-migration: replication degrades on the source host (normal
+        // during a live migration) — the telemetry path evaluates BEFORE the
+        // latest-wins upsert, so the test mirrors that order.
+        await health.UpsertVmsAsync("h1", [ReplVm("web01", "ok", "enabled")], stale: false, now, CancellationToken.None);
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "warning", "replication_in_progress")], now.AddSeconds(30), CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        await health.UpsertVmsAsync("h1", [ReplVm("web01", "warning", "replication_in_progress")], stale: false, now.AddSeconds(30), CancellationToken.None);
+
+        // Migration completes: the VM is gone from the source host's snapshot.
+        // The alert must resolve — without this the VM is absent from the
+        // incoming batch, so the crossing loop never sees it again and the
+        // alert stays live forever (the upsert deletes its row).
+        await eval.OnVmReplicationChangedAsync("h1", [], now.AddMinutes(2), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+        Assert.NotNull(alerts.Alerts.Single().ResolvedAt);
+    }
+
+    [Fact]
+    public async Task VmReplicationRule_DeletedVm_ResolvesOpenAlert()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, health) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, null, true, now, now));
+
+        await health.UpsertVmsAsync("h1", [ReplVm("web01", "ok", "enabled")], stale: false, now, CancellationToken.None);
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "critical", "error")], now, CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        await health.UpsertVmsAsync("h1", [ReplVm("web01", "critical", "error")], stale: false, now, CancellationToken.None);
+
+        // VM deleted outright: remaining VMs still present are unaffected.
+        await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web02", "ok", "enabled")], now.AddMinutes(1), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task VmHeartbeatRule_VmLeavesHost_ResolvesOpenAlert()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, health) = Build(now);
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, null, true, now, now));
+
+        await health.UpsertVmsAsync("h1", [Vm("web01", "on", true)], stale: false, now, CancellationToken.None);
+        await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", false)], now, CancellationToken.None);
+        Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        await health.UpsertVmsAsync("h1", [Vm("web01", "on", false)], stale: false, now, CancellationToken.None);
+
+        // VM migrated away / deleted: absent from the snapshot → resolves.
+        await eval.OnVmsChangedAsync("h1", [], now.AddMinutes(1), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task Reconcile_ResolvesOrphanedVmAlerts_AndReevaluatesCurrentState()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        // Reconcile walks hosts.ListAsync — the Build() helper's NoopHosts
+        // returns none, so build the evaluator with FakeHosts(Host) here.
+        var rules = new InMemoryRuleStore();
+        var alerts = new InMemoryAlertStore();
+        var health = new NoopHealth();
+        var eval = new AlertEvaluatorService(rules, alerts, new SingleHostStore(ReconcileHost), new NoopSources(), health,
+            new NoopAgentStatus(), new NoopWindows(), new NoopOutbox(), new FixedClock(now),
+            NullLogger<AlertEvaluatorService>.Instance);
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, null, true, now, now));
+        rules.Rules.Add(new RuleRecord("r2", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, null, true, now, now));
+
+        // Post-migration state on the source host: the VM rows are already
+        // gone from the store (latest-wins upsert), so the departure
+        // transition can never be observed — only this sweep can resolve the
+        // orphaned alerts. The VMs now run on another host (web01, db01).
+        await health.UpsertVmsAsync("h1", [
+            Vm("web02", "on", true),                       // present, heartbeat fine
+            ReplVm("web03", "warning", "replication_in_progress"), // present, still degraded
+        ], stale: false, now, CancellationToken.None);
+        alerts.Alerts.Add(LiveAlert("a1", "r1", "h1", "vmreplication:web01")); // orphan → resolve
+        alerts.Alerts.Add(LiveAlert("a2", "r1", "h1", "vmreplication:db01"));  // orphan → resolve
+        alerts.Alerts.Add(LiveAlert("a3", "r2", "h1", "vmheartbeat:web01"));   // orphan → resolve
+        alerts.Alerts.Add(LiveAlert("a4", "r2", "h1", "vmheartbeat:web02"));   // present, heartbeat OK → missed recovery, resolve
+        alerts.Alerts.Add(LiveAlert("a5", "r1", "h1", "vmreplication:web03")); // present, still degraded → stays live
+        alerts.Alerts.Add(LiveAlert("a6", "r2", "h1", "vmheartbeat:web03"));   // present, heartbeat OK → resolve
+
+        await eval.ReconcileAsync(CancellationToken.None);
+
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single(a => a.Id == "a1").Status);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single(a => a.Id == "a2").Status);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single(a => a.Id == "a3").Status);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single(a => a.Id == "a4").Status);
+        Assert.Equal(AlertStatuses.Active, alerts.Alerts.Single(a => a.Id == "a5").Status);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single(a => a.Id == "a6").Status);
+        Assert.NotNull(alerts.Alerts.Single(a => a.Id == "a1").ResolvedAt);
+    }
+
+    [Fact]
+    public async Task Reconcile_FiresVmReplicationAlert_ForCurrentlyDegradedVm_WithoutInflatingCount()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var rules = new InMemoryRuleStore();
+        var alerts = new InMemoryAlertStore();
+        var health = new NoopHealth();
+        var eval = new AlertEvaluatorService(rules, alerts, new SingleHostStore(ReconcileHost), new NoopSources(), health,
+            new NoopAgentStatus(), new NoopWindows(), new NoopOutbox(), new FixedClock(now),
+            NullLogger<AlertEvaluatorService>.Instance);
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, null, true, now, now));
+
+        // Degraded VM with no live alert (e.g. alert was resolved earlier but
+        // the condition persists): reconcile re-fires without bumping.
+        await health.UpsertVmsAsync("h1", [ReplVm("web01", "critical", "error")], stale: false, now, CancellationToken.None);
+        await eval.ReconcileAsync(CancellationToken.None);
+        var fired = Assert.Single(alerts.Alerts);
+        Assert.Equal(AlertStatuses.Active, fired.Status);
+        Assert.Equal(1, fired.Count);
+
+        // Second pass: still degraded, still live → no new alert, no bump.
+        await eval.ReconcileAsync(CancellationToken.None);
+        Assert.Single(alerts.Alerts);
+        Assert.Equal(1, alerts.Alerts.Single().Count);
+    }
+
+    private static readonly HostRecord ReconcileHost = new("h1", "HOST01", "windows-agent", "src_1", null, null, true, null,
+        DateTimeOffset.Parse("2024-08-01T00:00:00Z"), DateTimeOffset.Parse("2024-08-01T00:00:00Z"));
+
+    private sealed class SingleHostStore(HostRecord host) : IHostStore
+    {
+        public Task<IReadOnlyList<HostRecord>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<HostRecord>>([host]);
+        public Task<HostRecord?> GetAsync(string id, CancellationToken ct) => Task.FromResult<HostRecord?>(host);
+        public Task<HostRecord?> GetBySourceAsync(string sourceId, CancellationToken ct) => Task.FromResult<HostRecord?>(host);
+        public Task<HostRecord> CreateAsync(HostRecord h, CancellationToken ct) => Task.FromResult(h);
+        public Task<bool> UpdateAsync(HostRecord h, DateTimeOffset expectedUpdatedAt, CancellationToken ct) => Task.FromResult(true);
+        public Task DeleteAsync(string id, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private static AlertRecord LiveAlert(string id, string ruleId, string hostId, string fingerprint) =>
+        new(id, ruleId, hostId, null, $"{ruleId}|{hostId}|-|{fingerprint}", fingerprint, "critical", AlertStatuses.Active,
+            "title", null,
+            DateTimeOffset.Parse("2024-08-07T15:00:00Z"), DateTimeOffset.Parse("2024-08-07T15:00:00Z"), 1,
+            null, null, null, null, DateTimeOffset.Parse("2024-08-07T15:00:00Z"));
+
+    [Fact]
     public async Task LogonRule_AnyUserSuccess_FiresPerUserAndBumps()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");

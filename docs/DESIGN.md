@@ -201,7 +201,10 @@ Three independently built and deployed components:
   4. *Threshold rules*: temperature, PSU wattage, disk free space.
   5. *VM heartbeat rules*: a running VM whose Hyper-V heartbeat was OK suddenly
      loses it (transition on the agent's WMI facts, per host+VM); resolves when
-     the heartbeat returns or the VM leaves the running state. Powered-off VMs
+     the heartbeat returns, the VM leaves the running state, or the VM
+     disappears from the host's facts snapshot (live migration / deletion —
+     absence is authoritative: a successful scan always ships the full VM list
+     and `stale:true` facts never reach the evaluator). Powered-off VMs
      are excluded by design; `stale:true` facts never trigger.
   6. *Logon rules*: a specific user (or any user) successfully logs in (4624),
      fails login (4625), or is locked out (4740). Matches the same curated
@@ -216,8 +219,12 @@ Three independently built and deployed components:
      the agent's WMI facts, §5.2) enters a configured bad state — default
      `replication_health` ∈ warning/critical. Threshold-style: fires on a
      fresh crossing, resolves when replication returns to a non-matching
-     state (ok/not_applicable). Non-replicated VMs (null fields) never
-     trigger; `stale:true` facts are never evaluated.
+     state (ok/not_applicable) **or the VM disappears from the host's facts
+     snapshot** (live migration or deletion — absence is authoritative, see
+     rule type 5). The disappearance path is what resolves the transient
+     "replication degraded" alert fired on the source host during a live
+     migration once the VM has fully moved away. Non-replicated VMs (null
+     fields) never trigger; `stale:true` facts are never evaluated.
   8. *Auto-resolve timeout* (any rule type, primarily event/logon): a rule
      may set `autoResolveAfterS`; a live alert of that rule then resolves
      automatically once no new occurrence has arrived for that window. The

@@ -71,7 +71,7 @@ public sealed class HostsService(
             Notes = host.Notes,
             UpdatedAt = host.UpdatedAt,
             CreatedAt = host.CreatedAt,
-            RollupState = OverviewService.RollupOf(components),
+            RollupState = HealthStates.ToWire(OverviewService.RollupOf(components)),
             RollupAt = components.Count > 0 ? components.Max(c => c.LastSeen) : null,
             Components = components.Select(c => new ComponentDto
             {
@@ -188,7 +188,7 @@ public sealed class HostsService(
         return new HostHealthResponse
         {
             HostId = id,
-            RollupState = OverviewService.RollupOf(components),
+            RollupState = HealthStates.ToWire(OverviewService.RollupOf(components)),
             RollupAt = components.Count > 0 ? components.Max(c => c.LastSeen) : null,
             Components = components.Select(c => new ComponentDto
             {

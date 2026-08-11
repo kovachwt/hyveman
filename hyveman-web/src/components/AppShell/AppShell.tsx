@@ -8,6 +8,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   AppBar,
   Avatar,
+  Badge,
   Box,
   Divider,
   Drawer,
@@ -41,6 +42,8 @@ import Send from '@mui/icons-material/Send';
 import Storage from '@mui/icons-material/Storage';
 import Hub from '@mui/icons-material/Hub';
 import type { SvgIconComponent } from '@mui/icons-material';
+import { useGetApiV1Overview } from '@/api';
+import { numOr } from '@/api/dto';
 import { useAuth } from '@/auth/AuthProvider';
 import { useThemeMode } from '@/app/providers';
 import { ConnectionBanner } from '@/components/ConnectionBanner/ConnectionBanner';
@@ -54,6 +57,7 @@ interface NavItem {
   label: string;
   icon: SvgIconComponent;
   end?: boolean;
+  badge?: number;
 }
 
 const MAIN_NAV: NavItem[] = [
@@ -81,6 +85,7 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => v
     <List dense>
       {items.map((item) => {
         const active = item.end ? location.pathname === item.to : location.pathname.startsWith(item.to);
+        const showBadge = typeof item.badge === 'number' && item.badge > 0;
         return (
           <ListItemButton
             key={item.to}
@@ -92,7 +97,18 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => v
             sx={{ borderRadius: 1, my: 0.25 }}
           >
             <ListItemIcon sx={{ minWidth: 36 }}>
-              <item.icon fontSize="small" />
+              {showBadge ? (
+                <Badge
+                  badgeContent={item.badge! > 99 ? '99+' : item.badge}
+                  color="error"
+                  overlap="rectangular"
+                  sx={{ '& .MuiBadge-badge': { right: -6, top: -6 } }}
+                >
+                  <item.icon fontSize="small" />
+                </Badge>
+              ) : (
+                <item.icon fontSize="small" />
+              )}
             </ListItemIcon>
             <ListItemText primary={item.label} primaryTypographyProps={{ variant: 'body2', fontWeight: active ? 600 : 400 }} />
           </ListItemButton>
@@ -102,7 +118,7 @@ function NavList({ items, onNavigate }: { items: NavItem[]; onNavigate?: () => v
   );
 }
 
-function DrawerContent({ onNavigate }: { onNavigate?: () => void }) {
+function DrawerContent({ onNavigate, mainNav = MAIN_NAV }: { onNavigate?: () => void; mainNav?: NavItem[] }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <Toolbar>
@@ -115,7 +131,7 @@ function DrawerContent({ onNavigate }: { onNavigate?: () => void }) {
         <Typography variant="overline" color="text.secondary" sx={{ px: 1.5, fontSize: 11 }}>
           Monitor
         </Typography>
-        <NavList items={MAIN_NAV} onNavigate={onNavigate} />
+        <NavList items={mainNav} onNavigate={onNavigate} />
         <Typography variant="overline" color="text.secondary" sx={{ px: 1.5, fontSize: 11 }}>
           Admin
         </Typography>
@@ -143,6 +159,14 @@ export function AppShell() {
   const { session, logout } = useAuth();
   const { mode, toggleMode } = useThemeMode();
   const navigate = useNavigate();
+
+  // Poll the fleet summary for the Alerts nav badge (unacknowledged count).
+  // Shares the overview query cache with the dashboard; cheap for a small fleet. */
+  const overview = useGetApiV1Overview({
+    query: { refetchInterval: 60_000, select: (res) => res.data },
+  });
+  const unacked = numOr(overview.data?.summary?.unacknowledgedAlerts, 0);
+  const mainNav = unacked > 0 ? MAIN_NAV.map((i) => (i.to === '/alerts' ? { ...i, badge: unacked } : i)) : MAIN_NAV;
 
   const doLogout = async () => {
     setLogoutBusy(true);
@@ -214,7 +238,7 @@ export function AppShell() {
       <Box component="nav" aria-label="Primary" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
         {isDesktop ? (
           <Drawer variant="permanent" open sx={{ width: DRAWER_WIDTH, '& .MuiDrawer-paper': { width: DRAWER_WIDTH, boxSizing: 'border-box' } }}>
-            <DrawerContent />
+            <DrawerContent mainNav={mainNav} />
           </Drawer>
         ) : (
           <Drawer
@@ -224,7 +248,7 @@ export function AppShell() {
             ModalProps={{ keepMounted: true }}
             sx={{ '& .MuiDrawer-paper': { width: DRAWER_WIDTH, boxSizing: 'border-box' } }}
           >
-            <DrawerContent onNavigate={() => setMobileOpen(false)} />
+            <DrawerContent onNavigate={() => setMobileOpen(false)} mainNav={mainNav} />
           </Drawer>
         )}
       </Box>

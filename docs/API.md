@@ -626,7 +626,10 @@ Rule types and their match documents:
 - `vm_heartbeat` — optional `sourceKinds[]` scope, no required fields. Fires
   when a **running** VM whose stored Hyper-V heartbeat was OK reports a lost
   heartbeat (`heartbeat_ok` true→false/null in the agent's WMI facts), and
-  resolves when the heartbeat returns OK or the VM leaves the running state.
+  resolves when the heartbeat returns OK, the VM leaves the running state, or
+  the VM disappears from the host's facts snapshot (live migration or
+  deletion — absence is authoritative because a successful scan always ships
+  the full VM list and `stale:true` re-sends are never evaluated).
   Only fresh OK→lost transitions fire (a VM still lost on the next scan does
   not bump the alert); powered-off, saved and paused VMs never trigger it;
   `stale:true` facts (re-emitted old data after a WMI timeout, PROTOCOL §7.4)
@@ -640,8 +643,12 @@ Rule types and their match documents:
   ∈ `healths` (when set) AND `replication_state` ∈ `states` (when set); when
   both are empty the default is `healths: ["warning", "critical"]`.
   Threshold-style: fires on a fresh crossing, resolves when the VM's
-  replication no longer matches. Non-replicated VMs (all three fields null)
-  never match; `stale:true` facts are never evaluated.
+  replication no longer matches — or when the VM disappears from the host's
+  facts snapshot (live migration or deletion; absence is authoritative, see
+  `vm_heartbeat`). This is the path that resolves the transient
+  "replication degraded" alert fired on the source host during a live
+  migration once the VM has fully moved away. Non-replicated VMs (all three
+  fields null) never match; `stale:true` facts are never evaluated.
 - `logon` — `outcome` (`success`|`failure`|`lockout`), optional `users[]`
   (account names; empty = any user, matched case-insensitively), optional
   `logonTypes[]`, optional `sourceKinds[]`. Fires on each accepted Security
@@ -839,14 +846,25 @@ The evaluator handles:
 - deduplication, cooldown, escalation, acknowledgement, and maintenance
   suppression.
 
-A periodic reconciliation pass re-evaluates current heartbeat and hardware
-state after restart. A separate minute-interval pass (`AlertAutoResolveService`)
+A periodic reconciliation pass re-evaluates current heartbeat, hardware and
+VM state after restart (runs at service startup and every 6 hours).
+`vm_replication` crossings are re-evaluated against the current facts — fire
+for a VM currently matching (without bumping counts), resolve on recovery or
+when replication was removed. VM alerts (both `vm_heartbeat` and
+`vm_replication`) whose VM is no longer on the host — e.g. live-migrated away
+or deleted, the alert having been orphaned before the absence-resolution in
+`OnVmReplicationChangedAsync`/`OnVmsChangedAsync` could observe it — are
+resolved by name from the alert fingerprint; absence is authoritative because
+a successful scan always ships the full VM list. A separate minute-interval
+pass (`AlertAutoResolveService`)
 enforces rule auto-resolve timeouts; both run in fresh scopes with a fresh
 evaluator instance (D3), so a crash loses nothing a later tick cannot repair. Event rules are evaluated as events are accepted; a later
-reconciliation can repair state after a crash. VM-heartbeat transitions are
+reconciliation can repair state after a crash. VM-heartbeat *transitions* are
 *not* replayed by reconciliation — the `vms` table is latest-wins, so the
-pre-transition state is gone — but fired alerts are durable rows and survive
-restarts unchanged.
+pre-transition state is gone — so a rule created while a VM is already lost
+stays quiet until the next real OK→lost transition; but fired alerts are
+durable rows and survive restarts unchanged (and orphans are repaired as
+described above).
 
 An alert has a stable fingerprint. The recommended uniqueness model is
 `(rule_id, host_id, fingerprint, active state)`, allowing a resolved occurrence

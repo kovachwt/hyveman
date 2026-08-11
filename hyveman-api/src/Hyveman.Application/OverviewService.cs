@@ -39,8 +39,7 @@ public sealed class OverviewService(
         foreach (var host in hostList)
         {
             var components = componentsByHost.GetValueOrDefault(host.Id) ?? [];
-            var rollup = RollupOf(components);
-            var rollupAt = components.Count > 0 ? (DateTimeOffset?)components.Max(c => c.LastSeen) : null;
+            var hardwareRollup = RollupOf(components); // iDRAC/Redfish components; Unknown if none.
 
             AgentStatusDto? agentDto = null;
             if (host.SourceId is { } sid && statusBySource.TryGetValue(sid, out var status))
@@ -49,7 +48,27 @@ public sealed class OverviewService(
                 if (agentDto.Status == "silent") summary.SilentAgents++;
             }
 
-            switch (rollup)
+            // OS reachability is an independent health signal: a silent agent
+            // is critical, a reporting agent is ok, no agent at all is unknown.
+            // (Hyper-V has no own state on the overview; VM health is served by
+            // the host detail VMs tab, API.md §7.1.)
+            var osState = agentDto is null
+                ? HealthState.Unknown
+                : agentDto.Status == "silent" ? HealthState.Critical
+                : agentDto.Status == "online" ? HealthState.Ok
+                : HealthState.Unknown;
+
+            // The overview rollup combines every signal the dashboard can
+            // actually observe. Hardware (iDRAC/Redfish) contributes only when
+            // configured: a host with no iDRAC reads OK when its OS and agent
+            // are healthy, not "unknown by omission." Worst signal wins.
+            var idracConfigured = host.IdracUrl is not null;
+            var rollup = idracConfigured
+                ? HealthStates.Max(hardwareRollup, osState)
+                : osState;
+            var rollupWire = HealthStates.ToWire(rollup);
+
+            switch (rollupWire)
             {
                 case "critical": summary.Critical++; break;
                 case "warning": summary.Warning++; break;
@@ -58,6 +77,14 @@ public sealed class OverviewService(
             }
             summary.Total++;
 
+            // The rollup was evaluated at the latest contributing signal.
+            var rollupTimes = new List<DateTimeOffset>();
+            if (idracConfigured && components.Count > 0)
+                rollupTimes.Add(components.Max(c => c.LastSeen));
+            if (agentDto?.LastReceived is { } lastReceived)
+                rollupTimes.Add(lastReceived);
+            var rollupAt = rollupTimes.Count > 0 ? rollupTimes.Max() : (DateTimeOffset?)null;
+
             var poll = host.IdracUrl is null ? null : await pollStatus.GetAsync(host.Id, ct);
             tiles.Add(new HostTileDto
             {
@@ -65,11 +92,13 @@ public sealed class OverviewService(
                 Name = host.Name,
                 Kind = host.Kind,
                 SourceId = host.SourceId,
-                RollupState = rollup,
+                RollupState = rollupWire,
                 RollupAt = rollupAt,
-                HardwareState = rollup,
-                OsState = agentDto?.Status == "silent" ? "critical" : agentDto is null ? "unknown" : "ok",
-                HyperVState = "unknown",
+                // Hardware health only applies when iDRAC is configured; the
+                // tile renders a "Not configured" affordance otherwise.
+                HardwareState = idracConfigured ? HealthStates.ToWire(hardwareRollup) : null,
+                OsState = HealthStates.ToWire(osState),
+                HyperVState = null,
                 Agent = agentDto,
                 Idrac = host.IdracUrl is null ? null : new IdracStatusDto
                 {
@@ -93,12 +122,15 @@ public sealed class OverviewService(
         return new OverviewResponse { GeneratedAt = now, Hosts = tiles, Summary = summary, RecentAlerts = recent };
     }
 
-    internal static string RollupOf(IReadOnlyList<ComponentRecord> components)
+    /// <summary>Hardware (iDRAC/Redfish) component rollup for the overview
+    /// tile's Hardware signal. Unknown when no components have been collected.
+    /// </summary>
+    internal static HealthState RollupOf(IReadOnlyList<ComponentRecord> components)
     {
         var state = HealthState.Unknown;
         foreach (var c in components)
             state = HealthStates.Max(state, c.State);
-        return HealthStates.ToWire(state);
+        return state;
     }
 }
 

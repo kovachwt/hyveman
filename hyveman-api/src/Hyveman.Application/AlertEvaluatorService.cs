@@ -249,6 +249,22 @@ public sealed class AlertEvaluatorService(
             foreach (var (rule, _) in parsed)
                 await ResolveAsync(rule, hostId, null, $"vmheartbeat:{vm.Name}", at, ct);
         }
+
+        // Resolution by absence: a VM in the previous snapshot that is missing
+        // from the current one has left the host (live migration, deletion) —
+        // there is no heartbeat to return and no running state to leave, so
+        // without this the alert stays live forever (the latest-wins upsert
+        // deletes the row, and reconciliation does not replay VM transitions).
+        // Absence is authoritative: each scan ships the full VM snapshot, and
+        // stale re-sends (WMI timeouts, PROTOCOL §7.4) are never evaluated, so
+        // a failed scan cannot fake absence.
+        var incoming = vms.ToDictionary(v => v.Name);
+        foreach (var prev in prevVms)
+        {
+            if (incoming.ContainsKey(prev.Name)) continue;
+            foreach (var (rule, _) in parsed)
+                await ResolveAsync(rule, hostId, null, $"vmheartbeat:{prev.Name}", at, ct);
+        }
     }
 
     public async Task OnThresholdsAsync(string hostId, IReadOnlyList<MetricRecord> metrics,
@@ -293,9 +309,11 @@ public sealed class AlertEvaluatorService(
 
     /// <summary>VM replication crossings (DESIGN §4.4 rule type 7): fires
     /// when a VM's replication health/state enters the rule's bad set and
-    /// resolves when it no longer matches. Threshold-style (like
-    /// OnThresholdsAsync): the live alert itself is the crossing state (D3),
-    /// so a fresh evaluator enforces it identically and restarts lose
+    /// resolves when it no longer matches — or when the VM leaves the host
+    /// (absent from the current facts snapshot, e.g. live migration or
+    /// deletion), which is the live-migration completion path. Threshold-style
+    /// (like OnThresholdsAsync): the live alert itself is the crossing state
+    /// (D3), so a fresh evaluator enforces it identically and restarts lose
     /// nothing. Non-replicated VMs report null fields — never a match.
     /// stale:true facts are filtered by the caller (TelemetryService).</summary>
     public async Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
@@ -330,6 +348,25 @@ public sealed class AlertEvaluatorService(
                 }
             }
         }
+
+        // Resolution by absence (live migration / VM deletion): a VM present
+        // in the previous facts but missing from the current snapshot has left
+        // the host — its degraded-replication alert can never recover because
+        // the latest-wins upsert deletes the row and the alert key is scoped
+        // to this host. Absence is authoritative: the agent ships the full VM
+        // list per successful scan, and stale re-sends (WMI timeouts, PROTOCOL
+        // §7.4) are never evaluated by the caller, so a failed scan cannot
+        // fake absence. This is the path that resolves the transient
+        // "replication degraded" alert fired on the source host during a live
+        // migration once the VM has fully moved away.
+        var prevVms = await health.GetVmsAsync(hostId, ct);
+        var incoming = vms.ToDictionary(v => v.Name);
+        foreach (var prev in prevVms)
+        {
+            if (incoming.ContainsKey(prev.Name)) continue;
+            foreach (var (rule, _) in parsed)
+                await ResolveAsync(rule, hostId, null, $"vmreplication:{prev.Name}", at, ct);
+        }
     }
 
     /// <summary>Per-rule auto-resolve pass (API.md §9.3, DESIGN §4.4): event
@@ -363,8 +400,9 @@ public sealed class AlertEvaluatorService(
     }
 
     /// <summary>Reconciliation pass (API.md §9.3): re-evaluates current
-    /// heartbeat and hardware state after restart; repairs alerts without
-    /// inflating counts.</summary>
+    /// heartbeat, hardware and VM state after restart; repairs alerts without
+    /// inflating counts. Runs at service startup and every 6h
+    /// (AlertReconciliationService).</summary>
     public async Task ReconcileAsync(CancellationToken ct)
     {
         var at = clock.UtcNow;
@@ -408,6 +446,81 @@ public sealed class AlertEvaluatorService(
                         $"Agent silent: {status.SourceId}", $"No heartbeat for {age.TotalSeconds:0}s", at, bump: false, ct);
             }
         }
+        // VM rule repair (API.md §9.3): re-evaluate vm_replication crossings
+        // against the current facts (fire for currently-matching VMs, resolve
+        // for recovered) and resolve vm alerts whose VM is no longer on the
+        // host. The departure transition itself is not replayable — the vms
+        // table is latest-wins, so once the row is gone the absence-resolution
+        // in OnVmsChangedAsync/OnVmReplicationChangedAsync can never observe
+        // it. This sweep repairs those orphans: alerts fired on the source
+        // host during a live migration and not yet resolved (e.g. orphaned
+        // before a deploy, or the agent went silent right after the VM moved).
+        var vmRuleList = (await rules.ListAsync(ct))
+            .Where(r => r.Enabled && r.Type is RuleTypes.VmReplication or RuleTypes.VmHeartbeat)
+            .ToList();
+        if (vmRuleList.Count > 0)
+        {
+            var vmRulesById = vmRuleList.ToDictionary(r => r.Id);
+            var replParsed = vmRuleList
+                .Where(r => r.Type == RuleTypes.VmReplication)
+                .Select(r => (Rule: r, Match: RuleMatch.ParseVmReplication(r.MatchJson)))
+                .Where(x => x.Match is not null)
+                .ToList();
+
+            foreach (var host in await hosts.ListAsync(ct))
+            {
+                var stored = await health.GetVmsAsync(host.Id, ct);
+                var storedByName = stored.ToDictionary(v => v.Name, StringComparer.OrdinalIgnoreCase);
+
+                // Re-evaluate vm_replication against the current facts — same
+                // repair semantics as the health pass: fire without bumping
+                // (no count inflation), resolve on recovery. A VM whose
+                // replication was removed (fields now null) resolves too.
+                foreach (var vm in stored)
+                {
+                    foreach (var (rule, match) in replParsed)
+                    {
+                        var fingerprint = $"vmreplication:{vm.Name}";
+                        var key = AlertKey(rule, host.Id, null, fingerprint);
+                        var live = await alerts.FindLiveAsync(key, ct);
+                        if (match.Matches(vm))
+                        {
+                            if (live is null)
+                                await FireAsync(rule, host.Id, null, fingerprint,
+                                    $"VM replication degraded: {vm.Name}",
+                                    $"VM {vm.Name} replication health: {vm.ReplicationHealth ?? "—"}, state: {vm.ReplicationState ?? "—"}", at, bump: false, ct);
+                        }
+                        else if (live is not null)
+                        {
+                            await ResolveAsync(rule, host.Id, null, fingerprint, at, ct);
+                        }
+                    }
+                }
+
+                // Orphan / missed-recovery repair: a live vm alert whose VM is
+                // no longer on the host can never resolve through facts —
+                // resolve it here (absence is authoritative: a successful scan
+                // ships the full VM list, and stale re-sends never reach the
+                // evaluator). A live vm_heartbeat alert for a VM that is
+                // present but has its heartbeat back (or is no longer running)
+                // is a missed recovery — resolve that too. vm_replication
+                // alerts for present VMs are left to the re-evaluation above.
+                foreach (var live in await alerts.ListLiveAsync(ct))
+                {
+                    if (live.HostId != host.Id || live.RuleId is null) continue;
+                    if (!vmRulesById.TryGetValue(live.RuleId, out var rule)) continue;
+                    var vmName = FingerprintVmName(live.Fingerprint, rule.Type);
+                    if (vmName is null) continue;
+                    if (storedByName.TryGetValue(vmName, out var vm))
+                    {
+                        if (rule.Type == RuleTypes.VmReplication) continue; // handled above
+                        if (vm.HeartbeatOk != true && vm.State == "on") continue; // still lost → leave live
+                    }
+                    await ResolveAsync(rule, host.Id, null, live.Fingerprint, at, ct);
+                }
+            }
+        }
+
         log.LogInformation("Alert reconciliation pass finished");
     }
 
@@ -420,6 +533,18 @@ public sealed class AlertEvaluatorService(
         foreach (var c in components)
             state = HealthStates.Max(state, c.State);
         return HealthStates.ToWire(state);
+    }
+
+    /// <summary>Extracts the VM name from a vm alert fingerprint
+    /// ("vmreplication:NAME" / "vmheartbeat:NAME"); null when the fingerprint
+    /// is not a vm fingerprint. Hyper-V VM names cannot contain ':', so
+    /// splitting on the first colon is unambiguous.</summary>
+    private static string? FingerprintVmName(string fingerprint, string type)
+    {
+        var prefix = type == RuleTypes.VmReplication ? "vmreplication:" : "vmheartbeat:";
+        return fingerprint.StartsWith(prefix, StringComparison.Ordinal) && fingerprint.Length > prefix.Length
+            ? fingerprint[prefix.Length..]
+            : null;
     }
 
     private async Task FireAsync(RuleRecord rule, string? hostId, string? sourceId, string fingerprint,
