@@ -1,6 +1,7 @@
-/** Passkey management (FRONTEND.md §7.4): list non-secret metadata, register
- *  additional keys with the same ceremony, remove with confirmation — the API
- *  prevents removal of the final usable passkey. */
+/** Passkey management (FRONTEND.md §7.4, docs/MULTI-USER.md): list the
+ *  session user's own keys (the API scopes this server-side), register
+ *  additional keys with the same ceremony, remove with confirmation — the
+ *  API prevents removing the final usable passkey of the last enabled user. */
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -110,8 +111,8 @@ export default function PasskeysPage() {
   return (
     <Box>
       <PageHeader
-        title="Passkeys"
-        subtitle="Registered WebAuthn credentials for the admin account. Removal of the final usable passkey is blocked by the API."
+        title="My passkeys"
+        subtitle="WebAuthn credentials for your account. You can add several (e.g. phone + laptop); the API blocks removing your last passkey."
         actions={
           <Button variant="contained" startIcon={<Add />} disabled={!support.ok} onClick={() => { setAddOpen(true); setError(null); }}>
             Add passkey

@@ -203,19 +203,25 @@ Invoke-RestMethod http://127.0.0.1:5080/health/ready  # {"ok":true}
 > first-run setup must wait for hyveman-web. The console covers only passkey
 > list/remove/reset, not first-time setup or token issuance.
 
-1. **Passkey setup** (one time, from a network in `TrustedSetupNetworks`):
-   open the web UI and register a passkey. With an empty `passkeys` table,
-   setup is open only to trusted networks; after the first passkey it is
-   closed. There is **deliberately no remote recovery** — keep at least two
-   passkeys.
-2. **Issue a registration token** for each host you will install:
+1. **First user setup** (one time, from a network in `TrustedSetupNetworks`):
+   open the web UI and register the **first user's** passkey. With an empty
+   `users` table, setup is open only to trusted networks; after the first
+   user it is closed. There is **deliberately no remote recovery** — keep at
+   least two passkeys per user.
+2. **Invite other operators** (docs/MULTI-USER.md): web UI → Users → Invite
+   user. The raw invite link is shown **once**; the new user opens it
+   (`/accept-invite#token=…`), picks a username and registers their own
+   passkey — the account is created automatically. Invites are single-use
+   and expire (default 7 days).
+3. **Issue a registration token** for each host you will install:
    web UI → Sources → New registration token → kind `windows-agent`,
    lifetime (minutes). The UI shows the raw `reg_…` token **once** — copy it
    to the target host. Tokens are single-use (PROTOCOL §5).
 
-Console fallbacks for passkey management:
+Console fallbacks for user/passkey management:
 
 ```powershell
+hyveman-api auth list-users --data-dir C:\hyveman\data
 hyveman-api auth list-passkeys --data-dir C:\hyveman\data
 hyveman-api auth remove-passkey <id> --data-dir C:\hyveman\data
 hyveman-api auth reset --data-dir C:\hyveman\data

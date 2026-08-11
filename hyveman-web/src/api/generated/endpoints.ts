@@ -529,6 +529,48 @@ export interface IdracStatusDto {
   lastError?: IdracStatusDtoLastError;
 }
 
+export type InvitationCreatedDtoExpiresAt = null | string;
+
+export interface InvitationCreatedDto {
+  id?: string;
+  token?: string;
+  url?: string;
+  created?: string;
+  expiresAt?: InvitationCreatedDtoExpiresAt;
+}
+
+/**
+ * @pattern ^-?(?:0|[1-9]\d*)$
+ */
+export type InvitationCreateRequestExpiresInMinutes = null | number | string;
+
+export interface InvitationCreateRequest {
+  /** @pattern ^-?(?:0|[1-9]\d*)$ */
+  expiresInMinutes?: InvitationCreateRequestExpiresInMinutes;
+}
+
+export type InvitationDtoCreatedBy = null | string;
+
+export type InvitationDtoCreatedByDisplayName = null | string;
+
+export type InvitationDtoExpiresAt = null | string;
+
+export type InvitationDtoConsumedAt = null | string;
+
+export interface InvitationDto {
+  id?: string;
+  createdBy?: InvitationDtoCreatedBy;
+  createdByDisplayName?: InvitationDtoCreatedByDisplayName;
+  created?: string;
+  expiresAt?: InvitationDtoExpiresAt;
+  consumedAt?: InvitationDtoConsumedAt;
+  revoked?: boolean;
+}
+
+export interface InviteInspectRequest {
+  token?: string;
+}
+
 export interface JsonElement {}
 
 export type LogonStatDtoSourceName = null | string;
@@ -692,8 +734,11 @@ export interface PasskeyDto {
 
 export type PasskeyRegisterRequestName = null | string;
 
+export type PasskeyRegisterRequestInviteToken = null | string;
+
 export interface PasskeyRegisterRequest {
   name?: PasskeyRegisterRequestName;
+  inviteToken?: PasskeyRegisterRequestInviteToken;
 }
 
 export type RegistrationTokenCreatedDtoExpiresAt = null | string;
@@ -871,12 +916,20 @@ export interface SavedSearchInput {
   updatedAt?: SavedSearchInputUpdatedAt;
 }
 
-export type SessionResponseAdminName = null | string;
+export type SessionResponseUser = null | SessionUserDto;
 
 export interface SessionResponse {
   authenticated?: boolean;
   setupRequired?: boolean;
-  adminName?: SessionResponseAdminName;
+  user?: SessionResponseUser;
+}
+
+export type SessionUserDtoDisplayName = null | string;
+
+export interface SessionUserDto {
+  id?: string;
+  name?: string;
+  displayName?: SessionUserDtoDisplayName;
 }
 
 export type SourceDtoHostId = null | string;
@@ -902,6 +955,53 @@ export interface TokenDto {
   created?: string;
   lastUsed?: TokenDtoLastUsed;
   revoked?: boolean;
+}
+
+export type UserDetailDtoDisplayName = null | string;
+
+export type UserDetailDtoCreatedBy = null | string;
+
+/**
+ * @pattern ^-?(?:0|[1-9]\d*)$
+ */
+export type UserDetailDtoPasskeyCount = number | string;
+
+export type UserDetailDtoLastActive = null | string;
+
+export interface UserDetailDto {
+  passkeys?: PasskeyDto[];
+  id?: string;
+  name?: string;
+  displayName?: UserDetailDtoDisplayName;
+  disabled?: boolean;
+  created?: string;
+  createdBy?: UserDetailDtoCreatedBy;
+  /** @pattern ^-?(?:0|[1-9]\d*)$ */
+  passkeyCount?: UserDetailDtoPasskeyCount;
+  lastActive?: UserDetailDtoLastActive;
+}
+
+export type UserDtoDisplayName = null | string;
+
+export type UserDtoCreatedBy = null | string;
+
+/**
+ * @pattern ^-?(?:0|[1-9]\d*)$
+ */
+export type UserDtoPasskeyCount = number | string;
+
+export type UserDtoLastActive = null | string;
+
+export interface UserDto {
+  id?: string;
+  name?: string;
+  displayName?: UserDtoDisplayName;
+  disabled?: boolean;
+  created?: string;
+  createdBy?: UserDtoCreatedBy;
+  /** @pattern ^-?(?:0|[1-9]\d*)$ */
+  passkeyCount?: UserDtoPasskeyCount;
+  lastActive?: UserDtoLastActive;
 }
 
 export type VmDtoHeartbeatOk = null | boolean;
@@ -948,6 +1048,20 @@ export type PostApiV1AuthPasskeysRegisterOptionsBodyThree = null | PasskeyRegist
 export type DeleteApiV1AuthPasskeysIdParams = {
 confirm?: boolean;
 };
+
+export type DeleteApiV1UsersIdParams = {
+confirm?: boolean;
+};
+
+export type DeleteApiV1UsersIdPasskeysPasskeyIdParams = {
+confirm?: boolean;
+};
+
+export type PostApiV1UsersInvitationsBodyOne = null | InvitationCreateRequest;
+
+export type PostApiV1UsersInvitationsBodyTwo = null | InvitationCreateRequest;
+
+export type PostApiV1UsersInvitationsBodyThree = null | InvitationCreateRequest;
 
 export type DeleteApiV1HostsIdParams = {
 confirm?: boolean;
@@ -1460,6 +1574,84 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
       return useMutation(mutationOptions, queryClient);
     }
     
+export type postApiV1AuthInvitationsInspectResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type postApiV1AuthInvitationsInspectResponseSuccess = (postApiV1AuthInvitationsInspectResponse200) & {
+  headers: Headers;
+};
+;
+
+export type postApiV1AuthInvitationsInspectResponse = (postApiV1AuthInvitationsInspectResponseSuccess)
+
+export const getPostApiV1AuthInvitationsInspectUrl = () => {
+
+
+  
+
+  return `/api/v1/auth/invitations/inspect`
+}
+
+export const postApiV1AuthInvitationsInspect = async (inviteInspectRequest: InviteInspectRequest, options?: RequestInit): Promise<postApiV1AuthInvitationsInspectResponse> => {
+  
+  return httpFetch<postApiV1AuthInvitationsInspectResponse>(getPostApiV1AuthInvitationsInspectUrl(),
+  {      
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      inviteInspectRequest,)
+  }
+);}
+
+
+
+
+export const getPostApiV1AuthInvitationsInspectMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1AuthInvitationsInspect>>, TError,{data: InviteInspectRequest}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof postApiV1AuthInvitationsInspect>>, TError,{data: InviteInspectRequest}, TContext> => {
+
+const mutationKey = ['postApiV1AuthInvitationsInspect'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiV1AuthInvitationsInspect>>, {data: InviteInspectRequest}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postApiV1AuthInvitationsInspect(data,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiV1AuthInvitationsInspectMutationResult = NonNullable<Awaited<ReturnType<typeof postApiV1AuthInvitationsInspect>>>
+    export type PostApiV1AuthInvitationsInspectMutationBody = InviteInspectRequest
+    export type PostApiV1AuthInvitationsInspectMutationError = unknown
+
+    export const usePostApiV1AuthInvitationsInspect = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1AuthInvitationsInspect>>, TError,{data: InviteInspectRequest}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiV1AuthInvitationsInspect>>,
+        TError,
+        {data: InviteInspectRequest},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiV1AuthInvitationsInspectMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
 export type postApiV1AuthLogoutResponse200 = {
   data: void
   status: 200
@@ -1726,6 +1918,810 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
       > => {
 
       const mutationOptions = getDeleteApiV1AuthPasskeysIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type getApiV1UsersResponse200 = {
+  data: UserDto[]
+  status: 200
+}
+    
+export type getApiV1UsersResponseSuccess = (getApiV1UsersResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getApiV1UsersResponse = (getApiV1UsersResponseSuccess)
+
+export const getGetApiV1UsersUrl = () => {
+
+
+  
+
+  return `/api/v1/users`
+}
+
+export const getApiV1Users = async ( options?: RequestInit): Promise<getApiV1UsersResponse> => {
+  
+  return httpFetch<getApiV1UsersResponse>(getGetApiV1UsersUrl(),
+  {      
+    ...options,
+    method: 'GET'
+    
+    
+  }
+);}
+
+
+
+
+
+export const getGetApiV1UsersQueryKey = () => {
+    return [
+    `/api/v1/users`
+    ] as const;
+    }
+
+    
+export const getGetApiV1UsersQueryOptions = <TData = Awaited<ReturnType<typeof getApiV1Users>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1Users>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiV1UsersQueryKey();
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiV1Users>>> = ({ signal }) => getApiV1Users({ signal, ...requestOptions });
+
+      
+
+      
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiV1Users>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetApiV1UsersQueryResult = NonNullable<Awaited<ReturnType<typeof getApiV1Users>>>
+export type GetApiV1UsersQueryError = unknown
+
+
+export function useGetApiV1Users<TData = Awaited<ReturnType<typeof getApiV1Users>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1Users>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiV1Users>>,
+          TError,
+          Awaited<ReturnType<typeof getApiV1Users>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiV1Users<TData = Awaited<ReturnType<typeof getApiV1Users>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1Users>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiV1Users>>,
+          TError,
+          Awaited<ReturnType<typeof getApiV1Users>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiV1Users<TData = Awaited<ReturnType<typeof getApiV1Users>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1Users>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+
+export function useGetApiV1Users<TData = Awaited<ReturnType<typeof getApiV1Users>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1Users>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetApiV1UsersQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+
+export type getApiV1UsersIdResponse200 = {
+  data: UserDetailDto
+  status: 200
+}
+    
+export type getApiV1UsersIdResponseSuccess = (getApiV1UsersIdResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getApiV1UsersIdResponse = (getApiV1UsersIdResponseSuccess)
+
+export const getGetApiV1UsersIdUrl = (id: string,) => {
+
+
+  
+
+  return `/api/v1/users/${id}`
+}
+
+export const getApiV1UsersId = async (id: string, options?: RequestInit): Promise<getApiV1UsersIdResponse> => {
+  
+  return httpFetch<getApiV1UsersIdResponse>(getGetApiV1UsersIdUrl(id),
+  {      
+    ...options,
+    method: 'GET'
+    
+    
+  }
+);}
+
+
+
+
+
+export const getGetApiV1UsersIdQueryKey = (id?: string,) => {
+    return [
+    `/api/v1/users/${id}`
+    ] as const;
+    }
+
+    
+export const getGetApiV1UsersIdQueryOptions = <TData = Awaited<ReturnType<typeof getApiV1UsersId>>, TError = unknown>(id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersId>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiV1UsersIdQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiV1UsersId>>> = ({ signal }) => getApiV1UsersId(id, { signal, ...requestOptions });
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersId>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetApiV1UsersIdQueryResult = NonNullable<Awaited<ReturnType<typeof getApiV1UsersId>>>
+export type GetApiV1UsersIdQueryError = unknown
+
+
+export function useGetApiV1UsersId<TData = Awaited<ReturnType<typeof getApiV1UsersId>>, TError = unknown>(
+ id: string, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersId>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiV1UsersId>>,
+          TError,
+          Awaited<ReturnType<typeof getApiV1UsersId>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiV1UsersId<TData = Awaited<ReturnType<typeof getApiV1UsersId>>, TError = unknown>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersId>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiV1UsersId>>,
+          TError,
+          Awaited<ReturnType<typeof getApiV1UsersId>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiV1UsersId<TData = Awaited<ReturnType<typeof getApiV1UsersId>>, TError = unknown>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersId>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+
+export function useGetApiV1UsersId<TData = Awaited<ReturnType<typeof getApiV1UsersId>>, TError = unknown>(
+ id: string, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersId>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetApiV1UsersIdQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+
+export type deleteApiV1UsersIdResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type deleteApiV1UsersIdResponseSuccess = (deleteApiV1UsersIdResponse200) & {
+  headers: Headers;
+};
+;
+
+export type deleteApiV1UsersIdResponse = (deleteApiV1UsersIdResponseSuccess)
+
+export const getDeleteApiV1UsersIdUrl = (id: string,
+    params?: DeleteApiV1UsersIdParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/v1/users/${id}?${stringifiedParams}` : `/api/v1/users/${id}`
+}
+
+export const deleteApiV1UsersId = async (id: string,
+    params?: DeleteApiV1UsersIdParams, options?: RequestInit): Promise<deleteApiV1UsersIdResponse> => {
+  
+  return httpFetch<deleteApiV1UsersIdResponse>(getDeleteApiV1UsersIdUrl(id,params),
+  {      
+    ...options,
+    method: 'DELETE'
+    
+    
+  }
+);}
+
+
+
+
+export const getDeleteApiV1UsersIdMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1UsersId>>, TError,{id: string;params?: DeleteApiV1UsersIdParams}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1UsersId>>, TError,{id: string;params?: DeleteApiV1UsersIdParams}, TContext> => {
+
+const mutationKey = ['deleteApiV1UsersId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiV1UsersId>>, {id: string;params?: DeleteApiV1UsersIdParams}> = (props) => {
+          const {id,params} = props ?? {};
+
+          return  deleteApiV1UsersId(id,params,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiV1UsersIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiV1UsersId>>>
+    
+    export type DeleteApiV1UsersIdMutationError = unknown
+
+    export const useDeleteApiV1UsersId = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1UsersId>>, TError,{id: string;params?: DeleteApiV1UsersIdParams}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiV1UsersId>>,
+        TError,
+        {id: string;params?: DeleteApiV1UsersIdParams},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiV1UsersIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type postApiV1UsersIdDisableResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type postApiV1UsersIdDisableResponseSuccess = (postApiV1UsersIdDisableResponse200) & {
+  headers: Headers;
+};
+;
+
+export type postApiV1UsersIdDisableResponse = (postApiV1UsersIdDisableResponseSuccess)
+
+export const getPostApiV1UsersIdDisableUrl = (id: string,) => {
+
+
+  
+
+  return `/api/v1/users/${id}/disable`
+}
+
+export const postApiV1UsersIdDisable = async (id: string, options?: RequestInit): Promise<postApiV1UsersIdDisableResponse> => {
+  
+  return httpFetch<postApiV1UsersIdDisableResponse>(getPostApiV1UsersIdDisableUrl(id),
+  {      
+    ...options,
+    method: 'POST'
+    
+    
+  }
+);}
+
+
+
+
+export const getPostApiV1UsersIdDisableMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersIdDisable>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersIdDisable>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['postApiV1UsersIdDisable'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiV1UsersIdDisable>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  postApiV1UsersIdDisable(id,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiV1UsersIdDisableMutationResult = NonNullable<Awaited<ReturnType<typeof postApiV1UsersIdDisable>>>
+    
+    export type PostApiV1UsersIdDisableMutationError = unknown
+
+    export const usePostApiV1UsersIdDisable = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersIdDisable>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiV1UsersIdDisable>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiV1UsersIdDisableMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type postApiV1UsersIdEnableResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type postApiV1UsersIdEnableResponseSuccess = (postApiV1UsersIdEnableResponse200) & {
+  headers: Headers;
+};
+;
+
+export type postApiV1UsersIdEnableResponse = (postApiV1UsersIdEnableResponseSuccess)
+
+export const getPostApiV1UsersIdEnableUrl = (id: string,) => {
+
+
+  
+
+  return `/api/v1/users/${id}/enable`
+}
+
+export const postApiV1UsersIdEnable = async (id: string, options?: RequestInit): Promise<postApiV1UsersIdEnableResponse> => {
+  
+  return httpFetch<postApiV1UsersIdEnableResponse>(getPostApiV1UsersIdEnableUrl(id),
+  {      
+    ...options,
+    method: 'POST'
+    
+    
+  }
+);}
+
+
+
+
+export const getPostApiV1UsersIdEnableMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersIdEnable>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersIdEnable>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['postApiV1UsersIdEnable'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiV1UsersIdEnable>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  postApiV1UsersIdEnable(id,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiV1UsersIdEnableMutationResult = NonNullable<Awaited<ReturnType<typeof postApiV1UsersIdEnable>>>
+    
+    export type PostApiV1UsersIdEnableMutationError = unknown
+
+    export const usePostApiV1UsersIdEnable = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersIdEnable>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiV1UsersIdEnable>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiV1UsersIdEnableMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type deleteApiV1UsersIdPasskeysPasskeyIdResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type deleteApiV1UsersIdPasskeysPasskeyIdResponseSuccess = (deleteApiV1UsersIdPasskeysPasskeyIdResponse200) & {
+  headers: Headers;
+};
+;
+
+export type deleteApiV1UsersIdPasskeysPasskeyIdResponse = (deleteApiV1UsersIdPasskeysPasskeyIdResponseSuccess)
+
+export const getDeleteApiV1UsersIdPasskeysPasskeyIdUrl = (id: string,
+    passkeyId: string,
+    params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/v1/users/${id}/passkeys/${passkeyId}?${stringifiedParams}` : `/api/v1/users/${id}/passkeys/${passkeyId}`
+}
+
+export const deleteApiV1UsersIdPasskeysPasskeyId = async (id: string,
+    passkeyId: string,
+    params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams, options?: RequestInit): Promise<deleteApiV1UsersIdPasskeysPasskeyIdResponse> => {
+  
+  return httpFetch<deleteApiV1UsersIdPasskeysPasskeyIdResponse>(getDeleteApiV1UsersIdPasskeysPasskeyIdUrl(id,passkeyId,params),
+  {      
+    ...options,
+    method: 'DELETE'
+    
+    
+  }
+);}
+
+
+
+
+export const getDeleteApiV1UsersIdPasskeysPasskeyIdMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1UsersIdPasskeysPasskeyId>>, TError,{id: string;passkeyId: string;params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1UsersIdPasskeysPasskeyId>>, TError,{id: string;passkeyId: string;params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams}, TContext> => {
+
+const mutationKey = ['deleteApiV1UsersIdPasskeysPasskeyId'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteApiV1UsersIdPasskeysPasskeyId>>, {id: string;passkeyId: string;params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams}> = (props) => {
+          const {id,passkeyId,params} = props ?? {};
+
+          return  deleteApiV1UsersIdPasskeysPasskeyId(id,passkeyId,params,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteApiV1UsersIdPasskeysPasskeyIdMutationResult = NonNullable<Awaited<ReturnType<typeof deleteApiV1UsersIdPasskeysPasskeyId>>>
+    
+    export type DeleteApiV1UsersIdPasskeysPasskeyIdMutationError = unknown
+
+    export const useDeleteApiV1UsersIdPasskeysPasskeyId = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteApiV1UsersIdPasskeysPasskeyId>>, TError,{id: string;passkeyId: string;params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof deleteApiV1UsersIdPasskeysPasskeyId>>,
+        TError,
+        {id: string;passkeyId: string;params?: DeleteApiV1UsersIdPasskeysPasskeyIdParams},
+        TContext
+      > => {
+
+      const mutationOptions = getDeleteApiV1UsersIdPasskeysPasskeyIdMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type getApiV1UsersInvitationsResponse200 = {
+  data: InvitationDto[]
+  status: 200
+}
+    
+export type getApiV1UsersInvitationsResponseSuccess = (getApiV1UsersInvitationsResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getApiV1UsersInvitationsResponse = (getApiV1UsersInvitationsResponseSuccess)
+
+export const getGetApiV1UsersInvitationsUrl = () => {
+
+
+  
+
+  return `/api/v1/users/invitations`
+}
+
+export const getApiV1UsersInvitations = async ( options?: RequestInit): Promise<getApiV1UsersInvitationsResponse> => {
+  
+  return httpFetch<getApiV1UsersInvitationsResponse>(getGetApiV1UsersInvitationsUrl(),
+  {      
+    ...options,
+    method: 'GET'
+    
+    
+  }
+);}
+
+
+
+
+
+export const getGetApiV1UsersInvitationsQueryKey = () => {
+    return [
+    `/api/v1/users/invitations`
+    ] as const;
+    }
+
+    
+export const getGetApiV1UsersInvitationsQueryOptions = <TData = Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiV1UsersInvitationsQueryKey();
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiV1UsersInvitations>>> = ({ signal }) => getApiV1UsersInvitations({ signal, ...requestOptions });
+
+      
+
+      
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetApiV1UsersInvitationsQueryResult = NonNullable<Awaited<ReturnType<typeof getApiV1UsersInvitations>>>
+export type GetApiV1UsersInvitationsQueryError = unknown
+
+
+export function useGetApiV1UsersInvitations<TData = Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiV1UsersInvitations>>,
+          TError,
+          Awaited<ReturnType<typeof getApiV1UsersInvitations>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiV1UsersInvitations<TData = Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiV1UsersInvitations>>,
+          TError,
+          Awaited<ReturnType<typeof getApiV1UsersInvitations>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiV1UsersInvitations<TData = Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+
+export function useGetApiV1UsersInvitations<TData = Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiV1UsersInvitations>>, TError, TData>>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetApiV1UsersInvitationsQueryOptions(options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+
+export type postApiV1UsersInvitationsResponse200 = {
+  data: InvitationCreatedDto
+  status: 200
+}
+    
+export type postApiV1UsersInvitationsResponseSuccess = (postApiV1UsersInvitationsResponse200) & {
+  headers: Headers;
+};
+;
+
+export type postApiV1UsersInvitationsResponse = (postApiV1UsersInvitationsResponseSuccess)
+
+export const getPostApiV1UsersInvitationsUrl = () => {
+
+
+  
+
+  return `/api/v1/users/invitations`
+}
+
+export const postApiV1UsersInvitations = async (postApiV1UsersInvitationsBody: PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree, options?: RequestInit): Promise<postApiV1UsersInvitationsResponse> => {
+  
+  return httpFetch<postApiV1UsersInvitationsResponse>(getPostApiV1UsersInvitationsUrl(),
+  {      
+    ...options,
+    method: 'POST'
+    ,
+    body: JSON.stringify(
+      postApiV1UsersInvitationsBody,)
+  }
+);}
+
+
+
+
+export const getPostApiV1UsersInvitationsMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersInvitations>>, TError,{data: PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersInvitations>>, TError,{data: PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree}, TContext> => {
+
+const mutationKey = ['postApiV1UsersInvitations'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiV1UsersInvitations>>, {data: PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree}> = (props) => {
+          const {data} = props ?? {};
+
+          return  postApiV1UsersInvitations(data,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiV1UsersInvitationsMutationResult = NonNullable<Awaited<ReturnType<typeof postApiV1UsersInvitations>>>
+    export type PostApiV1UsersInvitationsMutationBody = PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree
+    export type PostApiV1UsersInvitationsMutationError = unknown
+
+    export const usePostApiV1UsersInvitations = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersInvitations>>, TError,{data: PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiV1UsersInvitations>>,
+        TError,
+        {data: PostApiV1UsersInvitationsBodyOne | PostApiV1UsersInvitationsBodyTwo | PostApiV1UsersInvitationsBodyThree},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiV1UsersInvitationsMutationOptions(options);
+
+      return useMutation(mutationOptions, queryClient);
+    }
+    
+export type postApiV1UsersInvitationsIdRevokeResponse200 = {
+  data: void
+  status: 200
+}
+    
+export type postApiV1UsersInvitationsIdRevokeResponseSuccess = (postApiV1UsersInvitationsIdRevokeResponse200) & {
+  headers: Headers;
+};
+;
+
+export type postApiV1UsersInvitationsIdRevokeResponse = (postApiV1UsersInvitationsIdRevokeResponseSuccess)
+
+export const getPostApiV1UsersInvitationsIdRevokeUrl = (id: string,) => {
+
+
+  
+
+  return `/api/v1/users/invitations/${id}/revoke`
+}
+
+export const postApiV1UsersInvitationsIdRevoke = async (id: string, options?: RequestInit): Promise<postApiV1UsersInvitationsIdRevokeResponse> => {
+  
+  return httpFetch<postApiV1UsersInvitationsIdRevokeResponse>(getPostApiV1UsersInvitationsIdRevokeUrl(id),
+  {      
+    ...options,
+    method: 'POST'
+    
+    
+  }
+);}
+
+
+
+
+export const getPostApiV1UsersInvitationsIdRevokeMutationOptions = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersInvitationsIdRevoke>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersInvitationsIdRevoke>>, TError,{id: string}, TContext> => {
+
+const mutationKey = ['postApiV1UsersInvitationsIdRevoke'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+      
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof postApiV1UsersInvitationsIdRevoke>>, {id: string}> = (props) => {
+          const {id} = props ?? {};
+
+          return  postApiV1UsersInvitationsIdRevoke(id,requestOptions)
+        }
+
+        
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type PostApiV1UsersInvitationsIdRevokeMutationResult = NonNullable<Awaited<ReturnType<typeof postApiV1UsersInvitationsIdRevoke>>>
+    
+    export type PostApiV1UsersInvitationsIdRevokeMutationError = unknown
+
+    export const usePostApiV1UsersInvitationsIdRevoke = <TError = unknown,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof postApiV1UsersInvitationsIdRevoke>>, TError,{id: string}, TContext>, request?: SecondParameter<typeof httpFetch>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof postApiV1UsersInvitationsIdRevoke>>,
+        TError,
+        {id: string},
+        TContext
+      > => {
+
+      const mutationOptions = getPostApiV1UsersInvitationsIdRevokeMutationOptions(options);
 
       return useMutation(mutationOptions, queryClient);
     }

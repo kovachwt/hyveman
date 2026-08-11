@@ -925,7 +925,10 @@ public class AgentContractTests
 
         var session = await client.GetAsync("/api/v1/auth/session");
         Assert.Equal(HttpStatusCode.OK, session.StatusCode);
-        Assert.True((await ReadJson(session)).GetProperty("setupRequired").GetBoolean());
+        // setupRequired is order-dependent on the shared fixture DB (any earlier
+        // SeedSession call creates the bootstrap user); the dedicated
+        // MultiUserTests cover the gate against fresh factories.
+        Assert.Equal(JsonValueKind.False, (await ReadJson(session)).GetProperty("setupRequired").ValueKind);
         // CSRF cookie was issued; unsafe requests without the header are 403.
         var csrfValue = _fx.GetCsrfToken(session);
         Assert.NotNull(csrfValue);
@@ -1121,30 +1124,78 @@ public sealed class ApiFixture : IDisposable
         return null;
     }
 
-    /// <summary>Seeds a valid web session into the client's cookie jar.</summary>
-    public void SeedSession(HttpClient client)
+    /// <summary>Seeds a valid web session into the client's cookie jar as
+    /// the bootstrap user.</summary>
+    public void SeedSession(HttpClient client) => SeedSessionAs(client, "usr_admin");
+
+    /// <summary>Seeds a valid web session bound to <paramref name="userId"/>
+    /// into the client's cookie jar. The bootstrap user is created on demand
+    /// (the migration only seeds it when there was something to backfill).</summary>
+    public void SeedSessionAs(HttpClient client, string userId)
     {
         var sessionId = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        // ISessionStore keeps only the hash; write through the DB directly.
         using var scope = _factory.Services.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<Hyveman.Application.ISessionStore>();
-        var id = store.CreateAsync(DateTimeOffset.UtcNow, TimeSpan.FromDays(1), CancellationToken.None).GetAwaiter().GetResult();
-        _ = sessionId;
-        // ISessionStore keeps only the hash; re-create with our known value by
-        // writing through the DB directly.
         using var conn = scope.ServiceProvider.GetRequiredService<Hyveman.Infrastructure.Sqlite.SqliteDb>().Open();
+        using (var seed = conn.CreateCommand())
+        {
+            seed.CommandText = """
+                INSERT OR IGNORE INTO users(id, name, display_name, webauthn_user_handle, created, created_by)
+                VALUES ('usr_admin', 'admin', 'Hyveman Administrator', 'JUbKKsjL28Vp6HwAG1P44Q',
+                        '2026-01-01T00:00:00.0000000Z', 'setup')
+                """;
+            seed.ExecuteNonQuery();
+        }
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO web_sessions(id_hash, created_at, expires_at, last_seen)
-            VALUES ($h, $c, $e, $s)
+            INSERT INTO web_sessions(id_hash, user_id, created_at, expires_at, last_seen)
+            VALUES ($h, $u, $c, $e, $s)
             """;
         var now = DateTimeOffset.UtcNow;
         cmd.Parameters.AddWithValue("$h", StoreHash(sessionId));
+        cmd.Parameters.AddWithValue("$u", userId);
         cmd.Parameters.AddWithValue("$c", now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"));
         cmd.Parameters.AddWithValue("$e", now.AddDays(1).ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"));
         cmd.Parameters.AddWithValue("$s", now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'"));
         cmd.ExecuteNonQuery();
-        _ = id;
         client.DefaultRequestHeaders.Add("Cookie", $"hyveman_session={sessionId}");
+    }
+
+    /// <summary>Creates a user directly via the store; returns its id.</summary>
+    public async Task<string> SeedUserAsync(string name, string? displayName = null)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<Hyveman.Application.IUserStore>();
+        var user = new Hyveman.Domain.UserRecord(
+            "usr_" + Guid.NewGuid().ToString("n")[..16], name, displayName,
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)),
+            false, DateTimeOffset.UtcNow, "test");
+        await store.CreateAsync(user, CancellationToken.None);
+        return user.Id;
+    }
+
+    /// <summary>Creates a passkey (fake credential material) for a user.</summary>
+    public async Task<string> SeedPasskeyAsync(string userId, string? name = null)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<Hyveman.Application.IPasskeyStore>();
+        var passkey = new Hyveman.Domain.PasskeyRecord(
+            "pk_" + Guid.NewGuid().ToString("n")[..16], userId, name ?? "test-key",
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)),
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(65)),
+            0, DateTimeOffset.UtcNow, null);
+        await store.AddAsync(passkey, CancellationToken.None);
+        return passkey.Id;
+    }
+
+    /// <summary>Creates an invitation via the store; returns (raw token, id).</summary>
+    public async Task<(string Token, string Id)> CreateInvitationAsync(string? createdBy = null)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<Hyveman.Application.IInvitationStore>();
+        var created = await store.CreateAsync(createdBy, null, TimeSpan.FromDays(7),
+            DateTimeOffset.UtcNow, CancellationToken.None);
+        return (created.RawToken, created.Id);
     }
 
     private static string StoreHash(string sessionId) =>

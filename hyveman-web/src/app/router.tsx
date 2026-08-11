@@ -7,6 +7,7 @@ import { AppShell } from '@/components/AppShell/AppShell';
 import { FullPageLoader, PublicOnly, RequireAuth } from '@/auth/authRoutes';
 import { LoginPage } from '@/pages/LoginPage';
 import { SetupPage } from '@/pages/SetupPage';
+import { AcceptInvitePage } from '@/pages/AcceptInvitePage';
 
 const OverviewPage = lazy(() => import('@/features/overview/OverviewPage'));
 const HostsPage = lazy(() => import('@/features/hosts/HostsPage'));
@@ -21,6 +22,7 @@ const SourcesPage = lazy(() => import('@/features/sources/SourcesPage'));
 const RetentionPage = lazy(() => import('@/features/settings/RetentionPage'));
 const AuditPage = lazy(() => import('@/features/audit/AuditPage'));
 const PasskeysPage = lazy(() => import('@/features/passkeys/PasskeysPage'));
+const UsersPage = lazy(() => import('@/features/users/UsersPage'));
 
 function withSuspense(element: React.ReactNode) {
   return <Suspense fallback={<FullPageLoader />}>{element}</Suspense>;
@@ -44,6 +46,14 @@ export const router = createBrowserRouter([
     ),
   },
   {
+    path: '/accept-invite',
+    element: (
+      <PublicOnly>
+        <AcceptInvitePage />
+      </PublicOnly>
+    ),
+  },
+  {
     path: '/',
     element: (
       <RequireAuth>
@@ -61,6 +71,7 @@ export const router = createBrowserRouter([
       { path: 'notifications', element: withSuspense(<NotificationsPage />) },
       { path: 'maintenance', element: withSuspense(<MaintenancePage />) },
       { path: 'admin/sources', element: withSuspense(<SourcesPage />) },
+      { path: 'admin/users', element: withSuspense(<UsersPage />) },
       { path: 'admin/retention', element: withSuspense(<RetentionPage />) },
       { path: 'admin/audit', element: withSuspense(<AuditPage />) },
       { path: 'admin/passkeys', element: withSuspense(<PasskeysPage />) },

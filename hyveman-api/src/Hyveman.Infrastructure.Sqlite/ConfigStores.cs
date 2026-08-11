@@ -92,17 +92,17 @@ public sealed class CredentialBlobStore(SqliteDb db) : ICredentialBlobStore
 
 public sealed class SessionStore(SqliteDb db) : ISessionStore
 {
-    public async Task<string> CreateAsync(DateTimeOffset now, TimeSpan lifetime, CancellationToken ct)
+    public async Task<string> CreateAsync(DateTimeOffset now, TimeSpan lifetime, string userId, CancellationToken ct)
     {
         var raw = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var hash = StoreHelpers.HashToken(raw);
         using var conn = StoreHelpers.Open(db);
         await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO web_sessions(id_hash, created_at, expires_at, last_seen)
-            VALUES (@Hash, @Created, @Expires, @LastSeen)
+            INSERT INTO web_sessions(id_hash, user_id, created_at, expires_at, last_seen)
+            VALUES (@Hash, @UserId, @Created, @Expires, @LastSeen)
             """, new
         {
-            Hash = hash, Created = StoreHelpers.Fmt(now), Expires = StoreHelpers.Fmt(now.Add(lifetime)),
+            Hash = hash, UserId = userId, Created = StoreHelpers.Fmt(now), Expires = StoreHelpers.Fmt(now.Add(lifetime)),
             LastSeen = StoreHelpers.Fmt(now),
         }, cancellationToken: ct));
         return raw;
@@ -115,7 +115,7 @@ public sealed class SessionStore(SqliteDb db) : ISessionStore
         var r = await conn.QuerySingleOrDefaultAsync(new CommandDefinition(
             "SELECT * FROM web_sessions WHERE id_hash = @hash", new { hash }, cancellationToken: ct));
         if (r is null) return null;
-        var session = new WebSession((string)r.id_hash, StoreHelpers.Parse((string)r.created_at),
+        var session = new WebSession((string)r.id_hash, (string)r.user_id, StoreHelpers.Parse((string)r.created_at),
             StoreHelpers.Parse((string)r.expires_at), StoreHelpers.Parse((string)r.last_seen),
             StoreHelpers.ParseOpt((string?)r.revoked_at));
         if (session.RevokedAt is not null || session.ExpiresAt <= now)
@@ -144,6 +144,14 @@ public sealed class SessionStore(SqliteDb db) : ISessionStore
             new { hash, Now = StoreHelpers.Fmt(DateTimeOffset.UtcNow) }, cancellationToken: ct));
     }
 
+    public async Task RevokeAllForUserAsync(string userId, CancellationToken ct)
+    {
+        using var conn = StoreHelpers.Open(db);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE web_sessions SET revoked_at = @Now WHERE user_id = @UserId AND revoked_at IS NULL",
+            new { UserId = userId, Now = StoreHelpers.Fmt(DateTimeOffset.UtcNow) }, cancellationToken: ct));
+    }
+
     public async Task CleanupExpiredAsync(DateTimeOffset now, CancellationToken ct)
     {
         using var conn = StoreHelpers.Open(db);
@@ -160,6 +168,15 @@ public sealed class PasskeyStore(SqliteDb db) : IPasskeyStore
         using var conn = StoreHelpers.Open(db);
         var rows = await conn.QueryAsync(new CommandDefinition(
             "SELECT * FROM passkeys ORDER BY created", cancellationToken: ct));
+        return rows.Select(Map).ToList();
+    }
+
+    public async Task<IReadOnlyList<PasskeyRecord>> ListByUserAsync(string userId, CancellationToken ct)
+    {
+        using var conn = StoreHelpers.Open(db);
+        var rows = await conn.QueryAsync(new CommandDefinition(
+            "SELECT * FROM passkeys WHERE user_id = @userId ORDER BY created",
+            new { userId }, cancellationToken: ct));
         return rows.Select(Map).ToList();
     }
 
@@ -183,11 +200,11 @@ public sealed class PasskeyStore(SqliteDb db) : IPasskeyStore
     {
         using var conn = StoreHelpers.Open(db);
         await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO passkeys(id, name, credential_id, public_key, sign_count, created)
-            VALUES (@Id, @Name, @CredentialId, @PublicKey, @SignCount, @Created)
+            INSERT INTO passkeys(id, user_id, name, credential_id, public_key, sign_count, created)
+            VALUES (@Id, @UserId, @Name, @CredentialId, @PublicKey, @SignCount, @Created)
             """, new
         {
-            p.Id, p.Name, p.CredentialId, p.PublicKey, p.SignCount, Created = StoreHelpers.Fmt(p.Created),
+            p.Id, p.UserId, p.Name, p.CredentialId, p.PublicKey, p.SignCount, Created = StoreHelpers.Fmt(p.Created),
         }, cancellationToken: ct));
     }
 
@@ -212,36 +229,45 @@ public sealed class PasskeyStore(SqliteDb db) : IPasskeyStore
             "SELECT COUNT(*) FROM passkeys", cancellationToken: ct));
     }
 
+    public async Task<int> CountByUserAsync(string userId, CancellationToken ct)
+    {
+        using var conn = StoreHelpers.Open(db);
+        return (int)await conn.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM passkeys WHERE user_id = @userId",
+            new { userId }, cancellationToken: ct));
+    }
+
     private static PasskeyRecord Map(dynamic r) => new(
-        (string)r.id, (string)r.name, (string)r.credential_id, (string)r.public_key,
+        (string)r.id, (string)r.user_id, (string)r.name, (string)r.credential_id, (string)r.public_key,
         (uint)StoreHelpers.ToLong(r.sign_count), StoreHelpers.Parse((string)r.created),
         StoreHelpers.ParseOpt((string?)r.last_used));
 }
 
 public sealed class CeremonyStore(SqliteDb db) : ICeremonyStore
 {
-    public async Task SaveAsync(string challengeHash, string operation, string optionsJson,
+    public async Task SaveAsync(string challengeHash, string operation, string optionsJson, string? originContext,
         DateTimeOffset now, TimeSpan lifetime, CancellationToken ct)
     {
         using var conn = StoreHelpers.Open(db);
         await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO webauthn_challenges(challenge_hash, operation, options_json, created_at, expires_at)
-            VALUES (@Hash, @Operation, @OptionsJson, @Created, @Expires)
+            INSERT INTO webauthn_challenges(challenge_hash, operation, options_json, created_at, expires_at, origin_context)
+            VALUES (@Hash, @Operation, @OptionsJson, @Created, @Expires, @OriginContext)
             ON CONFLICT(challenge_hash) DO UPDATE SET
-                operation = @Operation, options_json = @OptionsJson, created_at = @Created, expires_at = @Expires
+                operation = @Operation, options_json = @OptionsJson, created_at = @Created,
+                expires_at = @Expires, origin_context = @OriginContext
             """, new
         {
             Hash = challengeHash, Operation = operation, OptionsJson = optionsJson,
-            Created = StoreHelpers.Fmt(now), Expires = StoreHelpers.Fmt(now.Add(lifetime)),
+            Created = StoreHelpers.Fmt(now), Expires = StoreHelpers.Fmt(now.Add(lifetime)), OriginContext = originContext,
         }, cancellationToken: ct));
     }
 
-    public async Task<string?> TakeAsync(string challengeHash, string operation, DateTimeOffset now, CancellationToken ct)
+    public async Task<(string OptionsJson, string? OriginContext)?> TakeAsync(string challengeHash, string operation, DateTimeOffset now, CancellationToken ct)
     {
         using var conn = StoreHelpers.Open(db);
         using var tx = conn.BeginTransaction();
         var r = await conn.QuerySingleOrDefaultAsync(new CommandDefinition("""
-            SELECT options_json FROM webauthn_challenges
+            SELECT options_json, origin_context FROM webauthn_challenges
             WHERE challenge_hash = @Hash AND operation = @Operation AND expires_at > @Now
             """, new { Hash = challengeHash, Operation = operation, Now = StoreHelpers.Fmt(now) }, tx, cancellationToken: ct));
         if (r is null) return null;
@@ -249,7 +275,7 @@ public sealed class CeremonyStore(SqliteDb db) : ICeremonyStore
             "DELETE FROM webauthn_challenges WHERE challenge_hash = @Hash",
             new { Hash = challengeHash }, tx, cancellationToken: ct));
         tx.Commit();
-        return (string)r.options_json;
+        return ((string)r.options_json, (string?)r.origin_context);
     }
 
     public async Task CleanupExpiredAsync(DateTimeOffset now, CancellationToken ct)

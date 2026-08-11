@@ -47,7 +47,7 @@ public sealed class AlertsController(AlertsService alerts) : ControllerBase
     public Task<AlertDto> Unsilence(string id, CancellationToken ct)
         => alerts.UnsilenceAsync(id, Actor(), ct);
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Rules CRUD (API.md §7.3).</summary>
@@ -86,7 +86,7 @@ public sealed class RulesController(RulesService rules) : ControllerBase
         return NoContent();
     }
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Notification channels (API.md §7.4): secrets write-only.</summary>
@@ -129,7 +129,7 @@ public sealed class NotificationChannelsController(ChannelsService channels) : C
     public Task<ChannelTestResult> Test(string id, CancellationToken ct)
         => channels.TestAsync(id, ct);
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Maintenance windows (API.md §7.3).</summary>
@@ -190,7 +190,7 @@ public sealed class MaintenanceWindowsController(MaintenanceWindowsService windo
         return NoContent();
     }
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Retention settings (API.md §7).</summary>
@@ -206,7 +206,7 @@ public sealed class SettingsController(SettingsService settings) : ControllerBas
     public Task<RetentionSettingsDto> PatchRetention([FromBody] RetentionSettingsInput input, CancellationToken ct)
         => settings.SetRetentionAsync(input, Actor(), ct);
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Audit log (API.md §7).</summary>

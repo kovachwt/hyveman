@@ -23,6 +23,7 @@ public sealed class SessionAuthHandler(
     ILoggerFactory logger,
     UrlEncoder encoder,
     ISessionStore sessions,
+    IUserStore users,
     IClock clock) : AuthenticationHandler<SessionAuthOptions>(options, logger, encoder)
 {
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -39,14 +40,28 @@ public sealed class SessionAuthHandler(
             return AuthenticateResult.Fail("invalid or expired session");
         }
 
+        // Sessions are bound to a user; a deleted or disabled user's session
+        // is dead even before its server-side record is cleaned up (docs/
+        // MULTI-USER.md §6) — re-checked on every request.
+        var user = await users.GetAsync(session.UserId, Context.RequestAborted);
+        if (user is null || user.Disabled)
+        {
+            await sessions.RevokeAsync(sessionId, Context.RequestAborted);
+            SessionCookies.Delete(Response);
+            return AuthenticateResult.Fail("user disabled or removed");
+        }
+
         // Sliding cookie (API.md §8.2): re-issue on each successful slide so
         // the browser cookie tracks the server record instead of expiring 14
         // days after login regardless of activity (D6).
         SessionCookies.Append(Response, sessionId, lifetime, Request.IsHttps);
 
         var identity = new ClaimsIdentity(
-            [new Claim(ClaimTypes.Name, "admin"), new Claim("session_id_hash", session.IdHash)],
-            Scheme.Name);
+        [
+            new Claim(ClaimTypes.Name, user.Name),
+            new Claim(ClaimTypes.NameIdentifier, user.Id),
+            new Claim("session_id_hash", session.IdHash),
+        ], Scheme.Name);
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name));
     }
 }

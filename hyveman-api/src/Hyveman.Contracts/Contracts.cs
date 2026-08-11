@@ -6,7 +6,14 @@ public sealed class SessionResponse
 {
     public bool Authenticated { get; set; }
     public bool SetupRequired { get; set; }
-    public string? AdminName { get; set; }
+    public SessionUserDto? User { get; set; }
+}
+
+public sealed class SessionUserDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? DisplayName { get; set; }
 }
 
 public sealed class PasskeyDto
@@ -20,6 +27,68 @@ public sealed class PasskeyDto
 public sealed class PasskeyRegisterRequest
 {
     public string? Name { get; set; }
+    /// <summary>Invite token for self-service account creation; mutually
+    /// exclusive with an authenticated session (docs/MULTI-USER.md).</summary>
+    public string? InviteToken { get; set; }
+}
+
+// ─── Users & invitations (docs/MULTI-USER.md) ──────────────────────────────
+
+public class UserDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? DisplayName { get; set; }
+    public bool Disabled { get; set; }
+    public DateTimeOffset Created { get; set; }
+    public string? CreatedBy { get; set; }
+    public int PasskeyCount { get; set; }
+    public DateTimeOffset? LastActive { get; set; }
+}
+
+public sealed class UserDetailDto : UserDto
+{
+    public List<PasskeyDto> Passkeys { get; set; } = [];
+}
+
+public sealed class InvitationCreateRequest
+{
+    /// <summary>Lifetime in minutes; 5 .. 10080 (7 days). Default 7 days.</summary>
+    public int? ExpiresInMinutes { get; set; }
+}
+
+public sealed class InvitationCreatedDto
+{
+    public string Id { get; set; } = "";
+    /// <summary>Raw inv_ token, returned exactly once; the shareable URL
+    /// carries it in the fragment (#token=...), never in a query string.</summary>
+    public string Token { get; set; } = "";
+    public string Url { get; set; } = "";
+    public DateTimeOffset Created { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+}
+
+public sealed class InvitationDto
+{
+    public string Id { get; set; } = "";
+    public string? CreatedBy { get; set; }
+    public string? CreatedByDisplayName { get; set; }
+    public DateTimeOffset Created { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? ConsumedAt { get; set; }
+    public bool Revoked { get; set; }
+}
+
+public sealed class InviteInspectRequest
+{
+    public string Token { get; set; } = "";
+}
+
+public sealed class InviteInspectResponse
+{
+    public bool Valid { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 // ─── Overview (API.md §7.1) ─────────────────────────────────────────────────

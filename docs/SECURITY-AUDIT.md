@@ -32,6 +32,37 @@ condition; **P3** = hardening, defense-in-depth, or robustness.
 | [S8](#s8) | P3 | api | Registration-verify does not re-check the setup gate |
 | [S9](#s9) | P3 | api | Unauthenticated `setupRequired` advertises the S1 window |
 
+## Multi-user changes (docs/MULTI-USER.md, 2026-08-11)
+
+Implemented alongside the user/invite work, tracked here so the security
+picture stays current:
+
+- **S8 generalized to invites:** the invite token is re-validated inside
+  `CompleteRegistrationAsync` (not consumed/revoked/expired) before the
+  commit transaction that creates the user + passkey. The first-run setup
+  gate is re-checked at verify too (users empty **and** trusted network).
+- **Setup gate is now `users`-based:** the wizard opens only when the `users`
+  table is empty; the migration seeds the bootstrap user only when there were
+  passkeys/sessions to backfill, so fresh installs and upgraded installs both
+  behave correctly. `auth reset` clears users (cascades passkeys), sessions,
+  invitations and challenges — the wizard re-opens.
+- **Login identity is per-user:** the credential id resolves the user; a
+  returned assertion user handle must match `users.webauthn_user_handle` when
+  present (the previous blanket-`true` owner callback is gone — the library's
+  callback carries no handle, so the check moved to the raw assertion
+  response). Disabled/deleted users are rejected at login **and** at every
+  session-authenticated request (the handler re-checks on each request).
+- **Invite links:** the raw `inv_` token is stored hashed, returned once, and
+  travels only in the URL **fragment** (`/accept-invite#token=...`) and JSON
+  bodies — never query strings, server logs or `Referer` (parallels the
+  `reg_` token discipline; the fragment is the one deliberate exception
+  because a link is inherent to invites). `invitations.inspect` never
+  consumes or reveals the token.
+- **Lockout guards:** self-disable/self-delete, last-enabled-user
+  disable/delete, and last-login-path passkey removal are blocked by the API,
+  so a remote login path always exists and no new remote-recovery surface was
+  needed. All user/invitation mutations are audited with the real actor name.
+
 Already tracked in `DEFECTS.md`, listed here so the security picture is complete:
 **D17** (vault key gets no ACL on Windows — P1 in security terms: any local user
 can read `vault.key` + `hyveman.db` and decrypt every stored iDRAC, Telegram, and

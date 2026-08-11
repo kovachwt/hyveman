@@ -13,9 +13,9 @@ public static class AdminCommands
         var dataDir = ResolveDataDir(args);
         var (stdout, stderr) = (Console.Out, Console.Error);
 
-        if (args.Length < 2 || args[1] is not ("reset" or "list-passkeys" or "remove-passkey"))
+        if (args.Length < 2 || args[1] is not ("reset" or "list-passkeys" or "remove-passkey" or "list-users"))
         {
-            await stdout.WriteLineAsync("Usage: hyveman-api auth <reset|list-passkeys|remove-passkey <id>> [--data-dir <path>]");
+            await stdout.WriteLineAsync("Usage: hyveman-api auth <reset|list-passkeys|remove-passkey <id>|list-users> [--data-dir <path>]");
             return 1;
         }
 
@@ -29,23 +29,42 @@ public static class AdminCommands
             {
                 case "reset":
                 {
-                    await conn.ExecuteAsync("DELETE FROM passkeys; DELETE FROM webauthn_challenges;");
+                    // Full identity reset (docs/MULTI-USER.md §8): users cascade
+                    // passkeys; sessions and invitations are cleared too. The
+                    // first-run setup wizard re-opens (users table empty).
+                    await conn.ExecuteAsync("DELETE FROM invitations; DELETE FROM users; DELETE FROM webauthn_challenges; DELETE FROM web_sessions;");
                     await conn.ExecuteAsync(
                         "INSERT INTO audit_log(time, actor, action) VALUES ($t, 'console', 'auth.reset')",
                         new { t = DateTimeOffset.UtcNow.ToString(TimeFormat.Full) });
-                    await stdout.WriteLineAsync("Passkeys and ceremony state cleared. First-run setup is available again from the trusted network.");
+                    await stdout.WriteLineAsync("Users, passkeys, sessions and invitations cleared. First-run setup is available again from the trusted network.");
                     return 0;
                 }
                 case "list-passkeys":
                 {
-                    var rows = await conn.QueryAsync("SELECT id, name, created, last_used FROM passkeys ORDER BY created");
+                    var rows = await conn.QueryAsync("""
+                        SELECT p.id, p.name, p.created, p.last_used, u.name AS user_name
+                        FROM passkeys p JOIN users u ON u.id = p.user_id ORDER BY p.created
+                        """);
                     var any = false;
                     foreach (var r in rows)
                     {
                         any = true;
-                        await stdout.WriteLineAsync($"{r.id}\t{r.name}\t{(string)r.created}\t{(string?)r.last_used ?? "-"}");
+                        await stdout.WriteLineAsync($"{r.id}\t{r.user_name}\t{r.name}\t{(string)r.created}\t{(string?)r.last_used ?? "-"}");
                     }
                     if (!any) await stdout.WriteLineAsync("(no passkeys registered)");
+                    return 0;
+                }
+                case "list-users":
+                {
+                    var rows = await conn.QueryAsync("SELECT id, name, display_name, disabled, created FROM users ORDER BY name");
+                    var any = false;
+                    foreach (var r in rows)
+                    {
+                        any = true;
+                        var disabled = (long)r.disabled == 1 ? "disabled" : "enabled";
+                        await stdout.WriteLineAsync($"{r.id}\t{r.name}\t{(string?)r.display_name ?? "-"}\t{disabled}\t{(string)r.created}");
+                    }
+                    if (!any) await stdout.WriteLineAsync("(no users)");
                     return 0;
                 }
                 case "remove-passkey":
@@ -64,7 +83,7 @@ public static class AdminCommands
                         return 1;
                     }
                     if (count <= 1)
-                        await stderr.WriteLineAsync("WARNING: this was the final passkey; first-run setup is now available again.");
+                        await stderr.WriteLineAsync("WARNING: this was the final passkey; no login path remains until a user is created (setup wizard or invite).");
                     await conn.ExecuteAsync(
                         "INSERT INTO audit_log(time, actor, action, target_kind, target_id) VALUES ($t, 'console', 'passkey.removed', 'passkey', $id)",
                         new { t = DateTimeOffset.UtcNow.ToString(TimeFormat.Full), id });

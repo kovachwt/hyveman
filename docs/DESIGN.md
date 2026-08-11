@@ -323,7 +323,21 @@ notification_channels(id, name, kind[telegram|webhook|smtp], config_ref, enabled
   -- config_ref points into the credentials vault; no plaintext secrets here
 logon_stats(day, source_id, user, logon_type, success_count, failure_count)
 maintenance_windows(id, host_id, start, end, reason, created_by)
-passkeys(id, name, credential_id, public_key, sign_count, created, last_used)
+users(id, name UNIQUE, display_name, webauthn_user_handle, disabled, created, created_by)
+  -- web console users, equal permissions for now (docs/MULTI-USER.md); the
+  -- first user is created by the trusted-network setup wizard; others join
+  -- via invite links. webauthn_user_handle is the per-user WebAuthn handle
+invitations(id, token_hash UNIQUE, created_by REFERENCES users, for_user_id NULL
+             REFERENCES users, created, expires_at, consumed_at, revoked)
+  -- single-use invite links; raw inv_ token is stored hashed, returned once,
+  -- and rides only in the /accept-invite URL fragment; for_user_id reserves
+  -- the passkey-reset invite fast-follow
+passkeys(id, user_id REFERENCES users ON DELETE CASCADE, name, credential_id
+         UNIQUE, public_key, sign_count, created, last_used)
+  -- per-user; login resolves the user from the credential id
+web_sessions(id_hash, user_id REFERENCES users ON DELETE CASCADE, created_at,
+             expires_at, last_seen, revoked_at)
+  -- sessions are bound to a user; disabled users are rejected on every request
 credentials(id, kind[idrac|telegram|webhook|smtp|...], label, blob_encrypted, created, rotated)
   -- single vault for all secrets (§7); blob_encrypted is AES-GCM ciphertext
 audit_log(id, time, actor, action, target_kind, target_id, detail_json)
@@ -362,48 +376,69 @@ Event Log API story is best from C#).
 
 ## 8. Authentication (web UI) — decided
 
-Single admin, internet-exposed UI, minimal friction. Final design:
+Multiple users with **equal permissions**; each user owns their own passkeys;
+new users self-create their account via a single-use **invite link** minted by
+an existing user (`docs/MULTI-USER.md`). Details:
 
-- **Passkeys (WebAuthn/FIDO2) are the only login method.** Multiple passkeys
-  registered per installation (decision: at least two — e.g. phone platform
-  authenticator + laptop Windows Hello), so losing one device is a non-event.
-  No passwords, no TOTP, no backup codes.
+- **Passkeys (WebAuthn/FIDO2) are the only login method.** Each user may
+  register several passkeys (e.g. phone platform authenticator + laptop
+  Windows Hello), so losing one device is a non-event. No passwords, no TOTP,
+  no backup codes.
+- **Users:** `users` table (unique name, display name, per-user WebAuthn
+  handle, disabled flag). All users have the same permissions for now. A user
+  can be disabled (sessions revoked immediately) or deleted (passkeys +
+  sessions cascade). Self-disable/self-delete and disabling/deleting the
+  **last enabled user** are blocked, so a remote login path always exists —
+  recovery stays console-only (`auth reset`).
+- **Invites:** an authenticated user mints a single-use `inv_` token
+  (hash-only storage, raw returned once) with a configurable lifetime (≤ 7
+  days). The shareable link carries the token in the **URL fragment**
+  (`/accept-invite#token=...`) so it never reaches server logs or `Referer`;
+  the invitee self-creates their account by registering their first passkey.
+  The invite is re-validated at ceremony verify (S8) and consumed atomically
+  with user+passkey creation; a name collision does not consume it. The
+  `invitations.for_user_id` column reserves the passkey-reset invite (existing
+  user who lost all keys) as a fast-follow.
 - **Requires a proper hostname + valid certificate** (Let's Encrypt or own
   CA) — WebAuthn only runs in a secure context; confirmed available.
 - **Session:** persistent auth cookie, `HttpOnly; Secure; SameSite=Strict`,
   **14-day sliding expiry** — effectively never re-login while in regular use.
+  Sessions are bound to a user; audit records carry the real username.
 - **Public origin:** preferably expose the frontend and the `/api` reverse
   proxy under one HTTPS origin. If separate subdomains are used instead,
   configure exact-origin credentialed CORS and keep the explicit WebAuthn RP
   ID and expected origin aligned with the frontend origin; do not move session
   credentials into browser storage.
-- **First-run setup wizard:** whenever the `passkeys` table is empty (new
-  install *or* after a restore that cleared passkeys), the frontend shows a
+- **First-run setup wizard:** whenever the `users` table is empty (new
+  install *or* after a restore that cleared users), the frontend shows a
   setup page **only when the API permits setup from localhost/trusted
-  network**: click "Register passkey", touch sensor, done. Once ≥1 passkey
-  exists, setup is never permitted again. (No codes, no clock sync — the
-  registration ceremony is self-validating.)
+  network**: click "Register passkey", touch sensor, done — this creates the
+  **first user**. Once ≥1 user exists, setup is never permitted again and new
+  users join via invites. (Upgrades from the single-admin era backfill the
+  existing admin into a `users` row, so setup does not re-open.)
 - **RP-ID invariant:** the WebAuthn Relying Party ID is stored explicitly in
   config in the data directory and taken from there — not derived from the
   runtime server hostname. A restore onto the same registered hostname keeps
   existing passkeys valid (no action). A restore onto a different hostname
-  leaves `passkeys` populated but unusable (authenticators reject the
-  assertion for a different origin); the operator runs `auth reset` to clear
-  them, which re-triggers the empty-`passkeys` wizard, then registers fresh
-  passkeys. Cross-hostname reuse of passkeys is cryptographically impossible
-  and not attempted.
+  leaves passkeys unusable (authenticators reject the assertion for a
+  different origin); the operator runs `auth reset` to clear users/passkeys,
+  which re-triggers the empty-`users` wizard, then registers fresh passkeys.
+  Cross-hostname reuse of passkeys is cryptographically impossible and not
+  attempted.
 - **Only fallback = console reset:** `hyveman-api auth reset` requires
   local admin on the server and restarts the setup flow (also
-  `auth list-passkeys` / `auth remove-passkey`). Appropriate trust anchor:
-  local admin already owns the box. There is deliberately **no** remote
-  recovery path.
+  `auth list-passkeys` / `auth remove-passkey` / `auth list-users`).
+  Appropriate trust anchor: local admin already owns the box. There is
+  deliberately **no** remote recovery path.
 - Rate limiting on auth endpoints as cheap insurance (passkey auth is
   challenge-response; there is no guessable code space).
 - **Implementation:** the API uses the .NET `Fido2` library (passwordless.dev)
   to create and validate ceremonies. The React frontend uses
   `@simplewebauthn/browser` to call the browser WebAuthn APIs and sends the
-  ceremony responses to the API. The single-admin model is extendable to
-  multiple users/credentials later without redesign.
+  ceremony responses to the API. The WebAuthn user handle is per-user
+  (`users.webauthn_user_handle`); identity at login is resolved from the
+  credential id, and a returned assertion user handle must match the stored
+  handle when present.
 
 ## 9. Backup & restore — decided
 
@@ -545,6 +580,7 @@ capability can be added without rework:
 | 16 | Ingest endpoints | Two JSON endpoints (not one): `/ingest/logs` for event batches (idempotent via the §13 #11/#15 key; agent-spooled & retried; server deduped) and `/ingest/telemetry` for heartbeats + Hyper-V facts (latest-wins, **not** idempotent, not spooled — a missed heartbeat *is* the alert signal, replaying old ones is wrong). Keeps idempotency semantics clean vs mixing a latest-wins stream into an idempotent store |
 | 17 | Agent service account | `LocalSystem` for now (no new local accounts to provision/manage on the small fleet). `LocalSystem` already covers Security-log read and WMI access. A dedicated least-privilege account (member of *Event Log Readers*) is a documented later option; the installer keeps the switch simple. Logs/spool/state/config ACLed to `SYSTEM` + Administrators |
 | 18 | Agent registration & protocol versioning | `POST /register` exchanges a single-use admin-issued `reg_` token (bound to a source kind) for a long-lived `agt_` ingest-scope token + `source_id`; agent discards the `reg_` token after. Reinstall reuses the existing `source` row by `(kind, hostname)` match and gets a fresh `agt_` token; the old token is left for the operator to revoke. Protocol is versioned: single integer `1` in `X-Hyveman-Protocol` header + body `v`, lockstep; additive optional fields don't bump. See `docs/PROTOCOL.md`. Resolves AGENT §20 #1/#2/#3 |
+| 19 | Web console users | Multi-user with equal permissions (`docs/MULTI-USER.md`): `users` table, per-user passkeys, per-user-bound sessions, single-use `inv_` invite links (token in URL fragment) for self-service account creation, first-run wizard creates the first user (users-empty gate), real-username audit actors, self/last-user/last-passkey lockout guards. Migration V8 backfills the single admin (bootstrap user owns existing passkeys/sessions; fresh installs stay empty so the wizard opens). No remote recovery — console `auth reset` remains the only fallback |
 
 ## 14. Next artifacts for development
 

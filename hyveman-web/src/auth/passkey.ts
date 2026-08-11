@@ -70,9 +70,13 @@ export async function completeLogin(credential: AuthenticationResponseJSON): Pro
 
 export async function beginRegistration(
   name?: string,
+  inviteToken?: string,
 ): Promise<PublicKeyCredentialCreationOptionsJSON> {
   try {
-    const res = await postApiV1AuthPasskeysRegisterOptions({ name: name || null });
+    const res = await postApiV1AuthPasskeysRegisterOptions({
+      name: name || null,
+      inviteToken: inviteToken || null,
+    });
     // Same loose 200 schema as login/options: the body is the options.
     return res.data as unknown as PublicKeyCredentialCreationOptionsJSON;
   } catch (err) {
@@ -82,9 +86,18 @@ export async function beginRegistration(
 
 export async function completeRegistration(
   credential: RegistrationResponseJSON,
+  context?: { inviteToken?: string; username?: string; displayName?: string },
 ): Promise<{ id: string }> {
   try {
-    const res = await postApiV1AuthPasskeysRegisterVerify(credential);
+    // The verify envelope carries the attestation response plus the invite
+    // token and chosen account name (docs/MULTI-USER.md §5); the ceremony
+    // endpoints declare no schema, so the body is assembled here.
+    const res = await postApiV1AuthPasskeysRegisterVerify({
+      response: credential,
+      inviteToken: context?.inviteToken ?? null,
+      username: context?.username ?? null,
+      displayName: context?.displayName ?? null,
+    } as never);
     // Same loose 200 schema: the runtime body is { id }.
     return res.data as unknown as { id: string };
   } catch (err) {
@@ -105,12 +118,12 @@ export async function authenticateWithPasskey(): Promise<AuthenticationResponseJ
   }
 }
 
-/** Runs the full browser-side registration ceremony (first-run setup or an
- *  additional authenticated key). */
-export async function registerPasskey(name?: string): Promise<RegistrationResponseJSON> {
+/** Runs the full browser-side registration ceremony (first-run setup,
+ *  invite acceptance, or an additional authenticated key). */
+export async function registerPasskey(name?: string, inviteToken?: string): Promise<RegistrationResponseJSON> {
   const support = passkeysSupported();
   if (!support.ok) throw new PasskeyError(support.reason!);
-  const options = await beginRegistration(name);
+  const options = await beginRegistration(name, inviteToken);
   try {
     return await startRegistration({ optionsJSON: options });
   } catch (err) {

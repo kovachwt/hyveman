@@ -179,20 +179,22 @@ The route table is:
 | Route | Access | Purpose |
 |---|---|---|
 | `/login` | Public | Passkey login |
-| `/setup` | Public but API-gated | First-run passkey registration |
-| `/` | Admin | Fleet overview |
-| `/hosts` | Admin | Host list and filters |
-| `/hosts/:hostId` | Admin | Host health, components, VMs, events, and history |
-| `/hosts/:hostId/logons` | Admin | Per-user/per-day security-logon aggregates for the host |
-| `/logs` | Admin | Event search and saved searches |
-| `/alerts` | Admin | Active/history alert list and actions |
-| `/rules` | Admin | Alert rule CRUD |
-| `/notifications` | Admin | Notification channel configuration and tests |
-| `/maintenance` | Admin | Maintenance windows |
-| `/admin/sources` | Admin | Sources, agent status, and registration tokens |
-| `/admin/retention` | Admin | Retention settings |
-| `/admin/audit` | Admin | Audit log |
-| `/admin/passkeys` | Admin | Registered passkey management |
+| `/setup` | Public but API-gated | First-run passkey registration (creates the first user) |
+| `/accept-invite` | Public but API-gated | Invite-link account creation (token in URL fragment; docs/MULTI-USER.md) |
+| `/` | Authenticated | Fleet overview |
+| `/hosts` | Authenticated | Host list and filters |
+| `/hosts/:hostId` | Authenticated | Host health, components, VMs, events, and history |
+| `/hosts/:hostId/logons` | Authenticated | Per-user/per-day security-logon aggregates for the host |
+| `/logs` | Authenticated | Event search and saved searches |
+| `/alerts` | Authenticated | Active/history alert list and actions |
+| `/rules` | Authenticated | Alert rule CRUD |
+| `/notifications` | Authenticated | Notification channel configuration and tests |
+| `/maintenance` | Authenticated | Maintenance windows |
+| `/admin/users` | Authenticated | Users, invite links, invitations |
+| `/admin/sources` | Authenticated | Sources, agent status, and registration tokens |
+| `/admin/retention` | Authenticated | Retention settings |
+| `/admin/audit` | Authenticated | Audit log |
+| `/admin/passkeys` | Authenticated | The session user's passkey management ("My passkeys") |
 
 `AuthProvider` performs a session bootstrap before rendering protected routes.
 The possible states are:
@@ -300,8 +302,8 @@ GET /api/v1/auth/session
 ```
 
 The response indicates whether the current browser is authenticated and whether
-first-run setup is required. It may include the single-admin display metadata,
-but no secret values.
+first-run setup is required. It includes the authenticated user's display
+metadata (`user: {id, name, displayName}`), but no secret values.
 
 The session is an opaque HttpOnly cookie issued by the API. The frontend never
 reads, stores, decodes, or refreshes it manually.
@@ -329,18 +331,30 @@ When the session response reports setup is required:
 1. show `/setup` with the trusted-network warning;
 2. call `POST /api/v1/auth/passkeys/register/options`;
 3. pass options to `startRegistration`;
-4. call `POST /api/v1/auth/passkeys/register/verify`; and
+4. call `POST /api/v1/auth/passkeys/register/verify` (envelope body); and
 5. refetch the session and enter the authenticated application.
 
 The API can reject the request even if the route is visible. The frontend must
 show that rejection without implying that setup succeeded.
 
-### 7.4 Passkey management
+### 7.4 Invite acceptance
 
-The passkey admin page lists only non-secret metadata: name, creation time,
-last-used time, and authenticator state if available. New passkeys use the same
-registration ceremony while authenticated. The UI requires confirmation before
-removal and explains that the API prevents removal of the final usable passkey.
+The `/accept-invite` page (docs/MULTI-USER.md §7) reads the raw invite token
+from the URL fragment (`#token=...` — never a query string, so it never
+reaches server logs or Referer), optionally inspects it via
+`POST /api/v1/auth/invitations/inspect` for a friendly banner, asks for a
+username + passkey name, then runs the registration ceremony with
+`inviteToken` in the options body and `{response, inviteToken, username,
+displayName}` in the verify body. On success the API has created the account
+and issued a session; the page refetches `/auth/session` and enters the app.
+
+### 7.5 Passkey management
+
+"My passkeys" (`/admin/passkeys`) lists only the **session user's** keys
+(non-secret metadata: name, creation time, last-used time). New passkeys use
+the same registration ceremony while authenticated and are added to the
+session user's account. Removal requires confirmation; the API blocks removing
+your last passkey and the final passkey of the last enabled user.
 
 Logout calls `POST /api/v1/auth/logout`, clears the Query cache, resets the auth
 context, and navigates to `/login`.
@@ -469,13 +483,19 @@ exposing provider response bodies that may contain URLs or credentials.
 
 The admin area includes:
 
+- **users** (`/admin/users`): user list (name, display name, passkey count,
+  last active, disabled state) with disable/enable/delete — the API enforces
+  self- and last-user guards; invite-link creation showing the raw link
+  **once** with a copy action (the token lives in the URL fragment, exactly
+  like the `reg_` token discipline); pending invitation list with revoke;
+  per-user passkey removal for lost-device recovery;
 - source and host registration, including iDRAC URL and write-only iDRAC credentials;
 - one-time agent registration-token creation;
 - token revocation and last-used metadata;
 - retention settings;
 - maintenance windows;
-- audit history; and
-- passkey management.
+- audit history (actor column shows real usernames); and
+- "My passkeys" (the session user's keys).
 
 A raw `reg_` token is displayed once with a clear warning and a copy button. It
 is not placed in the URL, query string, analytics event, browser local storage,

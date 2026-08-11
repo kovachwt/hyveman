@@ -65,4 +65,5 @@ export const resourcePrefixes = {
   retention: ['/api/v1/settings/retention'] as const,
   audit: ['/api/v1/audit-log'] as const,
   passkeys: ['/api/v1/auth/passkeys'] as const,
+  users: ['/api/v1/users'] as const,
 };

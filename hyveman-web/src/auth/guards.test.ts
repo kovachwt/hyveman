@@ -3,7 +3,7 @@ import { redirectTarget, safeRedirectPath, sessionStatus } from './guards';
 import type { SessionResponse } from '@/api/generated/endpoints';
 
 function session(overrides: Partial<SessionResponse> = {}): SessionResponse {
-  return { authenticated: false, setupRequired: false, adminName: null, ...overrides };
+  return { authenticated: false, setupRequired: false, user: null, ...overrides };
 }
 
 describe('sessionStatus', () => {
@@ -39,6 +39,13 @@ describe('redirectTarget', () => {
     expect(redirectTarget('setup', '/setup')).toBeNull();
     expect(redirectTarget('authenticated', '/setup')).toBe('/');
     expect(redirectTarget('anonymous', '/setup')).toBe('/login');
+  });
+
+  it('lets the invite page render for anonymous visitors (docs/MULTI-USER.md)', () => {
+    expect(redirectTarget('anonymous', '/accept-invite')).toBeNull();
+    expect(redirectTarget('authenticated', '/accept-invite')).toBe('/');
+    expect(redirectTarget('setup', '/accept-invite')).toBe('/setup');
+    expect(redirectTarget('loading', '/accept-invite')).toBeNull();
   });
 });
 

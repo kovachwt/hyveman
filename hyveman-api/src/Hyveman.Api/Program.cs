@@ -99,6 +99,8 @@ public partial class Program
         builder.Services.AddScoped<ISessionStore, SessionStore>();
         builder.Services.AddScoped<IPasskeyStore, PasskeyStore>();
         builder.Services.AddScoped<ICeremonyStore, CeremonyStore>();
+        builder.Services.AddScoped<IUserStore, UserStore>();
+        builder.Services.AddScoped<IInvitationStore, InvitationStore>();
         builder.Services.AddScoped<ISettingsStore, SettingsStore>();
         builder.Services.AddScoped<ISavedSearchStore, SavedSearchStore>();
         builder.Services.AddScoped<IMaintenanceWindowStore, MaintenanceWindowStore>();
@@ -123,6 +125,7 @@ public partial class Program
         builder.Services.AddScoped<EventsService>();
         builder.Services.AddScoped<SavedSearchesService>();
         builder.Services.AddScoped<SourcesService>();
+        builder.Services.AddScoped<UsersService>();
         builder.Services.AddScoped<AlertsService>();
         builder.Services.AddScoped<RulesService>();
         builder.Services.AddScoped<ChannelsService>();
@@ -134,6 +137,8 @@ public partial class Program
             sp.GetRequiredService<IPasskeyStore>(),
             sp.GetRequiredService<ICeremonyStore>(),
             sp.GetRequiredService<ISessionStore>(),
+            sp.GetRequiredService<IUserStore>(),
+            sp.GetRequiredService<IInvitationStore>(),
             sp.GetRequiredService<IAuditStore>(),
             sp.GetRequiredService<IClock>(),
             sp.GetRequiredService<Func<string?, bool>>(),

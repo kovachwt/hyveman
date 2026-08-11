@@ -531,21 +531,23 @@ resource surface is:
 
 | Area | Endpoints | Notes |
 |---|---|---|
-| Session | `GET /api/v1/auth/session`, login/register options and verification, logout | Passkey-only; session cookie |
+| Session | `GET /api/v1/auth/session`, login/register options and verification, `POST /api/v1/auth/invitations/inspect`, logout | Passkey-only; session cookie; per-user (`user{id,name,displayName}` in the session response) |
 | Overview | `GET /api/v1/overview` | Fleet rollups and counts for the dashboard |
 | Hosts | `GET/POST/PATCH /api/v1/hosts`, `GET /api/v1/hosts/{id}` | Hardware metadata and agent association |
 | Health | `GET /api/v1/hosts/{id}/health`, `/health-history` | Current components, snapshots, metrics |
 | VMs | `GET /api/v1/hosts/{id}/vms` | Latest Hyper-V facts |
 | Logon stats | `GET /api/v1/logon-stats` | Per-user/per-day security-logon aggregates; bounded with `hasMore` |
 | Events | `GET /api/v1/events`, `GET /api/v1/events/{id}` | FTS5-backed server-side search |
-| Saved searches | CRUD under `/api/v1/saved-searches` | Single-admin configuration |
+| Saved searches | CRUD under `/api/v1/saved-searches` | Configuration, audited |
 | Sources/tokens | `GET /api/v1/sources`, `POST /api/v1/registration-tokens`, revoke actions | Raw registration token returned once |
+| Users | `GET /api/v1/users`, `GET /api/v1/users/{id}`, `POST .../disable|enable`, `DELETE .../{id}`, `DELETE .../{id}/passkeys/{passkeyId}` | Equal-permission users; disable revokes sessions; self/last-user guards (docs/MULTI-USER.md) |
+| Invitations | `GET/POST /api/v1/users/invitations`, `POST .../{id}/revoke` | Single-use invite links; raw `inv_` token returned once; shareable URL carries it in the fragment |
 | Alerts | CRUD/list/action endpoints under `/api/v1/alerts` | Acknowledge and silence actions |
 | Rules | CRUD under `/api/v1/rules` | Health, event, heartbeat, threshold, VM-heartbeat, and user-logon rules |
 | Notifications | CRUD/test under `/api/v1/notification-channels` | Secrets write-only and redacted |
 | Maintenance | CRUD under `/api/v1/maintenance-windows` | Host-scoped suppression windows |
 | Settings | `GET/PATCH /api/v1/settings/retention` | Retention policy and safe operational settings |
-| Passkeys | list/register/remove under `/api/v1/auth/passkeys` | Cannot remove the final usable passkey |
+| Passkeys | list/register/remove under `/api/v1/auth/passkeys` | Scoped to the session user; cannot remove the final usable passkey |
 | Audit | `GET /api/v1/audit-log` | Filterable configuration/auth history |
 
 Exact request and response schemas are generated into the OpenAPI document.
@@ -711,6 +713,24 @@ or `null` for lockouts), `successCount`, and `failureCount`.
 The API owns all WebAuthn ceremony state and validation. The browser receives
 only the challenge/options and posts the browser credential response back.
 
+Registration has **three modes** (docs/MULTI-USER.md §5), dispatched by
+context at `/api/v1/auth/passkeys/register/options`:
+
+- **setup** — no `users` row exists; requires the trusted network. Verify
+  creates the first user + passkey and issues a session.
+- **invite** — request body carries `inviteToken`; the invite must be valid
+  (not consumed/revoked/expired). Verify **re-validates the invite** (S8),
+  atomically creates the user + passkey, consumes the invite and issues a
+  session. A username collision fails without consuming the invite.
+- **authenticated** — the session user registers another of their own keys;
+  the session user id from the claims is authoritative at verify.
+
+The verify endpoint takes an envelope `{ response, inviteToken?, username?,
+displayName? }`. The WebAuthn user handle is per-user
+(`users.webauthn_user_handle`); a returned assertion user handle must match
+when present. `GET /api/v1/auth/invitations/inspect` validates an invite
+without consuming it (landing-page banner).
+
 The web endpoints are:
 
 ```text
@@ -719,17 +739,19 @@ POST /api/v1/auth/passkeys/login/options
 POST /api/v1/auth/passkeys/login/verify
 POST /api/v1/auth/passkeys/register/options
 POST /api/v1/auth/passkeys/register/verify
+POST /api/v1/auth/invitations/inspect
 POST /api/v1/auth/logout
-GET  /api/v1/auth/passkeys
-POST /api/v1/auth/passkeys/register/options   (authenticated additional key)
+GET  /api/v1/auth/passkeys                  (session user's keys)
+POST /api/v1/auth/passkeys/register/options (authenticated additional key)
 DELETE /api/v1/auth/passkeys/{id}
 ```
 
 The registration options endpoint is allowed unauthenticated only when the
-`passkeys` table is empty and the request originates from the configured
-localhost/trusted network. The API, not the static frontend route, enforces
-this condition. Once a passkey exists, initial registration is closed and new
-keys require an authenticated session.
+`users` table is empty and the request originates from the configured
+localhost/trusted network, or when a valid invite token is supplied. The API,
+not the static frontend route, enforces this condition. Once a user exists,
+initial registration is closed and new keys require an authenticated session
+or an invite.
 
 The server stores the explicit RP ID and expected origin in configuration. It
 uses the .NET FIDO2 library to validate challenge, origin, RP ID, user
@@ -750,7 +772,11 @@ The cookie has a 14-day sliding expiry: the API re-issues it with a fixed
 (activity extends the session, but each extension is the same lifetime, never
 an accumulating one). The cookie contains an opaque session ID whose
 server-side record is revocable; it does not contain credentials or
-authorization state that cannot be invalidated.
+authorization state that cannot be invalidated. Sessions are bound to a user
+(`web_sessions.user_id`); the authentication handler stamps `Name`/`NameIdentifier`
+claims from the user row and **rejects disabled or deleted users on every
+request** (their sessions are revoked on contact). Audit actors are the real
+usernames, not a hard-coded "admin".
 
 For unsafe web requests, the API also requires:
 
@@ -764,10 +790,11 @@ are forbidden.
 
 ### 8.3 Console reset
 
-`hyveman-api auth reset`, `auth list-passkeys`, and `auth remove-passkey` are
-local administrative commands. Reset clears passkeys and relevant ceremony
-state, writes an audit/startup record where possible, and causes the trusted
-network setup flow to become available again. There is no remote recovery API.
+`hyveman-api auth reset`, `auth list-passkeys`, `auth remove-passkey`, and
+`auth list-users` are local administrative commands. Reset clears users,
+passkeys, sessions, invitations and ceremony state, writes an audit/startup
+record where possible, and causes the trusted network setup flow to become
+available again (the `users` table is empty). There is no remote recovery API.
 
 ---
 

@@ -15,6 +15,7 @@ public static class Migrations
         (5, V5),
         (6, V6),
         (7, V7),
+        (8, V8),
     ];
 
     private const string V1 = """
@@ -387,5 +388,80 @@ public static class Migrations
         -- NULL/absent = never auto-resolve (default). New column, so existing
         -- rules need no backfill.
         ALTER TABLE rules ADD COLUMN auto_resolve_after_s INTEGER NULL;
+        """;
+
+    private const string V8 = """
+        -- Multi-user web auth (docs/MULTI-USER.md): users own passkeys and
+        -- sessions; invitations mint single-use invite links so an existing
+        -- user can onboard a new user who self-creates their account.
+        --
+        -- The bootstrap user's webauthn_user_handle is the historical
+        -- "hyveman-single-admin" handle (SHA-256 prefix, base64) so passkeys
+        -- enrolled before this migration keep authenticating unchanged.
+        --
+        -- The user row is seeded only when there is something to backfill
+        -- (existing passkeys/sessions): a truly fresh install stays empty so
+        -- the first-run setup wizard still opens (users table empty gate).
+        CREATE TABLE users(
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            display_name TEXT NULL,
+            webauthn_user_handle TEXT NOT NULL,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            created TEXT NOT NULL,
+            created_by TEXT NULL);
+
+        INSERT INTO users(id, name, display_name, webauthn_user_handle, created, created_by)
+        SELECT 'usr_admin', 'admin', 'Hyveman Administrator', 'JUbKKsjL28Vp6HwAG1P44Q',
+               '2026-01-01T00:00:00.0000000Z', 'setup'
+        WHERE EXISTS (SELECT 1 FROM passkeys) OR EXISTS (SELECT 1 FROM web_sessions);
+
+        CREATE TABLE invitations(
+            id TEXT PRIMARY KEY,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_by TEXT NULL REFERENCES users(id),
+            for_user_id TEXT NULL REFERENCES users(id),
+            created TEXT NOT NULL,
+            expires_at TEXT NULL,
+            consumed_at TEXT NULL,
+            revoked INTEGER NOT NULL DEFAULT 0);
+
+        CREATE INDEX idx_invitations_created ON invitations(created);
+
+        -- passkeys become per-user (rebuild for NOT NULL + FK cascade).
+        CREATE TABLE passkeys_v8(
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            credential_id TEXT NOT NULL UNIQUE,
+            public_key TEXT NOT NULL,
+            sign_count INTEGER NOT NULL DEFAULT 0,
+            created TEXT NOT NULL,
+            last_used TEXT NULL);
+
+        INSERT INTO passkeys_v8(id, user_id, name, credential_id, public_key, sign_count, created, last_used)
+            SELECT id, 'usr_admin', name, credential_id, public_key, sign_count, created, last_used
+            FROM passkeys;
+
+        DROP TABLE passkeys;
+        ALTER TABLE passkeys_v8 RENAME TO passkeys;
+
+        -- web_sessions bind to a user (rebuild for NOT NULL + FK cascade).
+        -- Existing sessions are backfilled to the bootstrap user so the
+        -- operator's live session survives the upgrade.
+        CREATE TABLE web_sessions_v8(
+            id_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            revoked_at TEXT NULL);
+
+        INSERT INTO web_sessions_v8(id_hash, user_id, created_at, expires_at, last_seen, revoked_at)
+            SELECT id_hash, 'usr_admin', created_at, expires_at, last_seen, revoked_at
+            FROM web_sessions;
+
+        DROP TABLE web_sessions;
+        ALTER TABLE web_sessions_v8 RENAME TO web_sessions;
         """;
 }

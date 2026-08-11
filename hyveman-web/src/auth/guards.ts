@@ -32,6 +32,11 @@ export function redirectTarget(status: AuthStatus, path: string): string | null 
     if (status === 'setup') return null;
     return '/login';
   }
+  if (path === '/accept-invite') {
+    if (status === 'authenticated') return '/';
+    if (status === 'setup') return '/setup';
+    return null;
+  }
   // Protected application routes.
   if (status === 'setup') return '/setup';
   if (status !== 'authenticated') return '/login';

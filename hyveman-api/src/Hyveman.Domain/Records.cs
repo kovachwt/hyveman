@@ -229,17 +229,44 @@ public sealed record MaintenanceWindowRecord(
     string? CreatedBy,
     DateTimeOffset CreatedAt);
 
-/// <summary>Web session row (API.md §8.2).</summary>
+/// <summary>Web session row (API.md §8.2). Bound to a user so sessions can
+/// be revoked per user and audit actors are real usernames.</summary>
 public sealed record WebSession(
     string IdHash,
+    string UserId,
     DateTimeOffset CreatedAt,
     DateTimeOffset ExpiresAt,
     DateTimeOffset LastSeen,
     DateTimeOffset? RevokedAt);
 
-/// <summary>Passkey row (API.md §8.1).</summary>
+/// <summary>Web console user (docs/MULTI-USER.md). Owns passkeys and
+/// sessions; all users have equal permissions for now.</summary>
+public sealed record UserRecord(
+    string Id,
+    string Name,
+    string? DisplayName,
+    string WebAuthnUserHandle,
+    bool Disabled,
+    DateTimeOffset Created,
+    string? CreatedBy);
+
+/// <summary>Single-use invite link for self-service account creation
+/// (docs/MULTI-USER.md). Only the hash of the raw token is stored.
+/// for_user_id reserves the passkey-reset invite (existing user who lost all
+/// passkeys); no endpoint mints such invites yet.</summary>
+public sealed record InvitationRecord(
+    string Id,
+    string? CreatedBy,
+    string? ForUserId,
+    DateTimeOffset Created,
+    DateTimeOffset? ExpiresAt,
+    DateTimeOffset? ConsumedAt,
+    bool Revoked);
+
+/// <summary>Passkey row (API.md §8.1), owned by a user.</summary>
 public sealed record PasskeyRecord(
     string Id,
+    string UserId,
     string Name,
     string CredentialId,
     string PublicKey,

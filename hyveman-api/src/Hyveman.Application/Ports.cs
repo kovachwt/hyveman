@@ -335,11 +335,12 @@ public interface ICredentialVault
     Task<IReadOnlyList<CredentialMeta>> ListAsync(CancellationToken ct);
 }
 
-/// <summary>Revocable single-admin web sessions (API.md §8.2).</summary>
+/// <summary>Revocable per-user web sessions (API.md §8.2).</summary>
 public interface ISessionStore
 {
-    /// <summary>Creates a session; returns the opaque id (server keeps the hash).</summary>
-    Task<string> CreateAsync(DateTimeOffset now, TimeSpan lifetime, CancellationToken ct);
+    /// <summary>Creates a session bound to <paramref name="userId"/>; returns
+    /// the opaque id (server keeps the hash).</summary>
+    Task<string> CreateAsync(DateTimeOffset now, TimeSpan lifetime, string userId, CancellationToken ct);
 
     /// <summary>Validates a session id; slides the expiry to a fixed
     /// <paramref name="lifetime"/> from <paramref name="now"/> (the window
@@ -347,28 +348,73 @@ public interface ISessionStore
     Task<WebSession?> ValidateAsync(string sessionId, DateTimeOffset now, TimeSpan lifetime, CancellationToken ct);
 
     Task RevokeAsync(string sessionId, CancellationToken ct);
+
+    /// <summary>Revokes every live session of a user (disable/delete path).</summary>
+    Task RevokeAllForUserAsync(string userId, CancellationToken ct);
+
     Task CleanupExpiredAsync(DateTimeOffset now, CancellationToken ct);
 }
 
-/// <summary>Passkey credentials (API.md §8.1).</summary>
+/// <summary>Web console users (docs/MULTI-USER.md): equal permissions for
+/// now; each user owns their own passkeys and sessions.</summary>
+public interface IUserStore
+{
+    Task<IReadOnlyList<UserRecord>> ListAsync(CancellationToken ct);
+    Task<UserRecord?> GetAsync(string id, CancellationToken ct);
+    Task<UserRecord?> GetByNameAsync(string name, CancellationToken ct);
+    Task<UserRecord> CreateAsync(UserRecord user, CancellationToken ct);
+    Task<bool> SetDisabledAsync(string id, bool disabled, CancellationToken ct);
+
+    /// <summary>Deletes a user; passkeys and sessions cascade (FK).</summary>
+    Task DeleteAsync(string id, CancellationToken ct);
+
+    /// <summary>Total users; 0 ⇒ first-run setup gate is open.</summary>
+    Task<int> CountAsync(CancellationToken ct);
+    Task<int> CountEnabledAsync(CancellationToken ct);
+}
+
+/// <summary>Single-use user invitations (docs/MULTI-USER.md). Only hashes of
+/// raw tokens are persisted; the raw value exists solely in the minting
+/// response and the invite link fragment.</summary>
+public interface IInvitationStore
+{
+    /// <summary>Mints an invite token (inv_ prefix); returns (id, raw token).</summary>
+    Task<(string Id, string RawToken)> CreateAsync(string? createdBy, string? forUserId,
+        TimeSpan? lifetime, DateTimeOffset now, CancellationToken ct);
+
+    /// <summary>Lookup by raw token; null when the token is unknown. Validity
+    /// (consumed/revoked/expired) is the caller's check.</summary>
+    Task<InvitationRecord?> LookupAsync(string rawToken, CancellationToken ct);
+    Task<bool> MarkConsumedAsync(string id, DateTimeOffset at, CancellationToken ct);
+    Task<bool> RevokeAsync(string id, CancellationToken ct);
+    Task<IReadOnlyList<InvitationRecord>> ListAsync(CancellationToken ct);
+}
+
+/// <summary>Passkey credentials (API.md §8.1), owned by a user.</summary>
 public interface IPasskeyStore
 {
+    /// <summary>All passkeys (login: allowed credentials across enabled users).</summary>
     Task<IReadOnlyList<PasskeyRecord>> ListAsync(CancellationToken ct);
+
+    /// <summary>A single user's passkeys (my-passkeys + user detail).</summary>
+    Task<IReadOnlyList<PasskeyRecord>> ListByUserAsync(string userId, CancellationToken ct);
     Task<PasskeyRecord?> GetAsync(string id, CancellationToken ct);
     Task<PasskeyRecord?> GetByCredentialIdAsync(string credentialId, CancellationToken ct);
     Task AddAsync(PasskeyRecord passkey, CancellationToken ct);
     Task RemoveAsync(string id, CancellationToken ct);
     Task UpdateSignCountAsync(string id, uint signCount, DateTimeOffset at, CancellationToken ct);
     Task<int> CountAsync(CancellationToken ct);
+    Task<int> CountByUserAsync(string userId, CancellationToken ct);
 }
 
 /// <summary>WebAuthn ceremony challenge state (API.md §8.1): short-lived,
 /// single-use, bound to the intended operation.</summary>
 public interface ICeremonyStore
 {
-    Task SaveAsync(string challengeHash, string operation, string optionsJson, DateTimeOffset now, TimeSpan lifetime, CancellationToken ct);
-    /// <summary>Single-use take: returns options JSON and removes the row.</summary>
-    Task<string?> TakeAsync(string challengeHash, string operation, DateTimeOffset now, CancellationToken ct);
+    Task SaveAsync(string challengeHash, string operation, string optionsJson, string? originContext,
+        DateTimeOffset now, TimeSpan lifetime, CancellationToken ct);
+    /// <summary>Single-use take: returns (options JSON, origin context) and removes the row.</summary>
+    Task<(string OptionsJson, string? OriginContext)?> TakeAsync(string challengeHash, string operation, DateTimeOffset now, CancellationToken ct);
     Task CleanupExpiredAsync(DateTimeOffset now, CancellationToken ct);
 }
 
@@ -485,30 +531,41 @@ public interface ICredentialBlobStore
     Task<IReadOnlyList<CredentialMeta>> ListAsync(CancellationToken ct);
 }
 
+/// <summary>Outcome of a completed registration ceremony: the passkey id,
+/// plus a session id when the ceremony created the user (first-run setup or
+/// invite acceptance — the caller sets the session cookie).</summary>
+public sealed record RegistrationResult(string PasskeyId, string? SessionId, string? UserId);
+
 /// <summary>WebAuthn ceremony orchestration (API.md §8.1). Implemented in the
 /// security infrastructure over the Fido2 library.</summary>
 public interface IWebAuthnService
 {
-    /// <summary>First-run registration: allowed without a session only when no
-    /// passkey exists and the request comes from the trusted network.
-    /// sessionAuthenticated permits additional keys from an authenticated session.</summary>
-    Task<object> BeginRegistrationAsync(string? name, bool sessionAuthenticated, string? remoteIp, CancellationToken ct);
+    /// <summary>Begins a registration ceremony in one of three modes:
+    /// first-run setup (no users exist, trusted network), invite acceptance
+    /// (valid inviteToken, no session), or authenticated add (session user
+    /// registers another of their own passkeys).</summary>
+    Task<object> BeginRegistrationAsync(string? name, string? inviteToken, string? userId,
+        string? remoteIp, CancellationToken ct);
 
-    /// <summary>Verifies a registration ceremony; stores the passkey.</summary>
-    Task<string> CompleteRegistrationAsync(string responseJson, string origin, CancellationToken ct);
+    /// <summary>Verifies a registration ceremony; creates the user (setup/
+    /// invite), stores the passkey, consumes the invite, and returns a
+    /// session id when the ceremony created a new user. <paramref name="userId"/>
+    /// is the authenticated session's user id (null when unauthenticated) and
+    /// is authoritative for the authenticated-add mode.</summary>
+    Task<RegistrationResult> CompleteRegistrationAsync(string responseJson, string origin,
+        string? userId, string? remoteIp, CancellationToken ct);
 
     Task<object> BeginLoginAsync(CancellationToken ct);
 
-    /// <summary>Verifies a login ceremony; creates a web session and returns the
-    /// opaque session id (cookie is set by the caller).</summary>
+    /// <summary>Verifies a login ceremony; creates a web session bound to the
+    /// resolved user and returns the opaque session id (cookie set by the
+    /// caller).</summary>
     Task<string> CompleteLoginAsync(string responseJson, string origin, CancellationToken ct);
 
-    Task<IReadOnlyList<PasskeyRecord>> ListPasskeysAsync(CancellationToken ct);
+    /// <summary>The session user's passkeys (my-passkeys page).</summary>
+    Task<IReadOnlyList<PasskeyRecord>> ListPasskeysForUserAsync(string userId, CancellationToken ct);
 
-    /// <summary>Removes a passkey; refuses to remove the final usable key.</summary>
-    Task RemovePasskeyAsync(string id, CancellationToken ct);
-
-    /// <summary>True when the passkeys table is empty (first-run setup gate).</summary>
+    /// <summary>True when no users exist (first-run setup gate).</summary>
     Task<bool> IsSetupRequiredAsync(CancellationToken ct);
 }
 

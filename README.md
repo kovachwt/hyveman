@@ -20,7 +20,7 @@ hardware polling, SQLite storage), and a React **web** operations console.
 |---|---|---|
 | [`hyveman-agent/`](hyveman-agent/) | Windows service (.NET 10, C#): event-log collection (`EvtSubscribe`, bookmarks), curated Security logon IDs, durable disk spool, heartbeat + Hyper-V WMI facts, HTTPS ingest with backoff/retry | [`docs/AGENT.md`](docs/AGENT.md) |
 | [`hyveman-api/`](hyveman-api/) | Backend (.NET 10, ASP.NET Core): agent ingest, web/admin API, alert engine, Dell iDRAC Redfish poller, notification outbox (Telegram/webhook/SMTP), SQLite (WAL + FTS5), AES-GCM credential vault | [`docs/API.md`](docs/API.md) |
-| [`hyveman-web/`](hyveman-web/) | Operations console (React 19 + TypeScript + Vite): fleet overview, host detail + health history + VM list, event search with saved searches, alerts/rules/channels, maintenance windows, logon stats, sources & registration tokens, audit log, retention settings, passkey-only login (WebAuthn) + passkey management | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
+| [`hyveman-web/`](hyveman-web/) | Operations console (React 19 + TypeScript + Vite): fleet overview, host detail + health history + VM list, event search with saved searches, alerts/rules/channels, maintenance windows, logon stats, sources & registration tokens, audit log, retention settings, multi-user with per-user passkeys (WebAuthn), invite links for self-service account creation | [`docs/FRONTEND.md`](docs/FRONTEND.md) |
 
 The agent↔server wire contract is fixed by
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) (v1, with an embedded JSON schema at

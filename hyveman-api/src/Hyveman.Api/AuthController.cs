@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Hyveman.Application;
 using Hyveman.Contracts;
@@ -7,14 +8,19 @@ using Microsoft.Extensions.Options;
 
 namespace Hyveman.Api;
 
-/// <summary>Passkey-only web authentication (API.md §8.1): the API owns all
-/// ceremony state; the browser receives only the options and posts the
-/// credential response back. Session cookie issued on successful verify.</summary>
+/// <summary>Passkey-only web authentication (API.md §8.1, docs/MULTI-USER.md):
+/// the API owns all ceremony state; the browser receives only the options and
+/// posts the credential response back. Session cookie issued on successful
+/// verify. Registration has three modes — first-run setup (trusted network,
+/// no users), invite acceptance (single-use invite token), and authenticated
+/// add (session user's own new key).</summary>
 [ApiController]
 [Route("api/v1/auth")]
 public sealed class AuthController(
     IWebAuthnService webauthn,
+    UsersService users,
     ISessionStore sessions,
+    IUserStore userStore,
     IClock clock,
     RateLimiterRegistry rateLimiter,
     IOptionsMonitor<SessionAuthOptions> sessionOptions,
@@ -28,11 +34,32 @@ public sealed class AuthController(
     {
         var authenticated = HttpContext.User.Identity?.IsAuthenticated == true;
         var setupRequired = await webauthn.IsSetupRequiredAsync(ct);
+        SessionUserDto? user = null;
+        if (authenticated)
+        {
+            var userId = HttpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            var record = userId is null ? null : await userStore.GetAsync(userId, ct);
+            if (record is null)
+            {
+                // The session was stamped from a user that no longer exists;
+                // treat as unauthenticated rather than a half-authenticated state.
+                authenticated = false;
+            }
+            else
+            {
+                user = new SessionUserDto
+                {
+                    Id = record.Id,
+                    Name = record.Name,
+                    DisplayName = record.DisplayName,
+                };
+            }
+        }
         return new SessionResponse
         {
             Authenticated = authenticated,
             SetupRequired = setupRequired && !authenticated,
-            AdminName = authenticated ? "admin" : null,
+            User = user,
         };
     }
 
@@ -62,9 +89,9 @@ public sealed class AuthController(
     {
         if (!AcquireAuthBudget(out var retryAfter))
             return TooManyRequests(retryAfter);
-        var authenticated = HttpContext.User.Identity?.IsAuthenticated == true;
         var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-        return Ok(await webauthn.BeginRegistrationAsync(body?.Name, authenticated, remoteIp, ct));
+        return Ok(await webauthn.BeginRegistrationAsync(body?.Name, body?.InviteToken,
+            CurrentUserId(), remoteIp, ct));
     }
 
     [HttpPost("passkeys/register/verify")]
@@ -73,8 +100,26 @@ public sealed class AuthController(
     {
         if (!AcquireAuthBudget(out var retryAfter))
             return TooManyRequests(retryAfter);
-        var passkeyId = await webauthn.CompleteRegistrationAsync(body.GetRawText(), Origin(), ct);
-        return Ok(new { id = passkeyId });
+        var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var result = await webauthn.CompleteRegistrationAsync(body.GetRawText(), Origin(),
+            CurrentUserId(), remoteIp, ct);
+        if (result.SessionId is not null)
+            AppendSessionCookie(result.SessionId);
+        return Ok(new { id = result.PasskeyId });
+    }
+
+    /// <summary>Invite landing-page check: valid/invalid/expired/consumed —
+    /// never consumes, never reveals the token (docs/MULTI-USER.md §7).</summary>
+    [HttpPost("invitations/inspect")]
+    [AllowAnonymous]
+    public async Task<IActionResult> InspectInvitation(
+        [FromBody] InviteInspectRequest input, CancellationToken ct)
+    {
+        if (!AcquireAuthBudget(out var retryAfter))
+            return TooManyRequests(retryAfter);
+        var result = await users.InspectInvitationAsync(input.Token, ct);
+        if (result is null) return NotFound();
+        return Ok(result);
     }
 
     [HttpPost("logout")]
@@ -91,7 +136,7 @@ public sealed class AuthController(
     [HttpGet("passkeys")]
     public async Task<ActionResult<List<PasskeyDto>>> ListPasskeys(CancellationToken ct)
     {
-        var passkeys = await webauthn.ListPasskeysAsync(ct);
+        var passkeys = await webauthn.ListPasskeysForUserAsync(CurrentUserId(), ct);
         return passkeys.Select(p => new PasskeyDto
         {
             Id = p.Id, Name = p.Name, Created = p.Created, LastUsed = p.LastUsed,
@@ -106,9 +151,11 @@ public sealed class AuthController(
             {
                 ["confirm"] = ["Passkey removal requires confirm=true."],
             });
-        await webauthn.RemovePasskeyAsync(id, ct);
+        await users.RemovePasskeyAsync(id, CurrentUserId(), ct);
         return NoContent();
     }
+
+    private string? CurrentUserId() => HttpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
 
     private bool AcquireAuthBudget(out int retryAfter)
     {

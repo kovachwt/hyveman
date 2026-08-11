@@ -21,6 +21,7 @@ const state = {
    *  login options so the virtual authenticator can match it (CDP virtual
    *  authenticators do not enumerate resident keys). */
   credentialId: null,
+  invitations: [],
 };
 const SESSION_COOKIE = 'hyveman_session';
 const CSRF_COOKIE = 'hyveman_csrf';
@@ -241,7 +242,7 @@ const server = createServer(async (req, res) => {
     return json(res, {
       authenticated: authenticated(req),
       setupRequired: state.setupRequired && !authenticated(req),
-      adminName: authenticated(req) ? 'admin' : null,
+      user: authenticated(req) ? { id: 'usr_admin', name: 'admin', displayName: 'Hyveman Administrator' } : null,
     });
   }
   if (path === '/api/v1/auth/passkeys/login/options') {
@@ -273,12 +274,19 @@ const server = createServer(async (req, res) => {
   }
   if (path === '/api/v1/auth/passkeys/register/verify') {
     const body = await readBody(req);
-    if (body?.id) state.credentialId = body.id;
+    // Envelope: { response, inviteToken?, username?, displayName? } (docs/MULTI-USER.md).
+    const credential = body?.response ?? body;
+    if (credential?.id) state.credentialId = credential.id;
     state.sessionToken = 'mock-session';
     state.setupRequired = false;
     state.passkeys.push({ id: 'pk_new', name: 'test-key', created: now() });
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${state.sessionToken}; Path=/; SameSite=Strict; HttpOnly`);
     return json(res, { id: 'pk_new' });
+  }
+  if (path === '/api/v1/auth/invitations/inspect' && method === 'POST') {
+    const body = await readBody(req);
+    const valid = typeof body?.token === 'string' && body.token.startsWith('inv_');
+    return json(res, { valid, createdBy: 'admin', expiresAt: null });
   }
   if (path === '/api/v1/auth/logout') {
     state.sessionToken = null;
@@ -287,6 +295,38 @@ const server = createServer(async (req, res) => {
   }
   if (path === '/api/v1/auth/passkeys' && method === 'GET') {
     return json(res, state.passkeys);
+  }
+
+  // ── Users & invitations (docs/MULTI-USER.md) ───────────────────────────
+  if (path === '/api/v1/users' && method === 'GET') {
+    return json(res, [
+      { id: 'usr_admin', name: 'admin', displayName: 'Hyveman Administrator', disabled: false, created: now(), createdBy: 'setup', passkeyCount: state.passkeys.length, lastActive: null },
+    ]);
+  }
+  if (path === '/api/v1/users/invitations' && method === 'GET') {
+    return json(res, state.invitations ?? []);
+  }
+  if (path === '/api/v1/users/invitations' && method === 'POST') {
+    const body = await readBody(req);
+    const created = {
+      id: 'invite_1',
+      token: 'inv_' + 'a'.repeat(48),
+      url: `http://localhost:5173/accept-invite#token=${'inv_' + 'a'.repeat(48)}`,
+      created: now(),
+      expiresAt: body?.expiresInMinutes ? new Date(Date.now() + body.expiresInMinutes * 60000).toISOString() : null,
+    };
+    state.invitations = [...(state.invitations ?? []), { id: created.id, createdBy: 'usr_admin', createdByDisplayName: 'admin', created: created.created, expiresAt: created.expiresAt, consumedAt: null, revoked: false }];
+    return json(res, created, 201);
+  }
+  if (path.startsWith('/api/v1/users/invitations/') && path.endsWith('/revoke') && method === 'POST') {
+    state.invitations = (state.invitations ?? []).map((i) => (i.id === path.split('/')[4] ? { ...i, revoked: true } : i));
+    return json(res, null, 204);
+  }
+  if (path.startsWith('/api/v1/users/') && method === 'POST' && path.endsWith('/disable')) {
+    return json(res, null, 204);
+  }
+  if (path.startsWith('/api/v1/users/') && method === 'POST' && path.endsWith('/enable')) {
+    return json(res, null, 204);
   }
 
   // ── Auth gate for everything else ───────────────────────────────────────

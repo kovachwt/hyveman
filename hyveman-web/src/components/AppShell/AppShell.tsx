@@ -37,6 +37,7 @@ import ListAlt from '@mui/icons-material/ListAlt';
 import Logout from '@mui/icons-material/Logout';
 import MenuIcon from '@mui/icons-material/Menu';
 import NotificationsActive from '@mui/icons-material/NotificationsActive';
+import People from '@mui/icons-material/People';
 import Rule from '@mui/icons-material/Rule';
 import Send from '@mui/icons-material/Send';
 import Storage from '@mui/icons-material/Storage';
@@ -71,10 +72,11 @@ const MAIN_NAV: NavItem[] = [
 ];
 
 const ADMIN_NAV: NavItem[] = [
+  { to: '/admin/users', label: 'Users', icon: People },
   { to: '/admin/sources', label: 'Sources & tokens', icon: Hub },
   { to: '/admin/retention', label: 'Retention', icon: Storage },
   { to: '/admin/audit', label: 'Audit log', icon: History },
-  { to: '/admin/passkeys', label: 'Passkeys', icon: Key },
+  { to: '/admin/passkeys', label: 'My passkeys', icon: Key },
 ];
 
 const DRAWER_WIDTH = 248;
@@ -217,7 +219,7 @@ export function AppShell() {
               size="small"
             >
               <Avatar sx={{ width: 28, height: 28, bgcolor: 'primary.main', fontSize: 14 }}>
-                {session?.adminName?.[0]?.toUpperCase() ?? 'A'}
+                {session?.user?.name?.[0]?.toUpperCase() ?? 'A'}
               </Avatar>
             </IconButton>
           </Tooltip>
@@ -226,7 +228,7 @@ export function AppShell() {
             open={Boolean(adminMenuAnchor)}
             onClose={() => setAdminMenuAnchor(null)}
           >
-            <MenuItem disabled>Signed in as {session?.adminName ?? 'admin'}</MenuItem>
+            <MenuItem disabled>Signed in as {session?.user?.displayName ?? session?.user?.name ?? 'admin'}</MenuItem>
             <MenuItem onClick={() => { setAdminMenuAnchor(null); setLogoutOpen(true); }}>
               <ListItemIcon><Logout fontSize="small" /></ListItemIcon>
               Sign out

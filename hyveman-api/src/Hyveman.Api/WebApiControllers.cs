@@ -86,7 +86,7 @@ public sealed class HostsController(
         [FromQuery] DateTimeOffset? to, [FromQuery] string? resolution, CancellationToken ct)
         => hosts.GetHealthHistoryAsync(id, from, to, resolution, ct);
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Event search (API.md §7.2) + saved searches.</summary>
@@ -158,7 +158,7 @@ public sealed class EventsController(EventsService events, SavedSearchesService 
         catch (System.Text.Json.JsonException) { return []; }
     }
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }
 
 /// <summary>Sources, registration tokens, token revocation (API.md §7).</summary>
@@ -193,5 +193,5 @@ public sealed class SourcesController(SourcesService sources) : ControllerBase
         return NoContent();
     }
 
-    private string Actor() => "admin";
+    private string Actor() => User.Identity?.Name ?? "unknown";
 }

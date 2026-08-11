@@ -35,6 +35,134 @@ public class SqliteIntegrationTests : IDisposable
         "Microsoft-Windows-Kernel-Power", message, "{}", null, channel, eventId, 0, 0, null);
 
     [Fact]
+    public async Task MigrationV8_Backfills_SingleAdmin_PasskeysAndSessions()
+    {
+        // Rebuild the pre-V8 world: migrations 1..7 + legacy passkey + session.
+        var dir = Path.Combine(Path.GetTempPath(), "hyveman-mig-" + Guid.NewGuid().ToString("n")[..10]);
+        Directory.CreateDirectory(dir);
+        var dbPath = Path.Combine(dir, "test.db");
+        try
+        {
+            using (var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={dbPath}"))
+            {
+                await conn.OpenAsync();
+                foreach (var (version, sql) in Migrations.All.Where(m => m.Version <= 7))
+                    await conn.ExecuteAsync(sql);
+                // The raw connection bypassed SqliteDb.Migrate bookkeeping;
+                // record 1..7 as applied so the later Migrate() runs V8 only.
+                await conn.ExecuteAsync("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+                for (var v = 1; v <= 7; v++)
+                    await conn.ExecuteAsync("INSERT INTO schema_migrations(version, applied_at) VALUES (@v, @t)",
+                        new { v, t = "2024-01-01T00:00:00.0000000Z" });
+                await conn.ExecuteAsync("""
+                    INSERT INTO passkeys(id, name, credential_id, public_key, sign_count, created)
+                    VALUES ('pk_legacy', 'legacy', 'cred1', 'pub1', 0, '2024-01-01T00:00:00.0000000Z')
+                    """);
+                await conn.ExecuteAsync("""
+                    INSERT INTO web_sessions(id_hash, created_at, expires_at, last_seen)
+                    VALUES ('h_legacy', '2024-01-01T00:00:00.0000000Z', '2024-01-15T00:00:00.0000000Z', '2024-01-01T00:00:00.0000000Z')
+                    """);
+            }
+
+            var db = new SqliteDb(dbPath);
+            db.Migrate(); // applies V8 only
+            using var migrated = db.Open();
+
+            // Bootstrap user seeded; legacy rows bound to it.
+            var user = await migrated.QuerySingleOrDefaultAsync("SELECT * FROM users WHERE id = 'usr_admin'");
+            Assert.NotNull(user);
+            Assert.Equal("JUbKKsjL28Vp6HwAG1P44Q", (string)user.webauthn_user_handle);
+            Assert.Equal("usr_admin", (string)(await migrated.QuerySingleAsync("SELECT user_id FROM passkeys WHERE id = 'pk_legacy'")).user_id);
+            Assert.Equal("usr_admin", (string)(await migrated.QuerySingleAsync("SELECT user_id FROM web_sessions WHERE id_hash = 'h_legacy'")).user_id);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task MigrationV8_FreshInstall_LeavesUsersEmpty()
+    {
+        // A fresh install has no passkeys/sessions to backfill, so no user is
+        // seeded and the first-run setup gate stays open.
+        var dir = Path.Combine(Path.GetTempPath(), "hyveman-mig-" + Guid.NewGuid().ToString("n")[..10]);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var db = new SqliteDb(Path.Combine(dir, "test.db"));
+            db.Migrate();
+            using var conn = db.Open();
+            Assert.Equal(0, await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM users"));
+            Assert.Equal(0, await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM invitations"));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task UserStore_And_InvitationStore_RoundTrip()
+    {
+        var users = new UserStore(_db);
+        var now = DateTimeOffset.UtcNow;
+        var user = new UserRecord("usr_1", "alice", "Alice", Convert.ToBase64String(new byte[16]), false, now, "test");
+        await users.CreateAsync(user, CancellationToken.None);
+        Assert.Equal("Alice", (await users.GetAsync("usr_1", CancellationToken.None))!.DisplayName);
+        Assert.Equal("alice", (await users.GetByNameAsync("alice", CancellationToken.None))!.Name);
+        Assert.Equal(1, await users.CountAsync(CancellationToken.None));
+        Assert.Equal(1, await users.CountEnabledAsync(CancellationToken.None));
+        await users.SetDisabledAsync("usr_1", true, CancellationToken.None);
+        Assert.True((await users.GetAsync("usr_1", CancellationToken.None))!.Disabled);
+        Assert.Equal(0, await users.CountEnabledAsync(CancellationToken.None));
+
+        var invitations = new InvitationStore(_db);
+        var (id, raw) = await invitations.CreateAsync("usr_1", null, TimeSpan.FromDays(7), now, CancellationToken.None);
+        Assert.StartsWith("inv_", raw);
+        var lookup = await invitations.LookupAsync(raw, CancellationToken.None);
+        Assert.NotNull(lookup);
+        Assert.Equal("usr_1", lookup!.CreatedBy);
+        await invitations.MarkConsumedAsync(id, now, CancellationToken.None);
+        Assert.NotNull((await invitations.LookupAsync(raw, CancellationToken.None))!.ConsumedAt);
+        // Revoking an already-consumed invite is a harmless no-op for the
+        // consume path (consumed invites are ignored everywhere).
+        var (idRevoked, _) = await invitations.CreateAsync("usr_1", null, null, now, CancellationToken.None);
+        Assert.True(await invitations.RevokeAsync(idRevoked, CancellationToken.None));
+        Assert.True((await invitations.ListAsync(CancellationToken.None)).All(i =>
+            i.Id != idRevoked || i.Revoked));
+        Assert.Equal(2, (await invitations.ListAsync(CancellationToken.None)).Count);
+    }
+
+    [Fact]
+    public async Task UsersService_Guards_Self_And_LastEnabled()
+    {
+        var users = new UserStore(_db);
+        var service = new UsersService(users, new PasskeyStore(_db), new SessionStore(_db),
+            new InvitationStore(_db), new AuditStore(_db), new SystemClock());
+        var ct = CancellationToken.None;
+        var now = DateTimeOffset.UtcNow;
+        var alice = new UserRecord("usr_a", "alice", null, Convert.ToBase64String(new byte[16]), false, now, "test");
+        var admin = new UserRecord("usr_b", "admin", null, Convert.ToBase64String(new byte[16]), false, now, "test");
+        await users.CreateAsync(alice, ct);
+        await users.CreateAsync(admin, ct);
+
+        // Self-lockout: you cannot disable or delete your own account.
+        await Assert.ThrowsAsync<ValidationProblemException>(() => service.DisableAsync(alice.Id, alice.Id, ct));
+        await Assert.ThrowsAsync<ValidationProblemException>(() => service.DeleteAsync(alice.Id, true, alice.Id, ct));
+
+        // Last enabled user cannot be disabled or deleted by anyone.
+        await users.SetDisabledAsync(alice.Id, true, ct);
+        await Assert.ThrowsAsync<ValidationProblemException>(() => service.DisableAsync(admin.Id, alice.Id, ct));
+        await Assert.ThrowsAsync<ValidationProblemException>(() => service.DeleteAsync(admin.Id, true, alice.Id, ct));
+
+        // With a second enabled user present, disabling is allowed.
+        await users.SetDisabledAsync(alice.Id, false, ct);
+        await service.DisableAsync(admin.Id, alice.Id, ct);
+        Assert.True((await users.GetAsync(admin.Id, ct))!.Disabled);
+    }
+
+    [Fact]
     public async Task Migrations_Apply_CreateAllTables()
     {
         using var conn = _db.Open();
@@ -46,7 +174,7 @@ public class SqliteIntegrationTests : IDisposable
             "rules", "rule_channels", "notification_channels", "notification_outbox",
             "passkeys", "credentials", "maintenance_windows", "audit_log", "web_sessions",
             "webauthn_challenges", "saved_searches", "settings", "logon_stats", "poll_status",
-            "idrac_trusted_certs",
+            "idrac_trusted_certs", "users", "invitations",
         })
         {
             Assert.Contains(expected, tables);
@@ -507,11 +635,21 @@ public class SqliteIntegrationTests : IDisposable
         var store = new SessionStore(_db);
         var now = DateTimeOffset.UtcNow;
         var lifetime = TimeSpan.FromDays(14);
-        var id = await store.CreateAsync(now, lifetime, CancellationToken.None);
+        // Sessions are bound to a user (docs/MULTI-USER.md); seed the user.
+        using (var conn = _db.Open())
+        {
+            await conn.ExecuteAsync("""
+                INSERT INTO users(id, name, display_name, webauthn_user_handle, created, created_by)
+                VALUES ('usr_admin', 'admin', 'Hyveman Administrator', 'JUbKKsjL28Vp6HwAG1P44Q',
+                        '2026-01-01T00:00:00.0000000Z', 'setup')
+                """);
+        }
+        var id = await store.CreateAsync(now, lifetime, "usr_admin", CancellationToken.None);
 
         // Sliding: a valid use extends expiry by the fixed lifetime from now.
         var session = await store.ValidateAsync(id, now.AddDays(5), lifetime, CancellationToken.None);
         Assert.NotNull(session);
+        Assert.Equal("usr_admin", session!.UserId);
         Assert.Equal(now.AddDays(5).Add(lifetime), session!.ExpiresAt);
 
         // D6 regression: repeated validations across simulated days never
@@ -530,9 +668,14 @@ public class SqliteIntegrationTests : IDisposable
         var expired = await store.ValidateAsync(id, cursor.Add(lifetime).AddMinutes(1), lifetime, CancellationToken.None);
         Assert.Null(expired);
 
-        var id2 = await store.CreateAsync(now, lifetime, CancellationToken.None);
+        var id2 = await store.CreateAsync(now, lifetime, "usr_admin", CancellationToken.None);
         await store.RevokeAsync(id2, CancellationToken.None);
         Assert.Null(await store.ValidateAsync(id2, now.AddDays(1), lifetime, CancellationToken.None));
+
+        // RevokeAllForUser kills every live session of a user.
+        var id3 = await store.CreateAsync(now, lifetime, "usr_admin", CancellationToken.None);
+        await store.RevokeAllForUserAsync("usr_admin", CancellationToken.None);
+        Assert.Null(await store.ValidateAsync(id3, now.AddHours(1), lifetime, CancellationToken.None));
     }
 
     [Fact]
