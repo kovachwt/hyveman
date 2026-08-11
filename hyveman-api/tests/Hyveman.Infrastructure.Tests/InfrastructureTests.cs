@@ -438,6 +438,31 @@ public class SqliteIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task TelegramNotifier_PrefixesSeverityIcon()
+    {
+        // Severity-driven icon prefixes: 🚨 critical, ℹ️ info, ⚠️ warning
+        // (and unknown fallback) — notifications no longer always lead with
+        // the warning triangle.
+        async Task<string> SendAsync(string severity)
+        {
+            var handler = new CapturingHandler();
+            var notifier = new TelegramNotifier(new FakeHttpClientFactory(handler), NullLogger<TelegramNotifier>.Instance);
+            var msg = new NotificationMessage("Disk full", "C: is at 99%", severity, "tg", "WEB-01");
+
+            var result = await notifier.SendAsync(msg, """{"botToken":"123:abc","chatId":"-100123"}""", CancellationToken.None);
+
+            Assert.True(result.Ok);
+            using var doc = JsonDocument.Parse(handler.LastBody!);
+            return doc.RootElement.GetProperty("text").GetString()!;
+        }
+
+        Assert.StartsWith("🚨 Hyveman: Disk full", await SendAsync("critical"));
+        Assert.StartsWith("ℹ️ Hyveman: Disk full", await SendAsync("info"));
+        Assert.StartsWith("⚠️ Hyveman: Disk full", await SendAsync("warning"));
+        Assert.StartsWith("⚠️ Hyveman: Disk full", await SendAsync("mystery"));
+    }
+
+    [Fact]
     public async Task TelegramNotifier_IncludesHostName()
     {
         var handler = new CapturingHandler();

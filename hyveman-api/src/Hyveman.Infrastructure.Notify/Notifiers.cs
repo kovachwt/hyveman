@@ -59,10 +59,20 @@ public sealed class TelegramNotifier(IHttpClientFactory http, ILogger<TelegramNo
         }
     }
 
+    /// <summary>Severity icon prefix for outbound messages: critical alerts
+    /// get a siren, warnings keep the triangle, info gets an ℹ️, and anything
+    /// unrecognized falls back to the warning triangle.</summary>
+    private static string SeverityIcon(string severity) => (severity ?? "").ToLowerInvariant() switch
+    {
+        "critical" => "🚨",
+        "info" => "ℹ️",
+        _ => "⚠️",
+    };
+
     private static string FormatTelegram(NotificationMessage m)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"⚠️ Hyveman: {m.Title}");
+        sb.AppendLine($"{SeverityIcon(m.Severity)} Hyveman: {m.Title}");
         if (!string.IsNullOrEmpty(m.Text)) sb.AppendLine(m.Text);
         if (!string.IsNullOrEmpty(m.HostName)) sb.AppendLine($"🖥️ Host: {m.HostName}");
         sb.Append($"Severity: {m.Severity}");
