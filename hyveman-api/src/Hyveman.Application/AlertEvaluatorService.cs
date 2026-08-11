@@ -400,9 +400,8 @@ public sealed class AlertEvaluatorService(
     }
 
     /// <summary>Reconciliation pass (API.md §9.3): re-evaluates current
-    /// heartbeat, hardware and VM state after restart; repairs alerts without
-    /// inflating counts. Runs at service startup and every 6h
-    /// (AlertReconciliationService).</summary>
+    /// heartbeat and hardware state after restart; repairs alerts without
+    /// inflating counts.</summary>
     public async Task ReconcileAsync(CancellationToken ct)
     {
         var at = clock.UtcNow;
@@ -446,81 +445,6 @@ public sealed class AlertEvaluatorService(
                         $"Agent silent: {status.SourceId}", $"No heartbeat for {age.TotalSeconds:0}s", at, bump: false, ct);
             }
         }
-        // VM rule repair (API.md §9.3): re-evaluate vm_replication crossings
-        // against the current facts (fire for currently-matching VMs, resolve
-        // for recovered) and resolve vm alerts whose VM is no longer on the
-        // host. The departure transition itself is not replayable — the vms
-        // table is latest-wins, so once the row is gone the absence-resolution
-        // in OnVmsChangedAsync/OnVmReplicationChangedAsync can never observe
-        // it. This sweep repairs those orphans: alerts fired on the source
-        // host during a live migration and not yet resolved (e.g. orphaned
-        // before a deploy, or the agent went silent right after the VM moved).
-        var vmRuleList = (await rules.ListAsync(ct))
-            .Where(r => r.Enabled && r.Type is RuleTypes.VmReplication or RuleTypes.VmHeartbeat)
-            .ToList();
-        if (vmRuleList.Count > 0)
-        {
-            var vmRulesById = vmRuleList.ToDictionary(r => r.Id);
-            var replParsed = vmRuleList
-                .Where(r => r.Type == RuleTypes.VmReplication)
-                .Select(r => (Rule: r, Match: RuleMatch.ParseVmReplication(r.MatchJson)))
-                .Where(x => x.Match is not null)
-                .ToList();
-
-            foreach (var host in await hosts.ListAsync(ct))
-            {
-                var stored = await health.GetVmsAsync(host.Id, ct);
-                var storedByName = stored.ToDictionary(v => v.Name, StringComparer.OrdinalIgnoreCase);
-
-                // Re-evaluate vm_replication against the current facts — same
-                // repair semantics as the health pass: fire without bumping
-                // (no count inflation), resolve on recovery. A VM whose
-                // replication was removed (fields now null) resolves too.
-                foreach (var vm in stored)
-                {
-                    foreach (var (rule, match) in replParsed)
-                    {
-                        var fingerprint = $"vmreplication:{vm.Name}";
-                        var key = AlertKey(rule, host.Id, null, fingerprint);
-                        var live = await alerts.FindLiveAsync(key, ct);
-                        if (match.Matches(vm))
-                        {
-                            if (live is null)
-                                await FireAsync(rule, host.Id, null, fingerprint,
-                                    $"VM replication degraded: {vm.Name}",
-                                    $"VM {vm.Name} replication health: {vm.ReplicationHealth ?? "—"}, state: {vm.ReplicationState ?? "—"}", at, bump: false, ct);
-                        }
-                        else if (live is not null)
-                        {
-                            await ResolveAsync(rule, host.Id, null, fingerprint, at, ct);
-                        }
-                    }
-                }
-
-                // Orphan / missed-recovery repair: a live vm alert whose VM is
-                // no longer on the host can never resolve through facts —
-                // resolve it here (absence is authoritative: a successful scan
-                // ships the full VM list, and stale re-sends never reach the
-                // evaluator). A live vm_heartbeat alert for a VM that is
-                // present but has its heartbeat back (or is no longer running)
-                // is a missed recovery — resolve that too. vm_replication
-                // alerts for present VMs are left to the re-evaluation above.
-                foreach (var live in await alerts.ListLiveAsync(ct))
-                {
-                    if (live.HostId != host.Id || live.RuleId is null) continue;
-                    if (!vmRulesById.TryGetValue(live.RuleId, out var rule)) continue;
-                    var vmName = FingerprintVmName(live.Fingerprint, rule.Type);
-                    if (vmName is null) continue;
-                    if (storedByName.TryGetValue(vmName, out var vm))
-                    {
-                        if (rule.Type == RuleTypes.VmReplication) continue; // handled above
-                        if (vm.HeartbeatOk != true && vm.State == "on") continue; // still lost → leave live
-                    }
-                    await ResolveAsync(rule, host.Id, null, live.Fingerprint, at, ct);
-                }
-            }
-        }
-
         log.LogInformation("Alert reconciliation pass finished");
     }
 
@@ -533,18 +457,6 @@ public sealed class AlertEvaluatorService(
         foreach (var c in components)
             state = HealthStates.Max(state, c.State);
         return HealthStates.ToWire(state);
-    }
-
-    /// <summary>Extracts the VM name from a vm alert fingerprint
-    /// ("vmreplication:NAME" / "vmheartbeat:NAME"); null when the fingerprint
-    /// is not a vm fingerprint. Hyper-V VM names cannot contain ':', so
-    /// splitting on the first colon is unambiguous.</summary>
-    private static string? FingerprintVmName(string fingerprint, string type)
-    {
-        var prefix = type == RuleTypes.VmReplication ? "vmreplication:" : "vmheartbeat:";
-        return fingerprint.StartsWith(prefix, StringComparison.Ordinal) && fingerprint.Length > prefix.Length
-            ? fingerprint[prefix.Length..]
-            : null;
     }
 
     private async Task FireAsync(RuleRecord rule, string? hostId, string? sourceId, string fingerprint,

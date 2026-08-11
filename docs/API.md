@@ -846,25 +846,14 @@ The evaluator handles:
 - deduplication, cooldown, escalation, acknowledgement, and maintenance
   suppression.
 
-A periodic reconciliation pass re-evaluates current heartbeat, hardware and
-VM state after restart (runs at service startup and every 6 hours).
-`vm_replication` crossings are re-evaluated against the current facts — fire
-for a VM currently matching (without bumping counts), resolve on recovery or
-when replication was removed. VM alerts (both `vm_heartbeat` and
-`vm_replication`) whose VM is no longer on the host — e.g. live-migrated away
-or deleted, the alert having been orphaned before the absence-resolution in
-`OnVmReplicationChangedAsync`/`OnVmsChangedAsync` could observe it — are
-resolved by name from the alert fingerprint; absence is authoritative because
-a successful scan always ships the full VM list. A separate minute-interval
-pass (`AlertAutoResolveService`)
+A periodic reconciliation pass re-evaluates current heartbeat and hardware
+state after restart. A separate minute-interval pass (`AlertAutoResolveService`)
 enforces rule auto-resolve timeouts; both run in fresh scopes with a fresh
 evaluator instance (D3), so a crash loses nothing a later tick cannot repair. Event rules are evaluated as events are accepted; a later
-reconciliation can repair state after a crash. VM-heartbeat *transitions* are
+reconciliation can repair state after a crash. VM-heartbeat transitions are
 *not* replayed by reconciliation — the `vms` table is latest-wins, so the
-pre-transition state is gone — so a rule created while a VM is already lost
-stays quiet until the next real OK→lost transition; but fired alerts are
-durable rows and survive restarts unchanged (and orphans are repaired as
-described above).
+pre-transition state is gone — but fired alerts are durable rows and survive
+restarts unchanged.
 
 An alert has a stable fingerprint. The recommended uniqueness model is
 `(rule_id, host_id, fingerprint, active state)`, allowing a resolved occurrence
