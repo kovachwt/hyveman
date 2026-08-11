@@ -213,22 +213,24 @@ public sealed class HostsService(
         var snapshots = await health.GetSnapshotsAsync(id, from2, to2, limit: 5000, ct);
         var metrics = await GetMetricsInRangeAsync(id, from2, to2, ct);
         var points = new List<HealthHistoryPoint>();
-        var seen = new HashSet<long>();
+        // Point identity = snapshot timestamp (1/min). Power/temperature metrics
+        // share that sub-second timestamp and thus enrich the rollup point; agent
+        // telemetry (mem/disk) is on its own ~30s heartbeat cadence and must never
+        // spawn phantom "unknown" points that crowd the chart timeline invisible.
+        // Keyed lookup also replaces the prior O(points × metrics) FirstOrDefault
+        // join (4000 × 24000 per request → response latency 1–3 s).
+        var byKey = new Dictionary<long, HealthHistoryPoint>();
         foreach (var s in snapshots)
         {
             var key = s.Time.ToUnixTimeSeconds();
-            if (!seen.Add(key)) continue;
-            points.Add(new HealthHistoryPoint { Time = s.Time, RollupState = s.RollupState });
+            if (byKey.ContainsKey(key)) continue;
+            var p = new HealthHistoryPoint { Time = s.Time, RollupState = s.RollupState };
+            points.Add(p);
+            byKey[key] = p;
         }
         foreach (var m in metrics)
         {
-            var key = m.Time.ToUnixTimeSeconds();
-            var point = points.FirstOrDefault(p => p.Time.ToUnixTimeSeconds() == key);
-            if (point is null)
-            {
-                point = new HealthHistoryPoint { Time = m.Time, RollupState = "unknown" };
-                points.Add(point);
-            }
+            if (!byKey.TryGetValue(m.Time.ToUnixTimeSeconds(), out var point)) continue;
             if (m.Name.StartsWith("temperature") && (point.TemperatureMaxC is null || m.Value > point.TemperatureMaxC))
                 point.TemperatureMaxC = m.Value;
             if (m.Name.StartsWith("power") && (point.PowerWatts is null || m.Value > point.PowerWatts))
