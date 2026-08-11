@@ -191,6 +191,41 @@ public sealed class HeartbeatMonitorService(
     }
 }
 
+/// <summary>Alert auto-resolve (API.md §9.3): periodically resolves live
+/// alerts whose rule has an auto-resolve timeout and whose last occurrence is
+/// older than the window (event/logon rules are fire-and-forget — the timeout
+/// replaces the manual ack for transient noise). Every tick runs in a fresh
+/// scope with a fresh evaluator instance (D3), exactly like the reconciliation
+/// pass.</summary>
+public sealed class AlertAutoResolveService(
+    IServiceScopeFactory scopes,
+    ILogger<AlertAutoResolveService> log) : BackgroundService
+{
+    private readonly TimeSpan _interval = TimeSpan.FromSeconds(60);
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                using var scope = scopes.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<IAlertEvaluator>()
+                    .AutoResolveDueAsync(DateTimeOffset.UtcNow, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "Alert auto-resolve tick failed");
+            }
+            try { await Task.Delay(_interval, ct); } catch (OperationCanceledException) { break; }
+        }
+    }
+}
+
 /// <summary>Alert reconciliation (API.md §9.3): repairs state after restart.</summary>
 public sealed class AlertReconciliationService(
     IServiceScopeFactory scopes,

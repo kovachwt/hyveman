@@ -350,6 +350,11 @@ public sealed class RuleDto
     public Dictionary<string, object?> Match { get; set; } = [];
     public string Severity { get; set; } = "";
     public long CooldownS { get; set; }
+
+    /// <summary>Auto-resolve timeout in seconds; null = never (API.md §7.3).
+    /// A live alert resolves automatically once no new occurrence has arrived
+    /// for this window.</summary>
+    public long? AutoResolveAfterS { get; set; }
     public bool Enabled { get; set; }
     public List<string> ChannelIds { get; set; } = [];
     public DateTimeOffset CreatedAt { get; set; }
@@ -363,6 +368,7 @@ public sealed class RuleInput
     public Dictionary<string, object?>? Match { get; set; }
     public string? Severity { get; set; }
     public long? CooldownS { get; set; }
+    public long? AutoResolveAfterS { get; set; }
     public bool? Enabled { get; set; }
     public List<string>? ChannelIds { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }

@@ -180,11 +180,13 @@ public partial class Program
             TimeSpan.FromSeconds(30),
             sp.GetRequiredService<ILogger<HeartbeatMonitorService>>()));
         builder.Services.AddSingleton<AlertReconciliationService>();
+        builder.Services.AddSingleton<AlertAutoResolveService>();
         builder.Services.AddSingleton<NotificationDispatchService>();
         builder.Services.AddSingleton<MaintenanceService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<HardwarePollingService>());
         builder.Services.AddHostedService(sp => sp.GetRequiredService<HeartbeatMonitorService>());
         builder.Services.AddHostedService(sp => sp.GetRequiredService<AlertReconciliationService>());
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<AlertAutoResolveService>());
         builder.Services.AddHostedService(sp => sp.GetRequiredService<NotificationDispatchService>());
         builder.Services.AddHostedService(sp => sp.GetRequiredService<MaintenanceService>());
 

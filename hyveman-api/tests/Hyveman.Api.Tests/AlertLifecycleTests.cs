@@ -63,7 +63,7 @@ public class AlertLifecycleTests
             var rules = seed.ServiceProvider.GetRequiredService<IRuleStore>();
             await rules.CreateAsync(new RuleRecord(ruleId, "disk health", RuleTypes.Health,
                 """{"componentTypes":["disk"],"states":["warning","critical"],"includeRollup":false}""",
-                "warning", 0, true, now, now), CancellationToken.None);
+                "warning", 0, null, true, now, now), CancellationToken.None);
         }
 
         var diskOk = new ComponentRecord(hostId, ComponentTypes.Disk, "Disk 0", HealthState.Ok, null, now);
@@ -115,7 +115,7 @@ public class AlertLifecycleTests
             sourceId = src!.Id;
             var rules = seed.ServiceProvider.GetRequiredService<IRuleStore>();
             await rules.CreateAsync(new RuleRecord("rul_cd", "6008", RuleTypes.Event,
-                """{"channel":"System","eventIds":[6008]}""", "warning", 3600, true,
+                """{"channel":"System","eventIds":[6008]}""", "warning", 3600, null, true,
                 DateTimeOffset.UtcNow, DateTimeOffset.UtcNow), CancellationToken.None);
         }
 
@@ -183,6 +183,8 @@ public sealed class ThrowingEvaluator : IAlertEvaluator
     public Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms,
         DateTimeOffset at, CancellationToken ct)
         => Task.CompletedTask;
+
+    public Task AutoResolveDueAsync(DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
 
     public Task ReconcileAsync(CancellationToken ct) => Task.CompletedTask;
 }

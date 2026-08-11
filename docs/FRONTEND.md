@@ -444,6 +444,11 @@ Rule forms are type-specific:
   optional comma-separated user list (empty = any user); the UI notes that
   `DWM-x`/`UMFD-x` internal accounts are ignored for any-user rules.
 
+Every form exposes a cooldown and an optional **auto-resolve after** field
+(seconds; blank or 0 = never): event/logon rules fire-and-bump without a
+natural resolution, so an auto-resolve timeout makes the alert close itself
+once the condition goes quiet — no manual acknowledgement needed.
+
 The UI provides human-readable summaries but submits the typed match document
 expected by the API. Client-side schemas improve feedback; the backend remains
 the authority.

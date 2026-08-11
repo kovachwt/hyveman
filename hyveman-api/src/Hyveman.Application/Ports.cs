@@ -465,6 +465,12 @@ public interface IAlertEvaluator
     /// rule's bad set, resolves when it no longer matches. Threshold-style;
     /// called from the facts ingest path before the latest-wins upsert (D3).</summary>
     Task OnVmReplicationChangedAsync(string hostId, IReadOnlyList<VmRecord> vms, DateTimeOffset at, CancellationToken ct);
+
+    /// <summary>Per-rule auto-resolve pass (API.md §9.3): resolves live alerts
+    /// whose rule has AutoResolveAfterS set once no new occurrence has arrived
+    /// for that window. Stateless (D3): reads rules and live alerts from the
+    /// durable stores; called periodically by a background service.</summary>
+    Task AutoResolveDueAsync(DateTimeOffset at, CancellationToken ct);
     Task ReconcileAsync(CancellationToken ct);
 }
 

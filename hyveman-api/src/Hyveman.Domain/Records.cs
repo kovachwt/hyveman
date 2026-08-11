@@ -176,7 +176,11 @@ public sealed record AlertRecord(
     DateTimeOffset? ResolvedAt,
     DateTimeOffset UpdatedAt);
 
-/// <summary>Alert rule (DESIGN §4.4).</summary>
+/// <summary>Alert rule (DESIGN §4.4). AutoResolveAfterS: when set (seconds,
+/// >= 0), a live alert of this rule resolves automatically once no new
+/// occurrence has arrived for that window (last_seen age). Null/absent =
+/// never auto-resolve. The resolution mechanism for fire-and-forget rule
+/// types (event, logon); harmless as a fallback timer for any other type.</summary>
 public sealed record RuleRecord(
     string Id,
     string Name,
@@ -184,6 +188,7 @@ public sealed record RuleRecord(
     string MatchJson,
     string Severity,
     long CooldownS,
+    long? AutoResolveAfterS,
     bool Enabled,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);

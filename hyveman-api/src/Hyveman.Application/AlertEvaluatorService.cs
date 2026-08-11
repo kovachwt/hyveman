@@ -332,6 +332,36 @@ public sealed class AlertEvaluatorService(
         }
     }
 
+    /// <summary>Per-rule auto-resolve pass (API.md §9.3, DESIGN §4.4): event
+    /// and logon rules are fire-and-bump by design — they have no natural
+    /// resolution — so a rule can opt into a timeout: a live alert resolves
+    /// once no new occurrence has arrived for AutoResolveAfterS seconds.
+    /// Keyed off last_seen, not first_seen: every new occurrence (bump)
+    /// restarts the timer, so an alert stays up while the condition is
+    /// actually recurring and resolves once it goes quiet. Acknowledged and
+    /// silenced alerts are resolved too — the timeout replaces the manual
+    /// ack for transient noise. D3: stateless; reads rules and live alerts
+    /// from the durable stores, so the pass is safe to run on any schedule
+    /// and survives restarts.</summary>
+    public async Task AutoResolveDueAsync(DateTimeOffset at, CancellationToken ct)
+    {
+        var timed = (await rules.ListAsync(ct))
+            .Where(r => r.Enabled && r.AutoResolveAfterS is { } ar && ar >= 0)
+            .ToDictionary(r => r.Id);
+        if (timed.Count == 0) return;
+
+        foreach (var alert in await alerts.ListLiveAsync(ct))
+        {
+            if (alert.RuleId is null || !timed.TryGetValue(alert.RuleId, out var rule)) continue;
+            var window = rule.AutoResolveAfterS!.Value;
+            if (window == 0 || (at - alert.LastSeen).TotalSeconds < window) continue;
+            var resolved = alert with { Status = AlertStatuses.Resolved, ResolvedAt = at, UpdatedAt = at };
+            await alerts.UpdateAsync(resolved, ct);
+            log.LogInformation("Alert {alertId} auto-resolved after {window}s without a new occurrence: {title}",
+                resolved.Id, window, resolved.Title);
+        }
+    }
+
     /// <summary>Reconciliation pass (API.md §9.3): re-evaluates current
     /// heartbeat and hardware state after restart; repairs alerts without
     /// inflating counts.</summary>

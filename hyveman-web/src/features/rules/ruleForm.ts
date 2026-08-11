@@ -49,6 +49,7 @@ export interface RuleFormValues {
   type: (typeof RULE_TYPES)[number];
   severity: (typeof RULE_SEVERITIES)[number];
   cooldownS: number;
+  autoResolveAfterS: number | '';
   enabled: boolean;
   channelIds: string[];
   // health
@@ -81,6 +82,7 @@ export function emptyRuleForm(): RuleFormValues {
     type: 'event',
     severity: 'warning',
     cooldownS: 300,
+    autoResolveAfterS: '',
     enabled: true,
     channelIds: [],
     componentTypes: [],
@@ -104,6 +106,7 @@ export function emptyRuleForm(): RuleFormValues {
 
 const intOrEmpty = z.union([z.number().int(), z.literal('')]);
 const nonNegInt = z.number().int().min(0);
+const nonNegIntOrEmpty = z.union([z.number().int().min(0), z.literal('')]);
 
 export const ruleFormSchema = z
   .object({
@@ -111,6 +114,7 @@ export const ruleFormSchema = z
     type: z.enum(RULE_TYPES),
     severity: z.enum(RULE_SEVERITIES),
     cooldownS: nonNegInt,
+    autoResolveAfterS: nonNegIntOrEmpty,
     enabled: z.boolean(),
     channelIds: z.array(z.string()),
     componentTypes: z.array(z.string()),
@@ -245,6 +249,7 @@ export function ruleToForm(rule: RuleDto): RuleFormValues {
     type: (rule.type as RuleFormValues['type']) ?? 'event',
     severity: ((rule.severity as RuleFormValues['severity']) ?? 'warning') as RuleFormValues['severity'],
     cooldownS: Number(rule.cooldownS) || 0,
+    autoResolveAfterS: rule.autoResolveAfterS != null ? Number(rule.autoResolveAfterS) : '',
     enabled: rule.enabled ?? true,
     channelIds: rule.channelIds ?? [],
     componentTypes: strings('componentTypes'),
@@ -322,6 +327,9 @@ export function buildRuleInput(values: RuleFormValuesValidated, edit: boolean, u
     match: ruleFormToMatch(values),
     severity: values.severity,
     cooldownS: values.cooldownS,
+    // Blank = never: an explicit 0 round-trips through the API's optional
+    // field (null on patch means "leave unchanged").
+    autoResolveAfterS: values.autoResolveAfterS === '' ? 0 : values.autoResolveAfterS,
     enabled: values.enabled,
     channelIds: values.channelIds,
     ...(edit && updatedAt ? { updatedAt } : {}),

@@ -542,6 +542,70 @@ public class AgentContractTests
     }
 
     [Fact]
+    public async Task WebApi_RuleAutoResolve_RoundTripsThroughCreateAndPatch()
+    {
+        // autoResolveAfterS is a top-level rule field (not part of the match
+        // document): create and patch must persist it, and a negative value
+        // must be rejected.
+        var client = _fx.NewClient();
+        _fx.SeedSession(client);
+        var csrf = _fx.GetCsrfToken(await client.GetAsync("/api/v1/auth/session"));
+
+        using var createRule = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        createRule.Headers.Add("X-CSRF-Token", csrf);
+        createRule.Headers.Add("Origin", "http://localhost:5173");
+        createRule.Content = new StringContent(
+            """{"name":"quiet logons","type":"logon","severity":"warning","cooldownS":0,"autoResolveAfterS":1800,"enabled":true,"match":{"outcome":"failure"}}""",
+            Encoding.UTF8, "application/json");
+        var ruleResp = await client.SendAsync(createRule);
+        Assert.Equal(HttpStatusCode.OK, ruleResp.StatusCode);
+        var created = await ReadJson(ruleResp);
+        Assert.Equal(1800, created.GetProperty("autoResolveAfterS").GetInt64());
+        var ruleId = created.GetProperty("id").GetString();
+
+        // The stored rule round-trips through the SQLite store.
+        using (var scope = _fx.Factory.Services.CreateScope())
+        {
+            var rules = scope.ServiceProvider.GetRequiredService<IRuleStore>();
+            var stored = await rules.GetAsync(ruleId!, CancellationToken.None);
+            Assert.Equal(1800, stored!.AutoResolveAfterS);
+        }
+
+        // Patch: clearing the timeout. null = "leave unchanged" (consistent
+        // with the other optional fields), so an explicit 0 means "never".
+        using var patch = new HttpRequestMessage(HttpMethod.Patch, $"/api/v1/rules/{ruleId}");
+        patch.Headers.Add("X-CSRF-Token", csrf);
+        patch.Headers.Add("Origin", "http://localhost:5173");
+        patch.Content = new StringContent(
+            $"{{\"autoResolveAfterS\":0,\"updatedAt\":\"{created.GetProperty("updatedAt").GetString()}\"}}",
+            Encoding.UTF8, "application/json");
+        var patchResp = await client.SendAsync(patch);
+        Assert.Equal(HttpStatusCode.OK, patchResp.StatusCode);
+        var patched = await ReadJson(patchResp);
+        Assert.Equal(0, patched.GetProperty("autoResolveAfterS").GetInt64());
+
+        using (var scope = _fx.Factory.Services.CreateScope())
+        {
+            var rules = scope.ServiceProvider.GetRequiredService<IRuleStore>();
+            var stored = await rules.GetAsync(ruleId!, CancellationToken.None);
+            Assert.Equal(0, stored!.AutoResolveAfterS);
+        }
+
+        // Negative timeout is invalid.
+        using var bad = new HttpRequestMessage(HttpMethod.Post, "/api/v1/rules");
+        bad.Headers.Add("X-CSRF-Token", csrf);
+        bad.Headers.Add("Origin", "http://localhost:5173");
+        bad.Content = new StringContent(
+            """{"name":"bad","type":"event","severity":"warning","autoResolveAfterS":-5,"match":{"eventIds":[6008]}}""",
+            Encoding.UTF8, "application/json");
+        var badResp = await client.SendAsync(bad);
+        Assert.Equal(HttpStatusCode.BadRequest, badResp.StatusCode);
+        var badBody = await ReadJson(badResp);
+        Assert.Contains(badBody.GetProperty("errors").GetProperty("autoResolveAfterS").EnumerateArray(),
+            e => e.GetString() == "autoResolveAfterS must be >= 0.");
+    }
+
+    [Fact]
     public async Task WebApi_LogonRule_FiresOnFailedLogon_AndRejectsBadOutcome()
     {
         // End-to-end: a user-logon rule created via the web API fires on an

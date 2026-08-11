@@ -14,6 +14,7 @@ public static class Migrations
         (4, V4),
         (5, V5),
         (6, V6),
+        (7, V7),
     ];
 
     private const string V1 = """
@@ -378,5 +379,13 @@ public static class Migrations
         ALTER TABLE vms ADD COLUMN replication_state TEXT NULL;
         ALTER TABLE vms ADD COLUMN replication_health TEXT NULL;
         ALTER TABLE vms ADD COLUMN replication_last_apply_time TEXT NULL;
+        """;
+
+    private const string V7 = """
+        -- Per-rule auto-resolve timeout (API.md §7.3): a live alert resolves
+        -- automatically once no new occurrence arrives for this many seconds.
+        -- NULL/absent = never auto-resolve (default). New column, so existing
+        -- rules need no backfill.
+        ALTER TABLE rules ADD COLUMN auto_resolve_after_s INTEGER NULL;
         """;
 }

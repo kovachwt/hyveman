@@ -256,6 +256,47 @@ describe('buildRuleInput', () => {
     expect(input.updatedAt).toBe('2025-08-09T00:00:00Z');
     expect(buildRuleInput(values, false, 'x').updatedAt).toBeUndefined();
   });
+
+  it('maps blank auto-resolve to an explicit 0 (never)', () => {
+    const blank = ruleFormSchema.parse({ ...base, name: 'r', type: 'event' as const, channel: 'System', autoResolveAfterS: '' });
+    expect(buildRuleInput(blank, false).autoResolveAfterS).toBe(0);
+
+    const timed = ruleFormSchema.parse({ ...base, name: 'r', type: 'event' as const, channel: 'System', autoResolveAfterS: 1800 });
+    expect(buildRuleInput(timed, false).autoResolveAfterS).toBe(1800);
+  });
+
+  it('rejects a negative auto-resolve timeout', () => {
+    const result = ruleFormSchema.safeParse({ ...base, name: 'r', type: 'event' as const, channel: 'System', autoResolveAfterS: -1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('round-trips autoResolveAfterS through the edit form', () => {
+    const form = ruleToForm({
+      id: 'r1',
+      name: 'quiet logons',
+      type: 'logon',
+      severity: 'warning',
+      cooldownS: 0,
+      autoResolveAfterS: 1800,
+      enabled: true,
+      channelIds: [],
+      match: { outcome: 'failure' },
+    } as never);
+    expect(form.autoResolveAfterS).toBe(1800);
+
+    const never = ruleToForm({
+      id: 'r2',
+      name: 'never',
+      type: 'logon',
+      severity: 'warning',
+      cooldownS: 0,
+      autoResolveAfterS: null,
+      enabled: true,
+      channelIds: [],
+      match: { outcome: 'failure' },
+    } as never);
+    expect(never.autoResolveAfterS).toBe('');
+  });
 });
 
 describe('ruleSummary (human-readable)', () => {

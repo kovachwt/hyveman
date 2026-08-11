@@ -786,6 +786,11 @@ export type RuleDtoMatch = { [key: string]: unknown };
  */
 export type RuleDtoCooldownS = number | string;
 
+/**
+ * @pattern ^-?(?:0|[1-9]\d*)$
+ */
+export type RuleDtoAutoResolveAfterS = null | number | string;
+
 export interface RuleDto {
   id?: string;
   name?: string;
@@ -794,6 +799,8 @@ export interface RuleDto {
   severity?: string;
   /** @pattern ^-?(?:0|[1-9]\d*)$ */
   cooldownS?: RuleDtoCooldownS;
+  /** @pattern ^-?(?:0|[1-9]\d*)$ */
+  autoResolveAfterS?: RuleDtoAutoResolveAfterS;
   enabled?: boolean;
   channelIds?: string[];
   createdAt?: string;
@@ -815,6 +822,11 @@ export type RuleInputSeverity = null | string;
  */
 export type RuleInputCooldownS = null | number | string;
 
+/**
+ * @pattern ^-?(?:0|[1-9]\d*)$
+ */
+export type RuleInputAutoResolveAfterS = null | number | string;
+
 export type RuleInputEnabled = null | boolean;
 
 export type RuleInputChannelIds = null | string[];
@@ -828,6 +840,8 @@ export interface RuleInput {
   severity?: RuleInputSeverity;
   /** @pattern ^-?(?:0|[1-9]\d*)$ */
   cooldownS?: RuleInputCooldownS;
+  /** @pattern ^-?(?:0|[1-9]\d*)$ */
+  autoResolveAfterS?: RuleInputAutoResolveAfterS;
   enabled?: RuleInputEnabled;
   channelIds?: RuleInputChannelIds;
   updatedAt?: RuleInputUpdatedAt;

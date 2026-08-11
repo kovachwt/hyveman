@@ -615,7 +615,10 @@ Rule types and their match documents:
 - `health` — `componentTypes[]`, `states[]`, `includeRollup`; fires on a
   component/rollup state transition into a matching state, resolves on recovery.
 - `event` — `channel`, `eventIds[]`, `severityMin`, `messagePattern` (regex);
-  fires on each matching accepted event.
+  fires on each matching accepted event. Event-style semantics: fire and bump
+  per occurrence under the rule's cooldown, no natural resolution; set
+  `autoResolveAfterS` to have the alert resolve itself once no matching event
+  has arrived for that window.
 - `heartbeat` — `silenceAfterS`; fires when a source (agent) has sent no
   heartbeat for that many seconds.
 - `threshold` — `metric`, `comparator` (`gt|gte|lt|lte|eq`), `value`; fires on a
@@ -649,7 +652,10 @@ Rule types and their match documents:
   are ignored for any-user rules; a rule that explicitly lists one still
   matches. Event-style semantics: fire and bump per occurrence under the
   rule's cooldown, no resolution phase. The alert title carries the user
-  and outcome; per-user occurrences are distinct alerts.
+  and outcome; per-user occurrences are distinct alerts. As with `event`
+  rules, `autoResolveAfterS` (seconds; `null`/absent = never) makes a live
+  alert resolve itself once no new occurrence has arrived for that window —
+  no manual acknowledgement required for transient logon noise.
 
 Alert actions are explicit:
 
@@ -660,6 +666,14 @@ Alert actions are explicit:
 
 Every action records the authenticated actor, target, previous state, new state,
 and reason in `audit_log`.
+
+Rules (all types) accept an optional `autoResolveAfterS` — a live alert of the
+rule resolves automatically once no new occurrence has arrived for that many
+seconds (a recurring condition keeps bumping `last_seen` and stays live;
+acknowledged and silenced alerts are resolved too). It is the resolution
+mechanism for the fire-and-forget `event`/`logon` types and a fallback timer
+for any other type; `null` or `0` disables it. A periodic pass (API.md §9.3)
+enforces it.
 
 ### 7.4 Notification channels
 
@@ -819,11 +833,16 @@ The evaluator handles:
 - VM heartbeat transitions (OK→lost for running VMs, from Hyper-V facts);
 - VM replication health/state crossings (`vm_replication` rules, from the
   Hyper-V Replica facts — threshold-style, never on `stale:true` facts); and
+- per-rule auto-resolve: a live alert of a rule with `autoResolveAfterS` set
+  resolves once no new occurrence has arrived for that window (keys off
+  `last_seen`, so bumps restart the timer); and
 - deduplication, cooldown, escalation, acknowledgement, and maintenance
   suppression.
 
 A periodic reconciliation pass re-evaluates current heartbeat and hardware
-state after restart. Event rules are evaluated as events are accepted; a later
+state after restart. A separate minute-interval pass (`AlertAutoResolveService`)
+enforces rule auto-resolve timeouts; both run in fresh scopes with a fresh
+evaluator instance (D3), so a crash loses nothing a later tick cannot repair. Event rules are evaluated as events are accepted; a later
 reconciliation can repair state after a crash. VM-heartbeat transitions are
 *not* replayed by reconciliation — the `vms` table is latest-wins, so the
 pre-transition state is gone — but fired alerts are durable rows and survive

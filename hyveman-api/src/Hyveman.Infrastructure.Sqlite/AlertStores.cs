@@ -179,8 +179,8 @@ public sealed class RuleStore(SqliteDb db) : IRuleStore
     {
         using var conn = StoreHelpers.Open(db);
         await conn.ExecuteAsync(new CommandDefinition("""
-            INSERT INTO rules(id, name, type, match_json, severity, cooldown_s, enabled, created_at, updated_at)
-            VALUES (@Id, @Name, @Type, @MatchJson, @Severity, @CooldownS, @Enabled, @CreatedAt, @UpdatedAt)
+            INSERT INTO rules(id, name, type, match_json, severity, cooldown_s, auto_resolve_after_s, enabled, created_at, updated_at)
+            VALUES (@Id, @Name, @Type, @MatchJson, @Severity, @CooldownS, @AutoResolveAfterS, @Enabled, @CreatedAt, @UpdatedAt)
             """, Args(rule), cancellationToken: ct));
         return rule;
     }
@@ -191,11 +191,11 @@ public sealed class RuleStore(SqliteDb db) : IRuleStore
         var p = Args(rule);
         return await conn.ExecuteAsync(new CommandDefinition("""
             UPDATE rules SET name = @Name, type = @Type, match_json = @MatchJson, severity = @Severity,
-                   cooldown_s = @CooldownS, enabled = @Enabled, updated_at = @UpdatedAt
+                   cooldown_s = @CooldownS, auto_resolve_after_s = @AutoResolveAfterS, enabled = @Enabled, updated_at = @UpdatedAt
             WHERE id = @Id AND updated_at = @Expected
             """, new
         {
-            p.Id, p.Name, p.Type, p.MatchJson, p.Severity, p.CooldownS, p.Enabled, p.UpdatedAt,
+            p.Id, p.Name, p.Type, p.MatchJson, p.Severity, p.CooldownS, p.AutoResolveAfterS, p.Enabled, p.UpdatedAt,
             Expected = StoreHelpers.Fmt(expectedUpdatedAt),
         }, cancellationToken: ct)) > 0;
     }
@@ -231,13 +231,15 @@ public sealed class RuleStore(SqliteDb db) : IRuleStore
 
     private static dynamic Args(RuleRecord r) => new
     {
-        r.Id, r.Name, r.Type, MatchJson = r.MatchJson, r.Severity, r.CooldownS,
+        r.Id, r.Name, r.Type, MatchJson = r.MatchJson, r.Severity, r.CooldownS, r.AutoResolveAfterS,
         Enabled = r.Enabled ? 1 : 0, CreatedAt = StoreHelpers.Fmt(r.CreatedAt), UpdatedAt = StoreHelpers.Fmt(r.UpdatedAt),
     };
 
     private static RuleRecord Map(dynamic r) => new(
         (string)r.id, (string)r.name, (string)r.type, (string)r.match_json, (string)r.severity,
-        StoreHelpers.ToLong(r.cooldown_s), (long)r.enabled == 1,
+        StoreHelpers.ToLong(r.cooldown_s),
+        r.auto_resolve_after_s is null ? null : (long?)StoreHelpers.ToLong(r.auto_resolve_after_s),
+        (long)r.enabled == 1,
         StoreHelpers.Parse((string)r.created_at), StoreHelpers.Parse((string)r.updated_at));
 }
 

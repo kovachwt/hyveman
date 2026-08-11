@@ -138,6 +138,12 @@ export default function RulesPage() {
       align: 'right',
       render: (r) => `${r.cooldownS}s`,
     },
+    {
+      id: 'autoResolve',
+      label: 'Auto-resolve',
+      align: 'right',
+      render: (r) => (r.autoResolveAfterS ? `${r.autoResolveAfterS}s` : '—'),
+    },
     { id: 'enabled', label: 'Enabled', render: (r) => (r.enabled ? 'Yes' : 'No') },
     {
       id: 'channels',
@@ -251,6 +257,24 @@ export default function RulesPage() {
                     helperText={fieldState.error?.message}
                     disabled={busy}
                     sx={{ minWidth: 130 }}
+                  />
+                )}
+              />
+              <Controller
+                name="autoResolveAfterS"
+                control={control}
+                render={({ field, fieldState }) => (
+                  <TextField
+                    {...field}
+                    label="Auto-resolve after (s)"
+                    type="number"
+                    fullWidth
+                    margin="dense"
+                    onChange={(e) => field.onChange(e.target.value === '' ? '' : Number(e.target.value))}
+                    error={Boolean(fieldState.error)}
+                    helperText={fieldState.error?.message ?? 'Blank or 0 = never (fire-and-forget rules resolve after this quiet window)'}
+                    disabled={busy}
+                    sx={{ minWidth: 170 }}
                   />
                 )}
               />

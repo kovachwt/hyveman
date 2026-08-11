@@ -279,7 +279,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
-            """{"channel":"System","eventIds":[6008],"severityMin":3}""", "warning", 0, true, now, now));
+            """{"channel":"System","eventIds":[6008],"severityMin":3}""", "warning", 0, null, true, now, now));
 
         await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 6008, 2, "boom")], CancellationToken.None);
         var live = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
@@ -299,12 +299,72 @@ public class AlertEvaluatorTests
     }
 
     [Fact]
+    public async Task EventRule_AutoResolveAfterWindow_Resolves_AndBumpRestartsTimer()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        // AutoResolveAfterS = 300s: a fire-and-forget event rule that opts
+        // into the timeout instead of a manual ack.
+        rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
+            """{"channel":"System","eventIds":[6008]}""", "warning", 0, 300, true, now, now));
+
+        await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 6008, 2, "boom")], CancellationToken.None);
+        var live = Assert.Single(alerts.Alerts);
+        Assert.Equal(AlertStatuses.Active, live.Status);
+
+        // Not yet due: 299s < 300s window.
+        await eval.AutoResolveDueAsync(now.AddSeconds(299), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Active, (await alerts.GetAsync(live.Id, CancellationToken.None))!.Status);
+
+        // A new occurrence bumps last_seen (the evaluator's bump path sets
+        // LastSeen to the occurrence time) and restarts the timer: 300s after
+        // the first event but only 1s after the latest one → still live.
+        await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 6008, 2, "boom again")], CancellationToken.None);
+        var bumped = (await alerts.GetAsync(live.Id, CancellationToken.None))!;
+        Assert.Equal(2, bumped.Count);
+        await alerts.UpdateAsync(bumped with { LastSeen = now.AddSeconds(300) }, CancellationToken.None);
+        await eval.AutoResolveDueAsync(now.AddSeconds(301), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Active, (await alerts.GetAsync(live.Id, CancellationToken.None))!.Status);
+
+        // Quiet for the full window after the last occurrence → resolved.
+        await eval.AutoResolveDueAsync(now.AddSeconds(601), CancellationToken.None);
+        var resolved = (await alerts.GetAsync(live.Id, CancellationToken.None))!;
+        Assert.Equal(AlertStatuses.Resolved, resolved.Status);
+        Assert.NotNull(resolved.ResolvedAt);
+    }
+
+    [Fact]
+    public async Task AutoResolve_SkipsRulesWithoutTimeout_AndResolvesAcknowledged()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        var (eval, rules, alerts, _, _) = Build(now);
+        // No timeout on r1 → never auto-resolved, even when long quiet.
+        rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
+            """{"channel":"System","eventIds":[6008]}""", "warning", 0, null, true, now, now));
+        // r2 has a timeout; its alert is acknowledged — the timeout still
+        // resolves it (that is the point: no manual ack needed).
+        rules.Rules.Add(new RuleRecord("r2", "6008 acked", RuleTypes.Event,
+            """{"channel":"System","eventIds":[6008]}""", "warning", 0, 60, true, now, now));
+
+        await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 6008, 2, "boom")], CancellationToken.None);
+        var r1 = Assert.Single(alerts.Alerts.Where(a => a.RuleId == "r1"));
+        var r2 = Assert.Single(alerts.Alerts.Where(a => a.RuleId == "r2"));
+        await alerts.UpdateAsync(r2 with { AckAt = now, AckReason = "seen", Status = AlertStatuses.Acknowledged }, CancellationToken.None);
+
+        await eval.AutoResolveDueAsync(now.AddHours(1), CancellationToken.None);
+        Assert.Equal(AlertStatuses.Active, (await alerts.GetAsync(r1.Id, CancellationToken.None))!.Status);
+        var resolved2 = (await alerts.GetAsync(r2.Id, CancellationToken.None))!;
+        Assert.Equal(AlertStatuses.Resolved, resolved2.Status);
+        Assert.NotNull(resolved2.ResolvedAt);
+    }
+
+    [Fact]
     public async Task EventRule_SeverityMin_Filters()
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "critical only", RuleTypes.Event,
-            """{"channel":"System","severityMin":2}""", "critical", 0, true, now, now));
+            """{"channel":"System","severityMin":2}""", "critical", 0, null, true, now, now));
 
         await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 1, 4, "info event")], CancellationToken.None);
         Assert.Empty(alerts.Alerts);
@@ -320,7 +380,7 @@ public class AlertEvaluatorTests
         var (eval, rules, alerts, _, health) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "disk health", RuleTypes.Health,
             """{"componentTypes":["disk"],"states":["warning","critical"],"includeRollup":false}""",
-            "critical", 0, true, now, now));
+            "critical", 0, null, true, now, now));
 
         var disk = new ComponentRecord("h1", ComponentTypes.Disk, "Physical Disk 1", HealthState.Ok, null, now);
         await eval.OnHealthStateChangedAsync("h1", "ok", [disk], now, CancellationToken.None);
@@ -348,7 +408,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
-            """{"channel":"System","eventIds":[6008]}""", "warning", 3600, true, now, now));
+            """{"channel":"System","eventIds":[6008]}""", "warning", 3600, null, true, now, now));
 
         await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 6008, 2, "a")], CancellationToken.None);
         Assert.Single(alerts.Alerts);
@@ -367,7 +427,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "silent", RuleTypes.Heartbeat,
-            """{"silenceAfterS":300}""", "warning", 0, true, now, now));
+            """{"silenceAfterS":300}""", "warning", 0, null, true, now, now));
 
         await eval.OnHeartbeatSilenceChangedAsync("r1", "src_1", silent: true, now, CancellationToken.None);
         var alert = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
@@ -384,7 +444,7 @@ public class AlertEvaluatorTests
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "hot", RuleTypes.Threshold,
             """{"metric":"temperature:System Board Inlet Temp","comparator":"gt","value":45}""",
-            "warning", 0, true, now, now));
+            "warning", 0, null, true, now, now));
 
         await eval.OnThresholdsAsync("h1", [new MetricRecord("h1", "temperature:System Board Inlet Temp", 40, "C", now)], now, CancellationToken.None);
         Assert.Empty(alerts.Alerts);
@@ -410,7 +470,7 @@ public class AlertEvaluatorTests
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, health) = Build(now);
-        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, true, now, now));
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, null, true, now, now));
 
         // Store the previous facts (the telemetry path evaluates BEFORE the
         // latest-wins upsert, so the test mirrors that order).
@@ -438,7 +498,7 @@ public class AlertEvaluatorTests
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, health) = Build(now);
-        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, true, now, now));
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, null, true, now, now));
 
         // VM that never had an OK heartbeat (prev unknown/off): no fire.
         await health.UpsertVmsAsync("h1", [Vm("web01", "off", null)], stale: false, now, CancellationToken.None);
@@ -456,7 +516,7 @@ public class AlertEvaluatorTests
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, health) = Build(now);
-        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, true, now, now));
+        rules.Rules.Add(new RuleRecord("r1", "vm down", RuleTypes.VmHeartbeat, "{}", "critical", 0, null, true, now, now));
 
         await health.UpsertVmsAsync("h1", [Vm("web01", "on", true)], stale: false, now, CancellationToken.None);
         await eval.OnVmsChangedAsync("h1", [Vm("web01", "on", false)], now, CancellationToken.None);
@@ -473,7 +533,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         // Default match ({}): healths defaults to warning+critical.
-        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, true, now, now));
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, null, true, now, now));
 
         // Healthy replication: no fire.
         await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "ok", "enabled")], now, CancellationToken.None);
@@ -502,7 +562,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "repl down", RuleTypes.VmReplication,
-            """{"healths":["critical"]}""", "critical", 0, true, now, now));
+            """{"healths":["critical"]}""", "critical", 0, null, true, now, now));
 
         await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "critical", "error")], now, CancellationToken.None);
         Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
@@ -519,7 +579,7 @@ public class AlertEvaluatorTests
         var (eval, rules, alerts, _, _) = Build(now);
         // healths empty, states=[error]: fires only when the state matches.
         rules.Rules.Add(new RuleRecord("r1", "repl error", RuleTypes.VmReplication,
-            """{"healths":[],"states":["error"]}""", "warning", 0, true, now, now));
+            """{"healths":[],"states":["error"]}""", "warning", 0, null, true, now, now));
 
         // State error with healthy-looking health: fires (healths empty = don't care).
         await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "ok", "error")], now, CancellationToken.None);
@@ -535,7 +595,7 @@ public class AlertEvaluatorTests
     {
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
-        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, true, now, now));
+        rules.Rules.Add(new RuleRecord("r1", "repl bad", RuleTypes.VmReplication, "{}", "critical", 0, null, true, now, now));
 
         // Null replication fields (not replicated / no relationship): never a match.
         await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", null, null)], now, CancellationToken.None);
@@ -549,7 +609,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "repl fail", RuleTypes.VmReplication,
-            """{"healths":["critical"],"states":["error","discarded"]}""", "critical", 0, true, now, now));
+            """{"healths":["critical"],"states":["error","discarded"]}""", "critical", 0, null, true, now, now));
 
         // Health critical but state not in the set: no fire.
         await eval.OnVmReplicationChangedAsync("h1", [ReplVm("web01", "critical", "enabled")], now, CancellationToken.None);
@@ -566,7 +626,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "human logon", RuleTypes.Logon,
-            """{"outcome":"success"}""", "info", 0, true, now, now));
+            """{"outcome":"success"}""", "info", 0, null, true, now, now));
 
         await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4624, "2")], CancellationToken.None);
         var admin = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
@@ -591,7 +651,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "admin logon", RuleTypes.Logon,
-            """{"outcome":"success","users":["ADMIN"]}""", "critical", 0, true, now, now));
+            """{"outcome":"success","users":["ADMIN"]}""", "critical", 0, null, true, now, now));
 
         // Case-insensitive account match (Windows names are case-insensitive).
         await eval.OnLogonEventsAsync("src_1", [LogonItem("admin", 4624, "2")], CancellationToken.None);
@@ -610,7 +670,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "any logon", RuleTypes.Logon,
-            """{"outcome":"success"}""", "info", 0, true, now, now));
+            """{"outcome":"success"}""", "info", 0, null, true, now, now));
 
         // Internal console-session noise accounts never fire any-user rules.
         await eval.OnLogonEventsAsync("src_1", [LogonItem("DWM-1", 4624, "2"), LogonItem("umfd-0", 4624, "2")], CancellationToken.None);
@@ -622,7 +682,7 @@ public class AlertEvaluatorTests
 
         // An explicitly listed noise account matches (deliberate opt-in).
         var explicitRule = new RuleRecord("r2", "dwm watch", RuleTypes.Logon,
-            """{"outcome":"success","users":["DWM-1"]}""", "info", 0, true, now, now);
+            """{"outcome":"success","users":["DWM-1"]}""", "info", 0, null, true, now, now);
         rules.Rules.Add(explicitRule);
         await eval.OnLogonEventsAsync("src_1", [LogonItem("DWM-1", 4624, "2")], CancellationToken.None);
         Assert.Equal(2, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
@@ -634,9 +694,9 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "network failures", RuleTypes.Logon,
-            """{"outcome":"failure","logonTypes":[3]}""", "warning", 0, true, now, now));
+            """{"outcome":"failure","logonTypes":[3]}""", "warning", 0, null, true, now, now));
         rules.Rules.Add(new RuleRecord("r2", "lockouts", RuleTypes.Logon,
-            """{"outcome":"lockout"}""", "critical", 0, true, now, now));
+            """{"outcome":"lockout"}""", "critical", 0, null, true, now, now));
 
         await eval.OnLogonEventsAsync("src_1",
             [LogonItem("bob", 4625, "3"), LogonItem("carol", 4625, "10"), LogonItem("dave", 4740)],
@@ -656,7 +716,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, _, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "any failure", RuleTypes.Logon,
-            """{"outcome":"failure"}""", "warning", 0, true, now, now));
+            """{"outcome":"failure"}""", "warning", 0, null, true, now, now));
 
         // Service logon type 3 on 4624 is not a curated success; a 6008 on the
         // Security channel is not a logon event at all; only the 4625 fires.
@@ -673,7 +733,7 @@ public class AlertEvaluatorTests
         var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
         var (eval, rules, alerts, outbox, _) = Build(now);
         rules.Rules.Add(new RuleRecord("r1", "6008", RuleTypes.Event,
-            """{"channel":"System","eventIds":[6008]}""", "warning", 0, true, now, now));
+            """{"channel":"System","eventIds":[6008]}""", "warning", 0, null, true, now, now));
         rules.Channels["r1"] = ["ch_telegram", "ch_webhook"];
 
         await eval.OnEventsAcceptedAsync("src_1", [EventItem("System", 6008, 2, "x")], CancellationToken.None);
@@ -938,6 +998,7 @@ public class TelemetryServiceTests
             ReplicationCalls.Add((hostId, vms));
             return Task.CompletedTask;
         }
+        public Task AutoResolveDueAsync(DateTimeOffset at, CancellationToken ct) => Task.CompletedTask;
         public Task ReconcileAsync(CancellationToken ct) => Task.CompletedTask;
     }
 

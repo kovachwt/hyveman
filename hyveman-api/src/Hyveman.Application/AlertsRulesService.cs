@@ -144,7 +144,7 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
         var now = clock.UtcNow;
         var match = JsonSerializer.Serialize(input.Match ?? new Dictionary<string, object?>());
         var rule = new RuleRecord("rul_" + HostsService.RandomId(18), input.Name!.Trim(), input.Type!,
-            match, input.Severity!, input.CooldownS ?? 0, input.Enabled ?? true, now, now);
+            match, input.Severity!, input.CooldownS ?? 0, input.AutoResolveAfterS, input.Enabled ?? true, now, now);
         await store.CreateAsync(rule, ct);
         if (input.ChannelIds is not null)
             await store.SetChannelsAsync(rule.Id, input.ChannelIds, ct);
@@ -167,6 +167,7 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
             MatchJson = input.Match is null ? existing.MatchJson : JsonSerializer.Serialize(input.Match),
             Severity = input.Severity ?? existing.Severity,
             CooldownS = input.CooldownS ?? existing.CooldownS,
+            AutoResolveAfterS = input.AutoResolveAfterS ?? existing.AutoResolveAfterS,
             Enabled = input.Enabled ?? existing.Enabled,
             UpdatedAt = now,
         };
@@ -194,6 +195,7 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
         if (input.Severity is not null && !new[] { "info", "warning", "critical" }.Contains(input.Severity))
             errors["severity"] = ["severity must be info, warning or critical."];
         if (input.CooldownS is { } cd && cd < 0) errors["cooldownS"] = ["cooldownS must be >= 0."];
+        if (input.AutoResolveAfterS is { } ar && ar < 0) errors["autoResolveAfterS"] = ["autoResolveAfterS must be >= 0."];
         var type = input.Type;
         if (input.Match is not null && type is not null)
         {
@@ -271,7 +273,7 @@ public sealed class RulesService(IRuleStore store, INotificationChannelStore cha
         return new RuleDto
         {
             Id = r.Id, Name = r.Name, Type = r.Type, Match = match ?? [], Severity = r.Severity,
-            CooldownS = r.CooldownS, Enabled = r.Enabled, ChannelIds = channelIds.ToList(),
+            CooldownS = r.CooldownS, AutoResolveAfterS = r.AutoResolveAfterS, Enabled = r.Enabled, ChannelIds = channelIds.ToList(),
             CreatedAt = r.CreatedAt, UpdatedAt = r.UpdatedAt,
         };
     }

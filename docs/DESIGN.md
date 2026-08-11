@@ -218,6 +218,12 @@ Three independently built and deployed components:
      fresh crossing, resolves when replication returns to a non-matching
      state (ok/not_applicable). Non-replicated VMs (null fields) never
      trigger; `stale:true` facts are never evaluated.
+  8. *Auto-resolve timeout* (any rule type, primarily event/logon): a rule
+     may set `autoResolveAfterS`; a live alert of that rule then resolves
+     automatically once no new occurrence has arrived for that window. The
+     timer keys off `last_seen`, so a recurring condition (e.g. an ongoing
+     failed-logon burst) stays live and resolves when it goes quiet — no
+     manual acknowledgement needed for transient noise. `null`/`0` = never.
 - **Behaviors:** deduplication window, escalation levels (info/warn/critical),
   per-rule cooldown, maintenance windows (per host), ack/silence from UI.
 - **Notification channels (per decision):**
