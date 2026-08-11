@@ -28,8 +28,8 @@ Severity: **P1** = data loss, silent wrong data, or a broken core feature;
 | [D5](#d5) | P1 | api | Event search skips a row at every page boundary | ~~verified~~ **fixed** |
 | [D6](#d6) | P1 | api | Web session lifetime compounds without bound | ~~inspection~~ **fixed** |
 | [D7](#d7) | P2 | api | `heartbeat_ok: false` coerced to `null` | ~~verified~~ **fixed** |
-| [D8](#d8) | P2 | api | Duplicate, never-resolving agent-silent alerts from the reconcile path | inspection |
-| [D9](#d9) | P2 | api | Reconcile pass ignores maintenance windows | inspection |
+| [D8](#d8) | P2 | api | Duplicate, never-resolving agent-silent alerts from the reconcile path | ~~inspection~~ **fixed** |
+| [D9](#d9) | P2 | api | Reconcile pass ignores maintenance windows | ~~inspection~~ **fixed** |
 | [D10](#d10) | P2 | api | Outbox rows stuck in `sending` are never recovered | inspection |
 | [D11](#d11) | P2 | agent | VM CPU percentage divided by 100 — always renders 0% | inspection |
 | [D12](#d12) | P2 | api | `Status.HealthRollup` ignored by the health mapper | inspection |
@@ -459,6 +459,11 @@ Active forever.
 and use the same key construction in both paths; better, extract one
 `HeartbeatAlertKey(rule, sourceId)` helper so the two can't drift again.
 
+**Status: fixed** — `ReconcileAsync` now resolves the source's host and fires
+with the same host-scoped key (shared `HeartbeatSilentFingerprint` constant)
+as the monitor; regression test
+`ReconcileHeartbeatSilence_UsesHostScopedKey_SoClearPathResolves`.
+
 ---
 
 <a id="d9"></a>
@@ -480,6 +485,10 @@ maintenance are the canonical reason maintenance windows exist.
 
 **Fix.** Fold the window check into `FireAsync` for source-scoped alerts too, by
 resolving the source's host before the check.
+
+**Status: fixed** — `ReconcileAsync`'s heartbeat repair now skips sources whose
+host is inside an active maintenance window, matching
+`HeartbeatMonitor.RunOnceAsync` (the only other path that fires these).
 
 ---
 

@@ -163,9 +163,13 @@ public class AlertEvaluatorTests
 
     private sealed class NoopHosts : IHostStore
     {
-        public Task<IReadOnlyList<HostRecord>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<HostRecord>>([]);
-        public Task<HostRecord?> GetAsync(string id, CancellationToken ct) => Task.FromResult<HostRecord?>(null);
-        public Task<HostRecord?> GetBySourceAsync(string sourceId, CancellationToken ct) => Task.FromResult<HostRecord?>(null);
+        public HostRecord? Host { get; set; }
+        public Task<IReadOnlyList<HostRecord>> ListAsync(CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<HostRecord>>(Host is null ? [] : [Host]);
+        public Task<HostRecord?> GetAsync(string id, CancellationToken ct)
+            => Task.FromResult(Host?.Id == id ? Host : null);
+        public Task<HostRecord?> GetBySourceAsync(string sourceId, CancellationToken ct)
+            => Task.FromResult(Host?.SourceId == sourceId ? Host : null);
         public Task<HostRecord> CreateAsync(HostRecord host, CancellationToken ct) => Task.FromResult(host);
         public Task<bool> UpdateAsync(HostRecord host, DateTimeOffset expectedUpdatedAt, CancellationToken ct) => Task.FromResult(true);
         public Task DeleteAsync(string id, CancellationToken ct) => Task.CompletedTask;
@@ -211,8 +215,11 @@ public class AlertEvaluatorTests
 
     private sealed class NoopAgentStatus : IAgentStatusStore
     {
-        public Task<AgentStatusRow?> GetAsync(string sourceId, CancellationToken ct) => Task.FromResult<AgentStatusRow?>(null);
-        public Task<IReadOnlyList<AgentStatusRow>> ListAllAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<AgentStatusRow>>([]);
+        public List<AgentStatusRow> Statuses { get; } = [];
+        public Task<AgentStatusRow?> GetAsync(string sourceId, CancellationToken ct)
+            => Task.FromResult(Statuses.FirstOrDefault(s => s.SourceId == sourceId));
+        public Task<IReadOnlyList<AgentStatusRow>> ListAllAsync(CancellationToken ct)
+            => Task.FromResult<IReadOnlyList<AgentStatusRow>>(Statuses);
         public Task<bool> ApplyHeartbeatAsync(string sourceId, HeartbeatPayload hb, DateTimeOffset receivedAt, CancellationToken ct) => Task.FromResult(true);
         public Task<bool> ApplyFactsAsync(string sourceId, FactsPayload facts, DateTimeOffset receivedAt, CancellationToken ct) => Task.FromResult(true);
     }
@@ -244,14 +251,17 @@ public class AlertEvaluatorTests
         public Task<IReadOnlyList<AuditEntry>> ListAsync(AuditQuery query, CancellationToken ct) => Task.FromResult<IReadOnlyList<AuditEntry>>([]);
     }
 
-    private static (AlertEvaluatorService Eval, InMemoryRuleStore Rules, InMemoryAlertStore Alerts, NoopOutbox Outbox, NoopHealth Health) Build(DateTimeOffset now)
+    private static (AlertEvaluatorService Eval, InMemoryRuleStore Rules, InMemoryAlertStore Alerts, NoopOutbox Outbox, NoopHealth Health) Build(
+        DateTimeOffset now, HostRecord? host = null, IReadOnlyList<AgentStatusRow>? statuses = null)
     {
         var rules = new InMemoryRuleStore();
         var alerts = new InMemoryAlertStore();
         var outbox = new NoopOutbox();
         var health = new NoopHealth();
-        var eval = new AlertEvaluatorService(rules, alerts, new NoopHosts(), new NoopSources(), health,
-            new NoopAgentStatus(), new NoopWindows(), outbox, new FixedClock(now),
+        var agentStatus = new NoopAgentStatus();
+        if (statuses is not null) agentStatus.Statuses.AddRange(statuses);
+        var eval = new AlertEvaluatorService(rules, alerts, new NoopHosts { Host = host }, new NoopSources(), health,
+            agentStatus, new NoopWindows(), outbox, new FixedClock(now),
             NullLogger<AlertEvaluatorService>.Instance);
         return (eval, rules, alerts, outbox, health);
     }
@@ -433,6 +443,38 @@ public class AlertEvaluatorTests
         var alert = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
         Assert.Contains("silent", alert.Title, StringComparison.OrdinalIgnoreCase);
 
+        await eval.OnHeartbeatSilenceChangedAsync(null, "src_1", silent: false, now, CancellationToken.None);
+        Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
+    }
+
+    [Fact]
+    public async Task ReconcileHeartbeatSilence_UsesHostScopedKey_SoClearPathResolves()
+    {
+        var now = DateTimeOffset.Parse("2024-08-07T15:00:00Z");
+        // DEFECTS.md D8 regression: a host-linked silent source repaired by the
+        // reconcile pass must fire with the SAME host-scoped alert key as the
+        // monitor, or the heartbeat-arrival clear path (exact-key lookup) can
+        // never resolve it — leaving a duplicate, live-forever alert.
+        var host = new HostRecord("hst_1", "HOST01", "windows-server", "src_1",
+            null, null, true, null, now, now);
+        var status = new AgentStatusRow("src_1", now.AddMinutes(-10), null, "0.1.0", "17763",
+            null, null, null, null, null, null, null, null, now);
+        var (eval, rules, alerts, _, _) = Build(now, host, [status]);
+        rules.Rules.Add(new RuleRecord("r1", "silent", RuleTypes.Heartbeat,
+            """{"silenceAfterS":300}""", "warning", 0, null, true, now, now));
+
+        await eval.ReconcileAsync(CancellationToken.None);
+        var alert = Assert.Single(alerts.Alerts.Where(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal("r1|hst_1|src_1|heartbeat:silent", alert.Key);
+        Assert.Equal("hst_1", alert.HostId);
+        Assert.Equal("Agent silent: HOST01", alert.Title);
+
+        // A second reconcile pass must not duplicate the live alert.
+        await eval.ReconcileAsync(CancellationToken.None);
+        Assert.Equal(1, alerts.Alerts.Count(a => a.Status != AlertStatuses.Resolved));
+        Assert.Equal(1, alerts.Alerts.Single().Count);
+
+        // Heartbeat arrives: the clear path finds and resolves the alert.
         await eval.OnHeartbeatSilenceChangedAsync(null, "src_1", silent: false, now, CancellationToken.None);
         Assert.Equal(AlertStatuses.Resolved, alerts.Alerts.Single().Status);
     }

@@ -190,7 +190,7 @@ public sealed class AlertEvaluatorService(
             if (ruleId is null) return;
             var rule = await rules.GetAsync(ruleId, ct);
             if (rule is null || !rule.Enabled || rule.Type != RuleTypes.Heartbeat) return;
-            await FireAsync(rule, host?.Id, sourceId, "heartbeat:silent",
+            await FireAsync(rule, host?.Id, sourceId, HeartbeatSilentFingerprint,
                 $"Agent silent: {source.Name}", $"No heartbeat from {source.Name} for the configured threshold", at, bump: true, ct);
         }
         else
@@ -198,7 +198,7 @@ public sealed class AlertEvaluatorService(
             // Heartbeat arrived: clear silence for every heartbeat rule.
             var hbRules = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.Heartbeat).ToList();
             foreach (var rule in hbRules)
-                await ResolveAsync(rule, host?.Id, sourceId, "heartbeat:silent", at, ct);
+                await ResolveAsync(rule, host?.Id, sourceId, HeartbeatSilentFingerprint, at, ct);
         }
     }
 
@@ -430,19 +430,28 @@ public sealed class AlertEvaluatorService(
             }
         }
 
-        // Heartbeat silence repair.
+        // Heartbeat silence repair. D8: the monitor fires and the clear path
+        // resolves with host?.Id — the reconcile pass must use the same
+        // host-scoped key, or its alerts are unreachable by the exact-key
+        // resolve lookup and stay live forever. D9: suppression honors
+        // maintenance windows exactly like HeartbeatMonitor.RunOnceAsync.
         var hbRules = (await rules.ListAsync(ct)).Where(r => r.Enabled && r.Type == RuleTypes.Heartbeat).ToList();
         foreach (var status in await AgentStatusListAsync(ct))
         {
+            var host = await hosts.GetBySourceAsync(status.SourceId, ct);
+            var source = await sources.GetByIdAsync(status.SourceId, ct);
+            var displayName = source?.Name ?? status.SourceId;
             foreach (var rule in hbRules)
             {
                 var match = RuleMatch.ParseHeartbeat(rule.MatchJson);
                 if (match is null) continue;
                 var age = at - status.LastReceived;
                 var silent = age > TimeSpan.FromSeconds(match.SilenceAfterS);
-                if (silent)
-                    await FireAsync(rule, null, status.SourceId, "heartbeat:silent",
-                        $"Agent silent: {status.SourceId}", $"No heartbeat for {age.TotalSeconds:0}s", at, bump: false, ct);
+                if (!silent) continue;
+                if (host is not null && await windows.IsInWindowAsync(host.Id, at, ct))
+                    continue; // maintenance suppresses silence alerts (API.md §9.2)
+                await FireAsync(rule, host?.Id, status.SourceId, HeartbeatSilentFingerprint,
+                    $"Agent silent: {displayName}", $"No heartbeat from {displayName} for the configured threshold", at, bump: false, ct);
             }
         }
         log.LogInformation("Alert reconciliation pass finished");
@@ -525,6 +534,11 @@ public sealed class AlertEvaluatorService(
         await alerts.UpdateAsync(resolved, ct);
         log.LogInformation("Alert {alertId} resolved: {title}", resolved.Id, resolved.Title);
     }
+
+    /// <summary>Agent-silence fingerprint; one constant so the monitor,
+    /// heartbeat-clear and reconcile paths can never build different alert
+    /// keys for the same condition (DEFECTS.md D8).</summary>
+    private const string HeartbeatSilentFingerprint = "heartbeat:silent";
 
     /// <summary>Stable alert key: rule|host|-|source|-|fingerprint. Single
     /// construction site so heartbeat, threshold and reconcile paths cannot
