@@ -43,7 +43,10 @@ function ceremonyError(err: unknown): PasskeyError {
     return new PasskeyError('The browser blocked the passkey request (insecure context?).', err);
   }
   if (err instanceof Error && err.name === 'NotSupportedError') {
-    return new PasskeyError('This browser does not support passkeys (WebAuthn).', err);
+    // The browser rejected the ceremony request itself (unsupported options,
+    // algorithm, or credential type) — not a missing WebAuthn implementation;
+    // passkeysSupported() covers that case. Surface the browser's reason.
+    return new PasskeyError(`The browser rejected the passkey request: ${err.message}`, err);
   }
   if (err instanceof Error) return new PasskeyError(err.message, err);
   return new PasskeyError('The passkey request failed unexpectedly.', err);

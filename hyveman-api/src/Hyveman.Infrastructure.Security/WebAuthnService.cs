@@ -41,7 +41,12 @@ public sealed class WebAuthnService(
 {
     private static readonly TimeSpan CeremonyLifetime = TimeSpan.FromMinutes(5);
 
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    /// <summary>JSON options for ceremony payloads. Fido2NetLib option types
+    /// carry their own per-enum converters (spec values like "public-key",
+    /// "discouraged", COSE algorithm numbers). The API's global
+    /// JsonStringEnumConverter must NOT be applied to them, so the controller
+    /// serializes options responses with these options (see AuthController).</summary>
+    public static JsonSerializerOptions JsonOptions { get; } = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
@@ -158,7 +163,7 @@ public sealed class WebAuthnService(
         RegisterVerifyEnvelope envelope;
         try
         {
-            envelope = JsonSerializer.Deserialize<RegisterVerifyEnvelope>(responseJson, Json)
+            envelope = JsonSerializer.Deserialize<RegisterVerifyEnvelope>(responseJson, JsonOptions)
                 ?? throw new InvalidOperationException("empty registration envelope");
         }
         catch (JsonException ex)
@@ -177,7 +182,7 @@ public sealed class WebAuthnService(
                 ["challenge"] = ["Unknown, expired or already-used registration challenge."],
             });
         var context = ParseContext(stored.OriginContext);
-        var options = JsonSerializer.Deserialize<CredentialCreateOptions>(stored.OptionsJson, Json)
+        var options = JsonSerializer.Deserialize<CredentialCreateOptions>(stored.OptionsJson, JsonOptions)
             ?? throw new InvalidOperationException("stored options unreadable");
 
         // ── Re-validate the ceremony gate at verify (SECURITY-AUDIT S8) ────
@@ -371,7 +376,7 @@ public sealed class WebAuthnService(
         AuthenticatorAssertionRawResponse response;
         try
         {
-            response = JsonSerializer.Deserialize<AuthenticatorAssertionRawResponse>(responseJson, Json)
+            response = JsonSerializer.Deserialize<AuthenticatorAssertionRawResponse>(responseJson, JsonOptions)
                 ?? throw new InvalidOperationException("empty assertion response");
         }
         catch (JsonException)
@@ -389,7 +394,7 @@ public sealed class WebAuthnService(
             {
                 ["challenge"] = ["Unknown, expired or already-used login challenge."],
             });
-        var options = JsonSerializer.Deserialize<AssertionOptions>(stored.OptionsJson, Json)
+        var options = JsonSerializer.Deserialize<AssertionOptions>(stored.OptionsJson, JsonOptions)
             ?? throw new InvalidOperationException("stored options unreadable");
 
         var credentialId = Convert.ToBase64String(response.RawId);
@@ -481,9 +486,9 @@ public sealed class WebAuthnService(
     private async Task SaveCeremonyAsync(byte[] challenge, string operation, object options,
         CeremonyContext? context, CancellationToken ct)
     {
-        var json = JsonSerializer.Serialize(options, Json);
+        var json = JsonSerializer.Serialize(options, JsonOptions);
         await ceremonies.SaveAsync(ChallengeHash(challenge), operation, json,
-            context is null ? null : JsonSerializer.Serialize(context, Json), clock.UtcNow, CeremonyLifetime, ct);
+            context is null ? null : JsonSerializer.Serialize(context, JsonOptions), clock.UtcNow, CeremonyLifetime, ct);
     }
 
     private static string ChallengeHash(byte[] challenge) =>
@@ -513,7 +518,7 @@ public sealed class WebAuthnService(
             });
         try
         {
-            return JsonSerializer.Deserialize<CeremonyContext>(json, Json) ?? throw new InvalidOperationException();
+            return JsonSerializer.Deserialize<CeremonyContext>(json, JsonOptions) ?? throw new InvalidOperationException();
         }
         catch (JsonException)
         {

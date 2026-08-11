@@ -758,6 +758,15 @@ uses the .NET FIDO2 library to validate challenge, origin, RP ID, user
 verification, credential ID, signature counter, and allowed ceremony state.
 Challenges are short-lived, single-use, and bound to the intended operation.
 
+The options responses are serialized with the FIDO2 library's own converters
+(`WebAuthnService.JsonOptions`), **not** the API-wide `JsonStringEnumConverter`
+(`AddJsonOptions` in `Program.cs`): the wire protocol requires spec values
+(`"public-key"`, `"discouraged"`, COSE algorithm numbers), and the global
+converter overrides the library's per-enum converters and would emit C# enum
+names (`"PublicKey"`, `"Discouraged"`) that browsers reject — Android's
+passkey bridge fails the ceremony with `NotSupportedError`. Keep the ceremony
+endpoints on the explicit options (regression-tested in `MultiUserTests`).
+
 ### 8.2 Session and CSRF
 
 On successful verification, the API issues a persistent session cookie with:

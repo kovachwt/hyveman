@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Hyveman.Application;
 using Hyveman.Contracts;
+using Hyveman.Infrastructure.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
@@ -69,7 +70,13 @@ public sealed class AuthController(
     {
         if (!AcquireAuthBudget(out var retryAfter))
             return TooManyRequests(retryAfter);
-        return Ok(await webauthn.BeginLoginAsync(ct));
+        // Serialize with the service's options, not the global MVC
+        // JsonStringEnumConverter: Fido2NetLib option types carry per-enum
+        // converters for spec values ("public-key", "discouraged", COSE
+        // algorithm numbers). The global converter would emit C# enum names
+        // ("PublicKey", "Discouraged"), which browsers reject — on Android
+        // the passkey bridge fails with NotSupportedError.
+        return new JsonResult(await webauthn.BeginLoginAsync(ct), WebAuthnService.JsonOptions);
     }
 
     [HttpPost("passkeys/login/verify")]
@@ -90,8 +97,9 @@ public sealed class AuthController(
         if (!AcquireAuthBudget(out var retryAfter))
             return TooManyRequests(retryAfter);
         var remoteIp = HttpContext.Connection.RemoteIpAddress?.ToString();
-        return Ok(await webauthn.BeginRegistrationAsync(body?.Name, body?.InviteToken,
-            CurrentUserId(), remoteIp, ct));
+        // Same spec-cased serialization as login/options (see above).
+        return new JsonResult(await webauthn.BeginRegistrationAsync(body?.Name, body?.InviteToken,
+            CurrentUserId(), remoteIp, ct), WebAuthnService.JsonOptions);
     }
 
     [HttpPost("passkeys/register/verify")]

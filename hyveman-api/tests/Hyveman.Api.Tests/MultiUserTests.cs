@@ -362,4 +362,23 @@ public class MultiUserTests
             CancellationToken.None);
         Assert.Contains(entries, e => e.Actor == aliceName);
     }
+
+    /// <summary>Wire-format regression: WebAuthn options must use the spec
+    /// enum values ("public-key", "discouraged", COSE algorithm numbers), not
+    /// C# enum names. The API's global JsonStringEnumConverter overrides
+    /// Fido2NetLib's per-enum converters when MVC serializes the options, and
+    /// browsers drop/reject the malformed fields — Android's passkey bridge
+    /// fails the ceremony with NotSupportedError ("This browser does not
+    /// support passkeys").</summary>
+    [Fact]
+    public async Task WebAuthnOptions_UseSpecEnumValues()
+    {
+        var login = await SendAsync(_fx.Client, HttpMethod.Post, "/api/v1/auth/passkeys/login/options");
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        var json = await ReadJson(login);
+        Assert.Equal("localhost", json.GetProperty("rpId").GetString());
+        Assert.Equal("discouraged", json.GetProperty("userVerification").GetString());
+        foreach (var descriptor in json.GetProperty("allowCredentials").EnumerateArray())
+            Assert.Equal("public-key", descriptor.GetProperty("type").GetString());
+    }
 }
