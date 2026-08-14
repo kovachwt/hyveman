@@ -24,7 +24,7 @@ condition; **P3** = hardening, defense-in-depth, or robustness.
 |---|---|---|---|
 | [S1](#s1) | P1 | api | First-run setup gate is reachable via a spoofed `X-Forwarded-For` |
 | [S2](#s2) | P1 | api | `KnownProxies` is documented but never bound — forwarded-header trust is unconfigurable |
-| [S3](#s3) | P2 | api | Redfish poller follows absolute `@odata.id` links with iDRAC credentials attached |
+| [S3](#s3) | P2 | api | Redfish poller follows absolute `@odata.id` links with iDRAC credentials attached — **fixed 2026-08-14** |
 | [S4](#s4) | P2 | api | CSRF origin allowlist accepts any localhost origin in localhost-shaped configs |
 | [S5](#s5) | P2 | api | Session cookie `Secure` flag depends on `Request.IsHttps` |
 | [S6](#s6) | P3 | api | SMTP notifier stores credentials it never uses; TLS defaults off |
@@ -178,6 +178,12 @@ in API.md §11 alongside the other configuration surface. Fail startup loudly if
 
 <a id="s3"></a>
 ## S3 — Redfish poller follows absolute `@odata.id` links with credentials attached (P2)
+
+> **Status: fixed 2026-08-14** (`DellRedfishProvider.GetJsonAsync` same-origin
+> guard — scheme/host/port compared explicitly, userinfo forbidden; see
+> `SECURITY-REVIEW-2026-08-14.md` M1 and the
+> `Poll_OffOriginLinks_RefusedWithoutRequest` regression test). The text
+> below is retained as the original finding.
 
 **Location:** `hyveman-api/src/Hyveman.Infrastructure.Redfish/DellRedfishProvider.cs:269`
 (reached from `:205`, `:231`, `:246`)

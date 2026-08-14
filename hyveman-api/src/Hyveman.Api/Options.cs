@@ -58,4 +58,11 @@ public sealed class RateLimitOptions
     public int PerSourcePerMinute { get; set; } = 300;
     public int RegistrationPerMinute { get; set; } = 20;
     public int AuthPerMinute { get; set; } = 30;
+
+    /// <summary>Per-network budget for agent-protocol endpoints (/register,
+    /// /ingest/*, /health), consumed by every request — authenticated or not —
+    /// before any database or body work (SECURITY-REVIEW-2026-08-14 M2).
+    /// Sized for the whole fleet behind one NAT with headroom: 7 agents at
+    /// ~6 req/min each is ~42/min.</summary>
+    public int AgentNetworkPerMinute { get; set; } = 300;
 }

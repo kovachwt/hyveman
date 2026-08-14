@@ -211,20 +211,28 @@ Agent routes use a dedicated pipeline with the following order:
    authenticating: an absent header is `400 missing_version`, an unsupported
    header is `400 unsupported_version`, and both responses use the server's
    current version plus `error.supported`;
-4. inspect `Content-Encoding` and accept only identity/absent or gzip, then
-   decompress while enforcing the **4 MiB decompressed, reassembled** body
-   limit (including chunked requests);
-5. deserialize JSON and validate the body `v`: a present value different from
-   the supported header is `400 invalid_request`; a body `v` never substitutes
-   for the required header;
+4. inspect `Content-Encoding` and accept only identity/absent or gzip (the
+   **4 MiB decompressed, reassembled** body limit is enforced when the body
+   is read, including chunked requests);
+5. apply the per-network agent budget — every request, authenticated or not,
+   before any database or body work;
 6. authenticate the bearer token and resolve its source/scope (with optional
-   token introspection for `/health`);
-7. apply source/global rate limits;
+   token introspection for `/health`), then apply the per-source and global
+   budgets — all **before the request body is read or parsed**:
+   unauthenticated requests are rejected with the credential error without
+   spending the read/parse budget, and never consume the global budget
+   (2026-08-14 security review, M2);
+7. read the body within the 4 MiB limit, deserialize JSON and validate the
+   body `v`: a present value different from the supported header is `400
+   invalid_request`; a body `v` never substitutes for the required header;
 8. validate the endpoint-specific request and source-kind semantics; and
 9. execute the application command and produce the protocol response.
 
 The version checks in step 3 have precedence over body-version and endpoint
-validation. A server-generated protocol response always carries the server's
+validation. Credential checks (step 6) have precedence over body validation:
+a request with a missing or invalid token returns the credential error
+regardless of body content. A server-generated protocol response always
+carries the server's
 current `X-Hyveman-Protocol` and JSON `v` for a version error. All server-
 generated 2xx and error envelopes include `commands`; reverse-proxy-generated
 errors may lack the JSON envelope and are classified by HTTP status by agents.
@@ -469,8 +477,10 @@ Accept only absent/identity or gzip `Content-Encoding`; return
 `unsupported_media_type` (or the permitted `invalid_request`) for other
 encodings. Apply:
 
-- a global request budget;
+- a global request budget (consumed only after credentials validate);
 - a per-source budget keyed by authenticated `source_id`;
+- a per-network budget for agent-protocol endpoints, applied to every request
+  — authenticated or not — before any database or body work;
 - a registration budget keyed by source/network; and
 - stricter limits to unauthenticated web authentication endpoints.
 
@@ -820,9 +830,17 @@ interval is 60 seconds. Each poll:
 1. loads the host's iDRAC URL and credential reference;
 2. decrypts credentials only for the duration needed by the provider;
 3. calls the configured Redfish resources using a bounded `HttpClient`;
-4. maps overall and component status to the vendor-neutral model;
-5. writes current components, a health snapshot, and metrics; and
-6. submits health-state changes to the alert evaluator.
+4. follows collection-member `@odata.id` links only when they resolve onto
+   the host's own origin (same scheme, host and port, no userinfo): an
+   off-origin link — absolute attacker URL, protocol-relative `//host/...`,
+   scheme downgrade, or userinfo smuggling — is refused before any request
+   is built, so iDRAC Basic credentials can never be sent anywhere but the
+   iDRAC itself, and a compromised device cannot turn the poller into an
+   SSRF primitive. The offending member is skipped with a warning
+   (2026-08-14 security review, M1); same-origin absolute links are followed;
+5. maps overall and component status to the vendor-neutral model;
+6. writes current components, a health snapshot, and metrics; and
+7. submits health-state changes to the alert evaluator.
 
 A failed host poll records the failure and last-success time without erasing the
 last known component state. Timeouts and repeated failures use backoff so one
@@ -1078,7 +1096,9 @@ a bounded grace period, cancels pollers/dispatchers, and closes SQLite cleanly.
 - Admin UI input is treated as untrusted. Event messages and raw XML are
   returned as text, never rendered as HTML.
 - iDRAC URLs and notification targets are admin-controlled and validated for
-  supported schemes. The Redfish client must not follow arbitrary redirects.
+  supported schemes. The Redfish client must not follow arbitrary redirects,
+  and every device-supplied `@odata.id` it follows must resolve onto the
+  polled host's own origin (no userinfo, no scheme/host/port change).
 - WebAuthn state, CSRF checks, rate limits, secure headers, and session
   revocation are enforced by the API rather than by frontend code.
 - Add a restrictive CSP, `X-Content-Type-Options: nosniff`, frame protection,

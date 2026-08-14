@@ -930,10 +930,12 @@ public class RedfishNormalizationTests
     private sealed class FakeHandler(Dictionary<string, string> routes) : HttpMessageHandler
     {
         public List<string> Requests { get; } = [];
+        public List<string> FullUris { get; } = [];
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             Requests.Add(path);
+            FullUris.Add(request.RequestUri.ToString());
             if (routes.TryGetValue(path, out var json))
                 return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
                 {
@@ -1010,6 +1012,59 @@ public class RedfishNormalizationTests
         Assert.Contains("/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0:Enclosure.Internal.0-1:RAID.Integrated.1-1", handler.Requests);
         // ...and the dead chassis OEM path is gone.
         Assert.DoesNotContain("/redfish/v1/Chassis/System.Embedded.1", handler.Requests);
+    }
+
+    [Fact]
+    public async Task Poll_OffOriginLinks_RefusedWithoutRequest()
+    {
+        // SECURITY-REVIEW-2026-08-14 M1 / SECURITY-AUDIT S3: @odata.id values
+        // come from the polled device itself. A compromised or MITM'd iDRAC
+        // returning off-origin links must never receive the Basic credentials
+        // (nor turn the poller into an SSRF primitive): every evil member is
+        // skipped, the legit members are still followed, and no request ever
+        // leaves the host's origin.
+        var poisonedProcessors = """
+            {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Processors",
+             "Members":[
+               {"@odata.id":"/redfish/v1/Systems/System.Embedded.1/Processors/CPU.Socket.1"},
+               {"@odata.id":"https://evil.example/exfil"},
+               {"@odata.id":"//evil.example/proto-relative"},
+               {"@odata.id":"http://idrac.example/plain-http-downgrade"},
+               {"@odata.id":"https://root:calvin@idrac.example/userinfo-smuggle"},
+               {"@odata.id":"https://idrac.example/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1"}],
+             "Members@odata.count":6,"Name":"ProcessorsCollection"}
+            """;
+        var handler = new FakeHandler(new Dictionary<string, string>
+        {
+            ["/redfish/v1/Systems/System.Embedded.1"] = SystemJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Processors"] = poisonedProcessors,
+            ["/redfish/v1/Systems/System.Embedded.1/Processors/CPU.Socket.1"] = CpuJson,
+            ["/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1"] = DimmA1Json,
+            ["/redfish/v1/Chassis/System.Embedded.1/Thermal"] = ThermalJson,
+            ["/redfish/v1/Chassis/System.Embedded.1/Power"] = PowerJson,
+        });
+        var factory = new FakeHttpClientFactory(handler);
+        var provider = new DellRedfishProvider(factory, IdracCertPolicies.Strict, new NoopCertStore(),
+            NullLogger<DellRedfishProvider>.Instance);
+        var result = await provider.PollAsync(new HardwarePollTarget("h1", "HOST01",
+            "https://idrac.example", "root", "calvin"), CancellationToken.None);
+
+        // The poll survives: system + inline sensors + the legit members are
+        // all collected; only the evil members vanish.
+        Assert.True(result.Success);
+        Assert.Equal("ok", result.RollupState);
+        Assert.Contains(result.Components, c => c.Type == ComponentTypes.Cpu && c.Name == "CPU 1");
+        // The same-origin absolute link was followed and its member collected
+        // (typed by the collection it arrived through — processors — which is
+        // correct provider behavior for a mixed-member collection).
+        Assert.Contains(result.Components, c => c.Name == "DIMM A1" && c.State == HealthState.Ok);
+
+        // The credential-bearing requests never left the iDRAC's origin.
+        Assert.DoesNotContain(handler.FullUris, u => u.Contains("evil.example", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(handler.FullUris, u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(handler.FullUris, u => u.Contains("root:calvin@", StringComparison.OrdinalIgnoreCase));
+        // Same-origin absolute links are followed (spec-legal, harmless).
+        Assert.Contains(handler.FullUris, u => u == "https://idrac.example/redfish/v1/Systems/System.Embedded.1/Memory/DIMM.Socket.A1");
     }
 
     [Fact]

@@ -375,6 +375,50 @@ public class AgentContractTests
         Assert.NotNull(limited.Headers.RetryAfter!.Delta);
     }
 
+    [Fact]
+    public async Task RateLimit_PerNetwork_BoundsUnauthenticatedFlood()
+    {
+        // SECURITY-REVIEW-2026-08-14 M2: a derived host with a tiny
+        // per-network agent budget must cut off an unauthenticated flood
+        // before any body/auth work — and without consuming the global
+        // budget (raised out of the way on this host to prove it is not
+        // what trips).
+        var factory = _fx.Factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.RemoveAll<RateLimiterRegistry>();
+            s.AddSingleton(new RateLimiterRegistry(new RateLimitOptions
+            {
+                AgentNetworkPerMinute = 5,
+                GlobalPerMinute = 100000,
+                PerSourcePerMinute = 100000,
+                RegistrationPerMinute = 100000,
+                AuthPerMinute = 100000,
+            }));
+        }));
+        using var flood = factory.CreateClient();
+
+        HttpResponseMessage? last = null;
+        for (var i = 0; i < 12; i++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, "/ingest/logs");
+            req.Headers.Add("X-Hyveman-Protocol", "1");
+            req.Content = new StringContent(
+                "garbage body that would otherwise cost a full parse", Encoding.UTF8, "application/json");
+            last = await flood.SendAsync(req);
+            if (i < 5)
+            {
+                // Within the budget: rejected cheaply by the credential gate,
+                // never by body parsing (M2 ordering).
+                Assert.Equal(HttpStatusCode.Unauthorized, last.StatusCode);
+                Assert.Equal("token_missing", (await ReadJson(last)).GetProperty("error").GetProperty("code").GetString());
+            }
+        }
+        Assert.NotNull(last);
+        Assert.Equal(HttpStatusCode.TooManyRequests, last!.StatusCode);
+        Assert.Equal("too_many_requests", (await ReadJson(last)).GetProperty("error").GetProperty("code").GetString());
+        Assert.NotNull(last.Headers.RetryAfter);
+    }
+
     // ── web API ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -1026,6 +1070,11 @@ public sealed class ApiFixture : IDisposable
         // (each test registers its own agent). Raise it so the limiter stays
         // a defense under test, not a false positive.
         Environment.SetEnvironmentVariable("HYVEMAN_RateLimits__RegistrationPerMinute", "200");
+        // Same reasoning for the per-network agent budget (checked before
+        // auth/body work on every agent-endpoint request): the whole suite
+        // drives from one loopback network key. Raised so the limiter stays
+        // a defense under test, not a false positive.
+        Environment.SetEnvironmentVariable("HYVEMAN_RateLimits__AgentNetworkPerMinute", "100000");
         _factory = new WebApplicationFactory<Program>();
         Client = _factory.CreateClient();
     }

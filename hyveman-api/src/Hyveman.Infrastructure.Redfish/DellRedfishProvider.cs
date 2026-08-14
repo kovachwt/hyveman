@@ -21,6 +21,14 @@ namespace Hyveman.Infrastructure.Redfish;
 /// OS trust store via the shared "redfish" named client; "trust-on-first-use"
 /// accepts and pins the first certificate a host presents, refusing that host
 /// if the certificate later changes (pins live in IIdracCertStore).</remarks>
+/// <remarks>Link safety (API.md 12, SECURITY-REVIEW-2026-08-14 M1): every
+/// `@odata.id` followed by the poller is resolved against the host's base
+/// URI and must stay on that URI's origin (same scheme + authority). A
+/// compromised or MITM'd iDRAC that returns an absolute attacker URL - or a
+/// protocol-relative `//host/...` link, or an http scheme downgrade - must
+/// never receive the Basic credentials or turn the poller into an SSRF
+/// primitive; the offending member is skipped with a warning. Same-origin
+/// absolute links (rare but spec-legal) are followed.</remarks>
 public sealed class DellRedfishProvider(
     IHttpClientFactory http,
     string idracCertPolicy,
@@ -261,12 +269,33 @@ public sealed class DellRedfishProvider(
         return rollup;
     }
 
-    private static async Task<JsonElement?> GetJsonAsync(HttpClient client, Uri baseUri,
+    /// <summary>Fetches one Redfish resource with Basic auth. The requested
+    /// path - a fixed literal for the top-level resources, a device-supplied
+    /// `@odata.id` for collection members - must resolve onto the base URI's
+    /// origin; off-origin targets are refused before any request is sent so
+    /// the credentials can never leave the iDRAC's own host
+    /// (SECURITY-REVIEW-2026-08-14 M1).</summary>
+    private async Task<JsonElement?> GetJsonAsync(HttpClient client, Uri baseUri,
         string path, string auth, CancellationToken ct)
     {
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, path));
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+            var uri = new Uri(baseUri, path);
+            // Uri.Authority excludes userinfo, so compare host/port explicitly
+            // and forbid any userinfo on the target: a link like
+            // https://root:calvin@idrac.example/... otherwise compares
+            // "same-origin" while smuggling its own authority.
+            if (uri.Scheme != baseUri.Scheme || uri.Host != baseUri.Host || uri.Port != baseUri.Port
+                || uri.UserInfo.Length > 0)
+            {
+                log.LogWarning(
+                    "Redfish link '{Link}' (truncated) on {Host} resolves off-origin to {Scheme}://{Authority}; refusing to follow (M1)",
+                    path.Length <= 300 ? path : path[..300], baseUri.Host, uri.Scheme, uri.Authority);
+                return null;
+            }
+            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
             req.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead, ct);

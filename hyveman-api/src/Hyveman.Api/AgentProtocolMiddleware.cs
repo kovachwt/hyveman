@@ -12,7 +12,12 @@ namespace Hyveman.Api;
 /// /ingest/telemetry and /health:
 /// 1. correlation/trace id; 2. HTTPS; 3. X-Hyveman-Protocol before body/auth;
 /// 4. Content-Encoding (identity|gzip) with a 4 MiB decompressed cap;
-/// 5. JSON + body v check; 6. bearer auth → source/scopes; 7. rate limits;
+/// 5. per-network budget (all traffic, before any database or body work);
+/// 6. credential gates — bearer auth → source/scopes, then per-source/global
+/// budgets — all BEFORE the body is read or parsed, so unauthenticated
+/// requests can never spend the read/parse budget or consume the shared
+/// global budget (SECURITY-REVIEW-2026-08-14 M2);
+/// 7. body read/decompress + JSON + body v check;
 /// 8. endpoint/source-kind validation; 9. application command → protocol
 /// response. All envelopes carry the server's current v, X-Hyveman-Protocol
 /// and the reserved commands array (PROTOCOL §3/§13/§16).
@@ -89,27 +94,66 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
             }
         }
 
-        // Global request budget (PROTOCOL §15).
+        // 5. Per-network agent budget (PROTOCOL §15): every request to an
+        // agent endpoint — authenticated or not — consumes a per-network
+        // allowance before any database lookup or body work, so a flood from
+        // one network is cut off at its source and cannot spend the server's
+        // read/parse budget or starve other clients' budgets
+        // (SECURITY-REVIEW-2026-08-14 M2).
         var limiter = ctx.RequestServices.GetRequiredService<RateLimiterRegistry>();
         var now = DateTimeOffset.UtcNow;
-        var global = limiter.AcquireGlobal(now);
-        if (!global.Allowed)
+        var network = limiter.AcquireAgentNetwork(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", now);
+        if (!network.Allowed)
         {
-            await WriteErrorAsync(ctx, 429, ErrorCodes.TooManyRequests, "global rate limit exceeded",
-                retryAfter: (int)Math.Ceiling(global.RetryAfter.TotalSeconds));
+            await WriteErrorAsync(ctx, 429, ErrorCodes.TooManyRequests, "per-network agent rate limit exceeded",
+                retryAfter: (int)Math.Ceiling(network.RetryAfter.TotalSeconds));
             return;
         }
-        ctx.Response.Headers["X-RateLimit-Remaining"] = global.Remaining.ToString();
 
         try
         {
             if (isHealth)
             {
+                // /health deliberately consumes no global budget: the response
+                // is fixed and the per-network budget above already bounds
+                // floods (M2).
                 await HandleHealthAsync(ctx);
                 return;
             }
 
-            // 5. Read + decompress the body with the 4 MiB reassembled cap.
+            // 6. Credential gates BEFORE any body is read or parsed (M2): the
+            // bearer checks cost one indexed token lookup, while the body path
+            // buffers, decompresses and parses up to 4 MiB. Unauthenticated
+            // requests are rejected here and never reach the global budget,
+            // so garbage floods cannot 429 legitimate agents into spool
+            // overflow (bounded spools drop oldest events permanently).
+            string? regToken = null;
+            string? sourceId = null, sourceKind = null;
+            if (isRegister)
+            {
+                regToken = await RegisterGateAsync(ctx, limiter, now);
+                if (regToken is null) return;
+            }
+            else
+            {
+                var auth = await AuthenticateIngestAsync(ctx);
+                if (auth is null) return;
+                sourceId = auth.Value.SourceId;
+                sourceKind = auth.Value.SourceKind;
+
+                // Global budget: consumed only by authenticated traffic (M2).
+                var global = limiter.AcquireGlobal(now);
+                if (!global.Allowed)
+                {
+                    await WriteErrorAsync(ctx, 429, ErrorCodes.TooManyRequests, "global rate limit exceeded",
+                        retryAfter: (int)Math.Ceiling(global.RetryAfter.TotalSeconds));
+                    return;
+                }
+                ctx.Response.Headers["X-RateLimit-Remaining"] = global.Remaining.ToString();
+            }
+
+            // 7. Read + decompress the body with the 4 MiB reassembled cap.
             var body = await ReadBodyAsync(ctx, gzip);
             if (body is null)
             {
@@ -157,11 +201,11 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
                 }
 
                 if (isRegister)
-                    await HandleRegisterAsync(ctx, doc.RootElement, body);
+                    await FinishRegisterAsync(ctx, doc.RootElement, body, regToken!);
                 else if (isLogs)
-                    await HandleLogsAsync(ctx, doc.RootElement, body);
+                    await HandleLogsAsync(ctx, doc.RootElement, body, sourceId!, sourceKind!);
                 else
-                    await HandleTelemetryAsync(ctx, doc.RootElement, body);
+                    await HandleTelemetryAsync(ctx, doc.RootElement, body, sourceId!, sourceKind!);
             }
         }
         catch (RegistrationException ex)
@@ -216,15 +260,16 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
         await WriteResponseAsync(ctx, 200, ProtocolEnvelope.Serialize(response));
     }
 
-    private async Task HandleRegisterAsync(HttpContext ctx, JsonElement root, byte[] body)
+    /// <summary>Credential + budget gate for /register, run before the body
+    /// is read (SECURITY-REVIEW-2026-08-14 M2). Returns the presented reg_
+    /// token, or null after writing the error response (missing/invalid token
+    /// kind, or registration/global budget exhausted).</summary>
+    private async Task<string?> RegisterGateAsync(HttpContext ctx, RateLimiterRegistry limiter, DateTimeOffset now)
     {
-        var log = ctx.RequestServices.GetRequiredService<ILogger<AgentProtocolMiddleware>>();
-        var limiter = ctx.RequestServices.GetRequiredService<RateLimiterRegistry>();
-
         if (!TryGetBearer(ctx, out var rawToken))
         {
             await WriteErrorAsync(ctx, 401, ErrorCodes.TokenMissing, "missing Authorization header");
-            return;
+            return null;
         }
         if (!rawToken.StartsWith(TokenKinds.Registration, StringComparison.Ordinal))
         {
@@ -233,20 +278,37 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
             if (await tokens.AuthenticateAsync(rawToken, ctx.RequestAborted) is not null)
             {
                 await WriteErrorAsync(ctx, 403, ErrorCodes.WrongScope, "token does not have register scope");
-                return;
+                return null;
             }
             await WriteErrorAsync(ctx, 401, ErrorCodes.TokenInvalid, "registration endpoint requires a reg_ token");
-            return;
+            return null;
         }
 
         // Registration budget keyed by network (PROTOCOL §15).
-        var reg = limiter.AcquireRegistration(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", DateTimeOffset.UtcNow);
+        var reg = limiter.AcquireRegistration(ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown", now);
         if (!reg.Allowed)
         {
             await WriteErrorAsync(ctx, 429, ErrorCodes.TooManyRequests, "registration rate limit exceeded",
                 retryAfter: (int)Math.Ceiling(reg.RetryAfter.TotalSeconds));
-            return;
+            return null;
         }
+
+        // Only requests that passed the credential checks reach the global
+        // budget (M2): unauthenticated garbage must not consume it.
+        var global = limiter.AcquireGlobal(now);
+        if (!global.Allowed)
+        {
+            await WriteErrorAsync(ctx, 429, ErrorCodes.TooManyRequests, "global rate limit exceeded",
+                retryAfter: (int)Math.Ceiling(global.RetryAfter.TotalSeconds));
+            return null;
+        }
+        ctx.Response.Headers["X-RateLimit-Remaining"] = global.Remaining.ToString();
+        return rawToken;
+    }
+
+    private async Task FinishRegisterAsync(HttpContext ctx, JsonElement root, byte[] body, string rawToken)
+    {
+        var log = ctx.RequestServices.GetRequiredService<ILogger<AgentProtocolMiddleware>>();
 
         // Structural schema check (forward-compatible, PROTOCOL §6.7).
         var schemaErrors = ProtocolSchema.Validator.Validate("#", System.Text.Encoding.UTF8.GetString(body));
@@ -274,13 +336,10 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
         await WriteResponseAsync(ctx, 200, ProtocolEnvelope.Serialize(response));
     }
 
-    private async Task HandleLogsAsync(HttpContext ctx, JsonElement root, byte[] body)
+    private async Task HandleLogsAsync(HttpContext ctx, JsonElement root, byte[] body,
+        string sourceId, string sourceKind)
     {
-        var log = ctx.RequestServices.GetRequiredService<ILogger<AgentProtocolMiddleware>>();
-        var auth = await AuthenticateIngestAsync(ctx);
-        if (auth is null) return;
-        var (sourceId, sourceKind) = auth.Value;
-
+        // The caller authenticated before reading the body (M2).
         WarnSourceHintMismatch(ctx, root, sourceId);
 
         // Read items structurally (never typed deserialization): a malformed
@@ -312,12 +371,11 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
         await WriteResponseAsync(ctx, 200, ProtocolEnvelope.Serialize(response));
     }
 
-    private async Task HandleTelemetryAsync(HttpContext ctx, JsonElement root, byte[] body)
+    private async Task HandleTelemetryAsync(HttpContext ctx, JsonElement root, byte[] body,
+        string sourceId, string sourceKind)
     {
         var log = ctx.RequestServices.GetRequiredService<ILogger<AgentProtocolMiddleware>>();
-        var auth = await AuthenticateIngestAsync(ctx);
-        if (auth is null) return;
-        var (sourceId, sourceKind) = auth.Value;
+        // The caller authenticated before reading the body (M2).
 
         WarnSourceHintMismatch(ctx, root, sourceId);
 
@@ -343,8 +401,9 @@ public sealed class AgentProtocolMiddleware(RequestDelegate next)
         await WriteResponseAsync(ctx, 200, ProtocolEnvelope.Serialize(response));
     }
 
-    /// <summary>Authenticates ingest endpoints: agt_ token, ingest scope,
-    /// per-source rate limit. Returns null after writing the error response.</summary>
+    /// <summary>Authenticates ingest endpoints (pre-body, M2): agt_ token,
+    /// ingest scope, per-source rate limit. Returns null after writing the
+    /// error response.</summary>
     private async Task<(string SourceId, string SourceKind)?> AuthenticateIngestAsync(HttpContext ctx)
     {
         var log = ctx.RequestServices.GetRequiredService<ILogger<AgentProtocolMiddleware>>();

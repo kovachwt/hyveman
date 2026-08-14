@@ -58,4 +58,28 @@ public class EdgeCaseContractTests
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
         Assert.Equal("invalid_request", await Code(resp));
     }
+
+    [Fact]
+    public async Task Credentials_CheckedBeforeBodyValidation()
+    {
+        // SECURITY-REVIEW-2026-08-14 M2: credential gates run before the body
+        // is read or parsed. An unauthenticated request is rejected with the
+        // credential error regardless of body content — even a body that
+        // would fail JSON parsing or the v check if it were ever read.
+        var noAuth = await Post("/ingest/logs", null!, "this is not json at all");
+        Assert.Equal(HttpStatusCode.Unauthorized, noAuth.StatusCode);
+        Assert.Equal("token_missing", await Code(noAuth));
+
+        var badToken = await Post("/ingest/logs", "agt_doesnotexist", "also not json");
+        Assert.Equal(HttpStatusCode.Unauthorized, badToken.StatusCode);
+        Assert.Equal("token_invalid", await Code(badToken));
+
+        var noAuthRegister = await Post("/register", null!, "garbage");
+        Assert.Equal(HttpStatusCode.Unauthorized, noAuthRegister.StatusCode);
+        Assert.Equal("token_missing", await Code(noAuthRegister));
+
+        var nonRegToken = await Post("/register", "agt_stillnotaregistrationtoken", "garbage");
+        Assert.Equal(HttpStatusCode.Unauthorized, nonRegToken.StatusCode);
+        Assert.Equal("token_invalid", await Code(nonRegToken));
+    }
 }

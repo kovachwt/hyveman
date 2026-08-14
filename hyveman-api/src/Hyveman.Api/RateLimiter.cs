@@ -45,6 +45,7 @@ public sealed class RateLimiterRegistry(RateLimitOptions options)
         public const string Auth = "auth";
         public const string Registration = "registration";
         public const string Source = "source";
+        public const string AgentNetwork = "agent-network";
     }
 
     private FixedWindowLimiter For(string bucket, int limit, int windowS)
@@ -52,6 +53,14 @@ public sealed class RateLimiterRegistry(RateLimitOptions options)
 
     public (bool Allowed, int Remaining, TimeSpan RetryAfter) AcquireGlobal(DateTimeOffset now)
         => For(Buckets.Global, options.GlobalPerMinute, 60).TryAcquire(now);
+
+    /// <summary>Per-network budget for agent-protocol endpoints
+    /// (SECURITY-REVIEW-2026-08-14 M2): bounds the work spent on traffic from
+    /// one client network — authenticated or not — before any database lookup
+    /// or body read, so unauthenticated floods cannot starve legitimate
+    /// agents or the shared budgets.</summary>
+    public (bool Allowed, int Remaining, TimeSpan RetryAfter) AcquireAgentNetwork(string networkKey, DateTimeOffset now)
+        => For($"{Buckets.AgentNetwork}:{networkKey}", options.AgentNetworkPerMinute, 60).TryAcquire(now);
 
     public (bool Allowed, int Remaining, TimeSpan RetryAfter) AcquirePerSource(string sourceId, DateTimeOffset now)
         => For($"{Buckets.Source}:{sourceId}", options.PerSourcePerMinute, 60).TryAcquire(now);

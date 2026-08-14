@@ -784,6 +784,16 @@ Applies to **logs** (spooled, retried) and **telemetry** (best-effort):
 
 - **Per-source budget + global budget** (DESIGN §7 "rate-limits"). Per-source is
   load-bearing: one misbehaving agent must not starve the others.
+- **Per-network budget**: every request to an agent endpoint (`/register`,
+  `/ingest/*`, `/health`) — authenticated or not — consumes an allowance keyed
+  by the client network, checked **before authentication and before the body
+  is read**. Credential checks likewise precede body validation: a request
+  with a missing/invalid token is rejected with the credential error
+  (`401`/`403`) regardless of body content, and the global budget is consumed
+  only by requests that presented valid credentials (`/health` consumes
+  none). This keeps unauthenticated floods from spending the server's
+  read/parse budget or starving legitimate agents (2026-08-14 security
+  review, M2).
 - Over-budget → `429 too_many_requests` with `Retry-After` (seconds).
 - The server SHOULD return `X-RateLimit-Remaining` (optional) so the agent can
   self-throttle.
